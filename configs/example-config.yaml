@@ -1,0 +1,62 @@
+# Example Forecast Configuration
+# Copy to .forecast/config.yaml in your project and customize
+
+jira:
+  url: https://yourcompany.atlassian.net
+  email: your.email@company.com
+  api_token: ${JIRA_API_TOKEN}  # Set via environment variable
+  project_key: SMG
+  epic: SMG-123
+  labels:
+    - phase1-refactor
+
+item_types:
+  - name: Component
+    jira_label: type:component
+  - name: Fix
+    jira_label: type:fix
+  - name: Migration
+    jira_label: type:migration
+  - name: Integration
+    jira_label: type:integration
+  - name: Test
+    jira_label: type:test
+  - name: Extraction
+    jira_label: type:extraction
+  - name: Documentation
+    jira_label: type:documentation
+
+reference_class:
+  name: "SMG Client Phase 1"
+  type: "React Refactoring"
+
+jira_mapping:
+  item_type:
+    field: labels
+    mappings:
+      - jira: "type:component"
+        forecast: "Component"
+      - jira: "type:fix"
+        forecast: "Fix"
+      - jira: "type:migration"
+        forecast: "Migration"
+      - jira: "type:integration"
+        forecast: "Integration"
+      - jira: "type:test"
+        forecast: "Test"
+      - jira: "type:extraction"
+        forecast: "Extraction"
+      - jira: "type:documentation"
+        forecast: "Documentation"
+
+  size:
+    field: labels
+    mappings:
+      - jira: "size:S"
+        forecast: "S"
+      - jira: "size:M"
+        forecast: "M"
+      - jira: "size:L"
+        forecast: "L"
+      - jira: "size:XL"
+        forecast: "XL"

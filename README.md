@@ -14,7 +14,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourorg/forecast.git
+git clone https://github.com/andrewcostello/forecast.git
 cd forecast
 
 # Build

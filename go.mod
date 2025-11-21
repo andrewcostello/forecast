@@ -1,4 +1,4 @@
-module github.com/yourorg/forecast
+module github.com/andrewcostello/forecast
 
 go 1.21
 

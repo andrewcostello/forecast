@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/yourorg/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 	"gonum.org/v1/gonum/stat"
 )
 

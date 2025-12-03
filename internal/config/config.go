@@ -10,10 +10,14 @@ import (
 
 // Config holds the application configuration
 type Config struct {
-	JIRA          JIRAConfig          `mapstructure:"jira"`
-	ItemTypes     []ItemTypeConfig    `mapstructure:"item_types"`
+	ProjectName    string               `mapstructure:"project_name"`
+	ProjectType    string               `mapstructure:"project_type"`
+	TeamSize       int                  `mapstructure:"team_size"`
+	TeamCapacity   float64              `mapstructure:"team_capacity"` // Hours per day
+	JIRA           JIRAConfig           `mapstructure:"jira"`
+	ItemTypes      []ItemTypeConfig     `mapstructure:"item_types"`
 	ReferenceClass ReferenceClassConfig `mapstructure:"reference_class"`
-	JIRAMapping   JIRAMappingConfig   `mapstructure:"jira_mapping"`
+	JIRAMapping    JIRAMappingConfig    `mapstructure:"jira_mapping"`
 }
 
 type JIRAConfig struct {
@@ -99,7 +103,13 @@ func InitProject() error {
 	}
 
 	defaultConfig := `# Forecast Configuration
-# See https://github.com/yourorg/forecast for documentation
+# See https://github.com/andrewcostello/forecast for documentation
+
+# Project settings
+project_name: "My Project"
+project_type: "Web Application"
+team_size: 3
+team_capacity: 8  # Hours per day per team
 
 jira:
   url: https://yourcompany.atlassian.net

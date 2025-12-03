@@ -3,11 +3,12 @@ package referenceclass
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
 
-	"github.com/yourorg/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 	_ "modernc.org/sqlite"
 )
 
@@ -119,11 +120,9 @@ func (d *Database) AddProject(rc *forecast.ReferenceClass) error {
 
 // GetDistribution gets cycle time distribution for a reference class
 func (d *Database) GetDistribution(projectType, itemType, size string) (*forecast.Distribution, error) {
+	// Get all cycle times for this combination
 	query := `
-		SELECT AVG(cycle_time_hours),
-		       (SELECT AVG((cycle_time_hours - sub.avg) * (cycle_time_hours - sub.avg))
-		        FROM items sub
-		        WHERE sub.project_id = items.project_id) as variance
+		SELECT cycle_time_hours
 		FROM items
 		WHERE project_id IN (
 		    SELECT id FROM projects WHERE type = ?
@@ -132,38 +131,59 @@ func (d *Database) GetDistribution(projectType, itemType, size string) (*forecas
 		AND size = ?
 	`
 
-	var mean, variance sql.NullFloat64
-	err := d.db.QueryRow(query, projectType, itemType, size).Scan(&mean, &variance)
+	rows, err := d.db.Query(query, projectType, itemType, size)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("no reference data for %s/%s/%s", projectType, itemType, size)
+		return nil, err
+	}
+	defer rows.Close()
+
+	var cycleTimes []float64
+	for rows.Next() {
+		var ct float64
+		if err := rows.Scan(&ct); err != nil {
+			return nil, err
 		}
+		cycleTimes = append(cycleTimes, ct)
+	}
+
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 
-	if !mean.Valid || !variance.Valid {
-		return nil, fmt.Errorf("insufficient reference data for %s/%s/%s", projectType, itemType, size)
+	if len(cycleTimes) == 0 {
+		return nil, fmt.Errorf("no reference data for %s/%s/%s", projectType, itemType, size)
 	}
 
+	// Calculate mean
+	var sum float64
+	for _, ct := range cycleTimes {
+		sum += ct
+	}
+	mean := sum / float64(len(cycleTimes))
+
+	// Calculate standard deviation
+	var varianceSum float64
+	for _, ct := range cycleTimes {
+		diff := ct - mean
+		varianceSum += diff * diff
+	}
+	stdDev := math.Sqrt(varianceSum / float64(len(cycleTimes)))
+
 	return &forecast.Distribution{
-		Mean:   mean.Float64,
-		StdDev: variance.Float64, // TODO: Should be sqrt(variance)
+		Mean:   mean,
+		StdDev: stdDev,
 	}, nil
 }
 
 // ListReferenceClasses lists all available reference classes
 func (d *Database) ListReferenceClasses() ([]ReferenceClassSummary, error) {
+	// First get the basic aggregates
 	query := `
 		SELECT
 		    p.type,
 		    COUNT(DISTINCT p.id) as project_count,
 		    COUNT(i.id) as item_count,
-		    AVG(i.cycle_time_hours) as avg_hours,
-		    (SELECT AVG((i2.cycle_time_hours - sub.avg) * (i2.cycle_time_hours - sub.avg))
-		     FROM items i2
-		     JOIN projects p2 ON i2.project_id = p2.id
-		     CROSS JOIN (SELECT AVG(cycle_time_hours) as avg FROM items) sub
-		     WHERE p2.type = p.type) as variance
+		    COALESCE(AVG(i.cycle_time_hours), 0) as avg_hours
 		FROM projects p
 		LEFT JOIN items i ON i.project_id = p.id
 		GROUP BY p.type
@@ -179,20 +199,64 @@ func (d *Database) ListReferenceClasses() ([]ReferenceClassSummary, error) {
 	var summaries []ReferenceClassSummary
 	for rows.Next() {
 		var s ReferenceClassSummary
-		var variance sql.NullFloat64
 
-		if err := rows.Scan(&s.Type, &s.ProjectCount, &s.ItemCount, &s.AvgHours, &variance); err != nil {
+		if err := rows.Scan(&s.Type, &s.ProjectCount, &s.ItemCount, &s.AvgHours); err != nil {
 			return nil, err
-		}
-
-		if variance.Valid {
-			s.StdDev = variance.Float64 // TODO: Should be sqrt(variance)
 		}
 
 		summaries = append(summaries, s)
 	}
 
-	return summaries, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Calculate stddev for each type
+	for i := range summaries {
+		stdDev, err := d.calculateStdDevForType(summaries[i].Type, summaries[i].AvgHours)
+		if err == nil {
+			summaries[i].StdDev = stdDev
+		}
+	}
+
+	return summaries, nil
+}
+
+// calculateStdDevForType calculates the standard deviation for all items of a project type
+func (d *Database) calculateStdDevForType(projectType string, mean float64) (float64, error) {
+	query := `
+		SELECT i.cycle_time_hours
+		FROM items i
+		JOIN projects p ON i.project_id = p.id
+		WHERE p.type = ?
+	`
+
+	rows, err := d.db.Query(query, projectType)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+
+	var cycleTimes []float64
+	for rows.Next() {
+		var ct float64
+		if err := rows.Scan(&ct); err != nil {
+			return 0, err
+		}
+		cycleTimes = append(cycleTimes, ct)
+	}
+
+	if len(cycleTimes) == 0 {
+		return 0, nil
+	}
+
+	var varianceSum float64
+	for _, ct := range cycleTimes {
+		diff := ct - mean
+		varianceSum += diff * diff
+	}
+
+	return math.Sqrt(varianceSum / float64(len(cycleTimes))), nil
 }
 
 // ReferenceClassSummary summarizes a reference class

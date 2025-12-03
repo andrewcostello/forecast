@@ -3,7 +3,7 @@ package eva
 import (
 	"time"
 
-	"github.com/yourorg/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 )
 
 // Calculator calculates Earned Value Analysis metrics

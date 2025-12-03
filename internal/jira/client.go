@@ -1,15 +1,15 @@
 package jira
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"time"
 
-	"github.com/yourorg/forecast/internal/config"
-	"github.com/yourorg/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/internal/config"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 )
 
 // Client represents a JIRA API client
@@ -132,24 +132,28 @@ func (c *Client) buildJQL(cfg *config.Config) string {
 }
 
 func (c *Client) search(jql string) ([]Issue, error) {
-	u, err := url.Parse(fmt.Sprintf("%s/rest/api/3/search", c.baseURL))
+	u := fmt.Sprintf("%s/rest/api/3/search/jql", c.baseURL)
+
+	// Use POST with JSON body
+	requestBody := map[string]interface{}{
+		"jql":        jql,
+		"expand":     "changelog",
+		"maxResults": 1000,
+	}
+
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		return nil, err
 	}
 
-	q := u.Query()
-	q.Set("jql", jql)
-	q.Set("expand", "changelog")
-	q.Set("maxResults", "1000")
-	u.RawQuery = q.Encode()
-
-	req, err := http.NewRequest("GET", u.String(), nil)
+	req, err := http.NewRequest("POST", u, bytes.NewBuffer(body))
 	if err != nil {
 		return nil, err
 	}
 
 	req.SetBasicAuth(c.email, c.apiToken)
 	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.client.Do(req)
 	if err != nil {

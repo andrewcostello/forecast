@@ -34,3 +34,6 @@ Thumbs.db
 *.db
 *.db-shm
 *.db-wal
+
+# Output folder (generated reports/spreadsheets)
+/output/

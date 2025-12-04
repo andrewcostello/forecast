@@ -1,4 +1,4 @@
-module github.com/andrewcostello/forecast
+module bitbucket.org/supermoneygames/forecast
 
 go 1.21
 

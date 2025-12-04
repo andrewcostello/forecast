@@ -12,7 +12,7 @@ brew install jira-cli  # or go install github.com/ankitpokhrel/jira-cli/cmd/jira
 jira init
 
 # Install forecast tool
-go install github.com/andrewcostello/forecast/cmd/forecast@latest
+go install bitbucket.org/supermoneygames/forecast/cmd/forecast@latest
 ```
 
 ### 2. Setup Project (10 minutes)
@@ -348,7 +348,7 @@ Track these to measure success:
 
 - **Docs:** `docs/` directory
 - **Examples:** `examples/` directory (if created)
-- **Issues:** https://github.com/andrewcostello/forecast/issues
+- **Issues:** https://bitbucket.org/supermoneygames/forecast/issues
 - **Reading:**
   - *Thinking, Fast and Slow* by Daniel Kahneman
   - *How Big Things Get Done* by Bent Flyvbjerg

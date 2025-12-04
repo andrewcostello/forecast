@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/andrewcostello/forecast/pkg/forecast"
+	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
 )
 
 // JSONStorage stores items as JSON in .forecast/data.json

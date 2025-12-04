@@ -108,7 +108,7 @@ Compare current work to similar past projects to improve predictions. Build a da
 
 2. **Forecast Tool** - This tool
    ```bash
-   go install github.com/andrewcostello/forecast/cmd/forecast@latest
+   go install bitbucket.org/supermoneygames/forecast/cmd/forecast@latest
    ```
 
 3. **JIRA Configuration**
@@ -202,7 +202,7 @@ This approach:
 
 1. Check the [QUICK_START.md](./QUICK_START.md) troubleshooting section
 2. Review common issues and solutions
-3. Open an issue at https://github.com/andrewcostello/forecast/issues
+3. Open an issue at https://bitbucket.org/supermoneygames/forecast/issues
 
 ---
 

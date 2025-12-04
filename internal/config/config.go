@@ -103,7 +103,7 @@ func InitProject() error {
 	}
 
 	defaultConfig := `# Forecast Configuration
-# See https://github.com/andrewcostello/forecast for documentation
+# See https://bitbucket.org/supermoneygames/forecast for documentation
 
 # Project settings
 project_name: "My Project"

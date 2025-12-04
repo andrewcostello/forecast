@@ -14,7 +14,7 @@
 
 ```bash
 # Clone the repository
-git clone https://github.com/andrewcostello/forecast.git
+git clone https://bitbucket.org/supermoneygames/forecast.git
 cd forecast
 
 # Build

@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrewcostello/forecast/internal/eva"
-	"github.com/andrewcostello/forecast/internal/montecarlo"
-	"github.com/andrewcostello/forecast/pkg/forecast"
+	"bitbucket.org/supermoneygames/forecast/internal/eva"
+	"bitbucket.org/supermoneygames/forecast/internal/montecarlo"
+	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
 )
 
 // Generator creates project reports

@@ -192,7 +192,7 @@ The forecast naturally accounts for these because they're in your historical dat
 ## Getting Started
 
 ### Week 1: Setup
-1. Install the forecast tool: `go install github.com/andrewcostello/forecast/cmd/forecast@latest`
+1. Install the forecast tool: `go install bitbucket.org/supermoneygames/forecast/cmd/forecast@latest`
 2. Run `forecast init` in your project directory
 3. Configure JIRA integration in `.forecast/config.yaml`
 4. Add labels to JIRA for sizes (size:S, size:M, size:L, size:XL) and types

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/andrewcostello/forecast/pkg/forecast"
+	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
 )
 
 func TestNew(t *testing.T) {

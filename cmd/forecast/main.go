@@ -6,12 +6,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrewcostello/forecast/internal/config"
-	"github.com/andrewcostello/forecast/internal/jira"
-	"github.com/andrewcostello/forecast/internal/montecarlo"
-	"github.com/andrewcostello/forecast/internal/referenceclass"
-	"github.com/andrewcostello/forecast/internal/report"
-	"github.com/andrewcostello/forecast/internal/storage"
+	"bitbucket.org/supermoneygames/forecast/internal/config"
+	"bitbucket.org/supermoneygames/forecast/internal/jira"
+	"bitbucket.org/supermoneygames/forecast/internal/montecarlo"
+	"bitbucket.org/supermoneygames/forecast/internal/referenceclass"
+	"bitbucket.org/supermoneygames/forecast/internal/report"
+	"bitbucket.org/supermoneygames/forecast/internal/storage"
 	"github.com/spf13/cobra"
 )
 

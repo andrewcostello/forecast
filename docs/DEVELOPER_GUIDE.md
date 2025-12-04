@@ -6,8 +6,9 @@
 
 View your current tickets:
 ```bash
-jira issue list --status "In Progress" -a$(jira me) --plain --columns KEY,SUMMARY,UPDATED
-jira issue list --status "To Do" -a$(jira me) --plain --columns KEY,SUMMARY,PRIORITY
+# View tickets assigned to you
+forecast jira search "assignee=currentUser() AND status='In Progress'"
+forecast jira search "assignee=currentUser() AND status='To Do'"
 ```
 
 ### 2. Starting Work on a Ticket
@@ -21,10 +22,10 @@ jira issue list --status "To Do" -a$(jira me) --plain --columns KEY,SUMMARY,PRIO
 **If it's not sized, size it now:**
 ```bash
 # Add the appropriate size label
-jira issue edit SMG-123 --label "size:M"
+forecast jira update SMG-123 --labels "size:M"
 
-# Also add a type label if missing
-jira issue edit SMG-123 --label "type:component"
+# Or add multiple labels at once
+forecast jira update SMG-123 --labels "size:M,type:component"
 ```
 
 **Sizing Guide:**
@@ -51,7 +52,7 @@ jira issue edit SMG-123 --label "type:component"
 
 **Move ticket to "In Progress":**
 ```bash
-jira issue move SMG-123 "In Progress"
+forecast jira transition SMG-123 --to "In Progress"
 ```
 
 This starts the **cycle time clock**. From this moment until "Done", we're measuring how long work actually takes.
@@ -67,23 +68,14 @@ This starts the **cycle time clock**. From this moment until "Done", we're measu
 
 **If you get blocked:**
 ```bash
-# Add a comment explaining the blocker
-jira issue comment add SMG-123 "Blocked waiting for API documentation from Platform team"
-
 # Move to "Blocked" status if your team uses it
-jira issue move SMG-123 "Blocked"
+forecast jira transition SMG-123 --to "Blocked" --comment "Waiting for API documentation from Platform team"
 ```
 
 **If you realize the size is wrong:**
 ```bash
-# Remove old size label
-jira issue edit SMG-123 --remove-label "size:M"
-
-# Add correct size label
-jira issue edit SMG-123 --label "size:L"
-
-# Add comment explaining why
-jira issue comment add SMG-123 "Re-sized from M to L - discovered we need to migrate 3 additional components"
+# Update the labels (this replaces all labels, so include the ones you want to keep)
+forecast jira update SMG-123 --labels "size:L,type:component"
 ```
 
 This is **normal and expected**. We learn as we work. The data will show the actual cycle time.
@@ -93,17 +85,12 @@ This is **normal and expected**. We learn as we work. The data will show the act
 When your code is merged and deployed:
 
 ```bash
-# Add a completion comment
-jira issue comment add SMG-123 "Completed:
+# Move to Done with a completion comment
+forecast jira transition SMG-123 --to "Done" --comment "Completed:
 - Implemented user authentication flow
 - Added unit and integration tests
 - Updated API documentation
-- Deployed to staging
-
-Files modified: auth/login.ts, auth/session.ts, tests/auth.test.ts"
-
-# Move to Done
-jira issue move SMG-123 "Done"
+- Deployed to staging"
 ```
 
 This stops the **cycle time clock**. The forecast tool will now include this item in future predictions.
@@ -115,10 +102,11 @@ forecast sync
 
 ### 5. End of Day
 
-Optional but recommended:
+Optional but recommended - add a progress comment:
 ```bash
-# Add a quick log of what you worked on
-jira issue comment add SMG-123 "EOD: Completed authentication flow, tests passing. Tomorrow: Deploy to staging and verify."
+# You can add comments without transitioning using the JIRA web interface
+# or check the ticket status
+forecast jira get SMG-123
 ```
 
 ## Weekly Habits
@@ -133,7 +121,7 @@ forecast sync
 forecast report
 
 # Check your tickets
-jira issue list -a$(jira me) --plain
+forecast jira search "assignee=currentUser() AND status not in (Done, Canceled)"
 ```
 
 ### Friday: Reflect and Update
@@ -146,9 +134,7 @@ forecast sync
 forecast report
 
 # Review completed tickets - were the sizes accurate?
-jira issue list --status "Done" -a$(jira me) \
-  --updated-after -7d \
-  --plain --columns KEY,SUMMARY,CREATED,UPDATED
+forecast jira search "assignee=currentUser() AND status=Done AND updated >= -7d"
 ```
 
 Ask yourself:
@@ -162,9 +148,7 @@ Ask yourself:
 
 1. **Review last week's completed tickets**
    ```bash
-   jira issue list --status "Done" \
-     --updated-after -7d \
-     --plain --columns KEY,SUMMARY,LABELS
+   forecast jira search "project=SMG AND status=Done AND updated >= -7d"
    ```
 
 2. **Discuss surprises**
@@ -213,27 +197,22 @@ This is how teams calibrate over time. After 3-4 weeks, your sizing becomes very
 ## Example: Full Ticket Lifecycle
 
 ```bash
-# 1. Pick up a ticket
-jira issue view SMG-345
-# (Review description, acceptance criteria)
+# 1. Find and review a ticket
+forecast jira get SMG-345
 
 # 2. Size it if not already sized
-jira issue edit SMG-345 --label "size:M" --label "type:component"
+forecast jira update SMG-345 --labels "size:M,type:component"
 
-# 3. Assign to yourself
-jira issue assign SMG-345 $(jira me)
+# 3. Move to In Progress (starts cycle time)
+forecast jira transition SMG-345 --to "In Progress"
 
-# 4. Move to In Progress (starts cycle time)
-jira issue move SMG-345 "In Progress"
-
-# 5. Do the work...
+# 4. Do the work...
 # (code, test, review)
 
-# 6. Complete it
-jira issue comment add SMG-345 "Completed user profile component with avatar upload"
-jira issue move SMG-345 "Done"
+# 5. Complete it
+forecast jira transition SMG-345 --to "Done" --comment "Completed user profile component with avatar upload"
 
-# 7. Update forecast
+# 6. Update forecast
 forecast sync
 ```
 
@@ -242,19 +221,25 @@ forecast sync
 Add to your `.zshrc` or `.bashrc`:
 
 ```bash
-# Quick ticket status
-alias jira-my="jira issue list -a\$(jira me) --plain"
+# Quick ticket lookup
+alias jira-get="forecast jira get"
+
+# Search my open tickets
+alias jira-my="forecast jira search 'assignee=currentUser() AND status not in (Done, Canceled)'"
+
+# Search in-progress tickets
+alias jira-wip="forecast jira search 'assignee=currentUser() AND status=\"In Progress\"'"
 
 # Start work on a ticket
 function jira-start() {
-  jira issue assign "$1" $(jira me)
-  jira issue move "$1" "In Progress"
+  forecast jira transition "$1" --to "In Progress"
   echo "Started work on $1"
 }
 
 # Complete a ticket
 function jira-done() {
-  jira issue move "$1" "Done"
+  local comment="${2:-Completed}"
+  forecast jira transition "$1" --to "Done" --comment "$comment"
   echo "Completed $1 - syncing forecast data..."
   forecast sync
 }
@@ -267,7 +252,7 @@ Usage:
 ```bash
 jira-start SMG-345
 # ... do work ...
-jira-done SMG-345
+jira-done SMG-345 "Implemented the feature with tests"
 ```
 
 ## Tips for Accurate Sizing

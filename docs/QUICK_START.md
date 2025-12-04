@@ -2,20 +2,35 @@
 
 ## For Team Leads
 
-### 1. Install Tools (5 minutes)
+### 1. Install Forecast Tool (5 minutes)
 
 ```bash
-# Install JIRA CLI
-brew install jira-cli  # or go install github.com/ankitpokhrel/jira-cli/cmd/jira@latest
+# Clone and build the forecast tool
+git clone https://bitbucket.org/supermoneygames/forecast.git
+cd forecast
+go build -o forecast cmd/forecast/main.go
 
-# Configure JIRA CLI
-jira init
-
-# Install forecast tool
+# Or install directly
 go install bitbucket.org/supermoneygames/forecast/cmd/forecast@latest
 ```
 
-### 2. Setup Project (10 minutes)
+### 2. Setup JIRA Credentials
+
+```bash
+# Create credentials directory
+mkdir -p ~/.config/jira
+
+# Save your JIRA API token
+echo "your_api_token_here" > ~/.config/jira/credentials
+chmod 600 ~/.config/jira/credentials
+```
+
+To get your JIRA API token:
+1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
+2. Click "Create API token"
+3. Copy and save the token
+
+### 3. Setup Project (10 minutes)
 
 ```bash
 # Navigate to your project directory
@@ -35,7 +50,7 @@ Example `.forecast/config.yaml`:
 jira:
   url: https://yourcompany.atlassian.net
   email: your.email@company.com
-  api_token: ${JIRA_API_TOKEN}
+  api_token_file: ~/.config/jira/credentials
   project_key: PROJ
   epic: PROJ-123
   labels:
@@ -63,7 +78,7 @@ jira_mapping:
         forecast: "XL"
 ```
 
-### 3. Team Onboarding (30 minutes)
+### 4. Team Onboarding (30 minutes)
 
 **Present to the team:**
 
@@ -90,16 +105,15 @@ jira_mapping:
    - `docs/DEVELOPER_GUIDE.md` - Day-to-day workflow
    - Hold Q&A session
 
-### 4. Initial Data Collection (2-4 weeks)
+### 5. Initial Data Collection (2-4 weeks)
 
 **Week 1-2: Size everything**
 ```bash
-# Bulk add size labels to existing tickets
-jira issue list --project PROJ --status "To Do" --plain | \
-  while read -r key summary; do
-    # Review and size each ticket
-    jira issue edit "$key" --label "size:M" --label "type:component"
-  done
+# Search for untagged tickets
+forecast jira search "project=PROJ AND status='To Do' AND labels is EMPTY"
+
+# Add size and type labels to each ticket
+forecast jira update PROJ-123 --labels "size:M,type:component"
 ```
 
 **Week 2-4: Track cycle times**
@@ -110,7 +124,7 @@ jira issue list --project PROJ --status "To Do" --plain | \
 
 **Goal:** 15-20 completed items with cycle time data
 
-### 5. First Forecast (Week 4+)
+### 6. First Forecast (Week 4+)
 
 ```bash
 # Sync latest data
@@ -134,23 +148,19 @@ forecast run --confidence 50,70,85,95
 
 ```bash
 # Morning: Check your tickets
-jira issue list -a$(jira me) --plain
+forecast jira search "assignee=currentUser() AND status='In Progress'"
 
-# Starting work
-jira issue assign PROJ-123 $(jira me)
-jira issue move PROJ-123 "In Progress"
+# Starting work - transition the ticket
+forecast jira transition PROJ-123 --to "In Progress"
 
 # ... do the work ...
 
 # Completing work
-jira issue comment add PROJ-123 "Summary of completion"
-jira issue move PROJ-123 "Done"
+forecast jira transition PROJ-123 --to "Done" --comment "Implemented feature X"
 forecast sync
 ```
 
 ### Sizing Cheat Sheet
-
-Save this as a comment in your terminal:
 
 ```bash
 # S (Small) - 2-4 hours
@@ -173,26 +183,34 @@ Save this as a comment in your terminal:
 Add to `.zshrc` or `.bashrc`:
 
 ```bash
-# Quick JIRA commands
-alias jira-my="jira issue list -a\$(jira me) --plain"
-alias jira-done="jira issue list --status Done --updated-after -7d --plain"
+# Quick ticket lookup
+alias jira-get="forecast jira get"
 
-# Start work
+# Search my tickets
+alias jira-my="forecast jira search 'assignee=currentUser() AND status not in (Done, Canceled)'"
+
+# Start work on a ticket
 function jira-start() {
-  jira issue assign "$1" $(jira me)
-  jira issue move "$1" "In Progress"
+  forecast jira transition "$1" --to "In Progress"
   echo "✓ Started $1"
 }
 
-# Complete work
+# Complete work on a ticket
 function jira-complete() {
-  jira issue move "$1" "Done"
+  forecast jira transition "$1" --to "Done" --comment "$2"
   forecast sync
   echo "✓ Completed $1"
 }
 
 # Forecast status
 alias forecast-status="forecast sync && forecast report"
+```
+
+Usage:
+```bash
+jira-start PROJ-123
+# ... do work ...
+jira-complete PROJ-123 "Implemented the feature"
 ```
 
 ## For AI Assistants
@@ -288,7 +306,7 @@ forecast run
 
 ```bash
 # Review last week's completed work
-jira issue list --status "Done" --updated-after -7d --plain
+forecast jira search "project=PROJ AND status=Done AND updated >= -7d"
 
 # Discuss:
 # - Were sizes accurate?

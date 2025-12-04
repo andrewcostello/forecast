@@ -8,51 +8,43 @@ When working on a software project that uses probabilistic forecasting and the f
 
 1. **Never give time estimates** - Use relative sizes (S/M/L/XL) instead
 2. **Always add size and type labels** - Every ticket needs `size:X` and `type:X` labels
-3. **Update JIRA properly** - Follow the workflow: assign → move to "In Progress" → complete → move to "Done"
+3. **Update JIRA properly** - Follow the workflow: transition to "In Progress" → complete → transition to "Done"
 4. **Sync forecast data** - Run `forecast sync` after completing work
 5. **Use actual data** - Reference historical cycle times, not estimates
 
 ## When Starting Work on a Ticket
 
-**CRITICAL: When you implement features, YOU MUST actually execute these JIRA commands, not just show them as examples.**
+**CRITICAL: When you implement features, YOU MUST actually execute these forecast commands, not just show them as examples.**
 
 **Step-by-step workflow:**
 
 ```bash
 # 1. View the ticket details
-jira issue view {TICKET-KEY}
+forecast jira get {TICKET-KEY}
 
 # 2. Check if it has size and type labels
 # If missing, add them:
-jira issue edit {TICKET-KEY} --label "size:M" --label "type:component"
+forecast jira update {TICKET-KEY} --labels "size:M,type:component"
 
-# 3. Assign to yourself (use the configured user) - EXECUTE THIS
-jira issue assign {TICKET-KEY} $(jira me)
+# 3. Move to "In Progress" (starts cycle time tracking) - EXECUTE THIS
+forecast jira transition {TICKET-KEY} --to "In Progress"
 
-# 4. Move to "In Progress" (starts cycle time tracking) - EXECUTE THIS
-jira issue move {TICKET-KEY} "In Progress"
-
-# 5. Do the work...
+# 4. Do the work...
 # (implement feature, write tests, etc.)
 
-# 6. When complete, add summary comment - EXECUTE THIS
-jira issue comment add {TICKET-KEY} "Completed: [summary of work]
+# 5. When complete, move to Done with summary comment - EXECUTE THIS
+forecast jira transition {TICKET-KEY} --to "Done" --comment "Completed: [summary of work]
 
 Files modified:
 - [list of files]
 
-Tests: [status]
+Tests: [status]"
 
-"
-
-# 7. Move to "Done" (stops cycle time tracking) - EXECUTE THIS
-jira issue move {TICKET-KEY} "Done"
-
-# 8. Sync forecast data - EXECUTE THIS
+# 6. Sync forecast data - EXECUTE THIS
 forecast sync
 ```
 
-**When to execute these JIRA commands:**
+**When to execute these commands:**
 
 - ✅ **DO execute** when implementing a feature the user requested
 - ✅ **DO execute** when user says "work on ticket SMG-123"
@@ -125,7 +117,7 @@ AI: "That will take about 3-5 days"
 
 ### ✅ Correct: Using Relative Sizing
 
-````
+```
 User: "How long will it take to implement user authentication?"
 AI: "Let me break this down into sized items:
 
@@ -137,18 +129,14 @@ AI: "Let me break this down into sized items:
 
 That's 3 Medium and 2 Small items total.
 
-Based on your project's .forecast/config.yaml, this epic would be:
-SMG-XXX with labels: auth, phase1-refactor
-
 To get a probabilistic forecast, I'll create these tickets and run:
 ```bash
 forecast sync
 forecast run
-````
+```
 
 Would you like me to create these tickets in JIRA?"
-
-````
+```
 
 ## Providing Project Forecasts
 
@@ -163,7 +151,7 @@ forecast run --confidence 50,70,85,95
 
 # 3. Generate report
 forecast report
-````
+```
 
 **Then interpret the results for the user:**
 
@@ -199,7 +187,7 @@ Recommendations:
 1. **Check if tickets exist and are sized**
 
    ```bash
-   jira issue list --jql "project = SMG AND summary ~ 'auth*'" --plain
+   forecast jira search "project=SMG AND summary ~ 'auth*'"
    ```
 
 2. **If tickets don't exist, break down the work first**
@@ -236,8 +224,8 @@ Recommendations:
 After finishing implementation:
 
 ```bash
-# Add completion comment with details - EXECUTE THIS
-jira issue comment add {TICKET-KEY} "Implementation complete:
+# Move to Done with completion comment - EXECUTE THIS
+forecast jira transition {TICKET-KEY} --to "Done" --comment "Implementation complete:
 
 Changes:
 - Implemented user authentication flow
@@ -251,12 +239,8 @@ Files modified:
 - src/middleware/auth.ts
 - tests/auth.test.ts
 
-Tests: ✅ All passing (12 new tests added)
-Coverage: 94% on auth module
-"
-
-# Move to Done - EXECUTE THIS
-jira issue move {TICKET-KEY} "Done"
+Tests: All passing (12 new tests added)
+Coverage: 94% on auth module"
 
 # Sync forecast data - EXECUTE THIS
 forecast sync
@@ -276,11 +260,10 @@ This example shows the complete workflow from ticket creation through completion
 **Step 1: Create and size the ticket**
 
 ```bash
-jira issue create -p EP2 -t Task \
-  -s "Extract Auth/Session to libs/core" \
-  -b "Move Auth and Session logic to shared library." \
-  -l "size:M" -l "type:refactor" \
-  --no-input
+forecast jira create --summary "Extract Auth/Session to libs/core" \
+  --type Task \
+  --description "Move Auth and Session logic to shared library." \
+  --labels "size:M,type:refactor"
 # Created: EP2-3
 ```
 
@@ -289,67 +272,32 @@ jira issue create -p EP2 -t Task \
 - Create `implementation_plan.md` artifact
 - Use `notify_user` to request approval with plan path
 
-**Step 3: Update ticket body with full details**
+**Step 3: Move to In Progress**
 
 ```bash
-jira issue edit EP2-3 -b "Extract Auth and Session logic to libs/core.
-
-## Implementation Overview
-Platform-agnostic auth modules for web and native reusability
-
-### Components Delivered
-- SessionManager class (session state management)
-- ApiClient integration (auto-inject auth tokens)
-- Auth TypeScript types
-- Comprehensive unit tests (100% coverage)
-
-### Files Modified
-- libs/core/src/lib/auth/session-manager.ts (NEW)
-- libs/core/src/lib/api/api-client.ts (MODIFIED)
-- libs/core/src/index.ts (MODIFIED)
-
-### Verification
-✅ Unit tests (25 total, 100% coverage)
-✅ Build successful
-
-## Status
-✅ Plan approved
-🚧 In progress"
-# Press Enter at prompts
+forecast jira transition EP2-3 --to "In Progress"
 ```
 
-**Step 4: Assign and start**
+**Step 4: Implement** → Create SessionManager, tests, ApiClient integration
+
+**Step 5: Complete**
 
 ```bash
-jira issue assign EP2-3 $(jira me)
-jira issue move EP2-3 "In Progress"
-```
-
-**Step 5: Implement** → Create SessionManager, tests, ApiClient integration
-
-**Step 6: Complete**
-
-```bash
-jira issue comment add EP2-3 "✅ Complete!
+forecast jira transition EP2-3 --to "Done" --comment "Complete!
 - 25 tests, 100% coverage
 - Build successful
 See walkthrough.md"
-
-jira issue move EP2-3 "Done"
 ```
 
-**Step 7: Create follow-up tasks**
+**Step 6: Create follow-up tasks**
 
 ```bash
-jira issue create -p EP2 -t Task \
-  -s "Refactor StoreContextProvider to use SessionManager" \
-  -b "..." -l "size:S" -l "type:refactor" --no-input
-jira issue link EP2-17 EP2-3 "Relates"
-
-# Repeat for other follow-up tasks
+forecast jira create --summary "Refactor StoreContextProvider to use SessionManager" \
+  --type Task \
+  --labels "size:S,type:refactor"
 ```
 
-**Step 8: Sync forecast**
+**Step 7: Sync forecast**
 
 ```bash
 forecast sync
@@ -423,129 +371,39 @@ Use `notify_user` tool with:
 - `BlockedOnUser`: true
 - `ConfidenceScore`: 0.0-1.0 based on plan certainty
 
-### 3. Upon Approval - Update JIRA Ticket Body
-
-**CRITICAL: Update the ticket BODY/DESCRIPTION with implementation details, NOT just comments.**
+### 3. Upon Approval - Start Work
 
 ```bash
-# Update ticket description with full implementation details
-jira issue edit EP2-XXX -b "Extract Auth/Session logic to libs/core
-
-## Implementation Overview
-Platform-agnostic auth modules for web and native reusability
-
-### Components
-- SessionManager class (session state management)
-- ApiClient integration (auto-inject auth tokens)
-- Auth TypeScript types
-- Comprehensive unit tests (100% coverage target)
-
-### Files to Modify
-- libs/core/src/lib/auth/session-manager.ts (NEW)
-- libs/core/src/lib/api/api-client.ts (MODIFY)
-- libs/core/src/index.ts (MODIFY - exports)
-
-### Verification Plan
-- Unit tests for SessionManager (target: 14+ tests)
-- ApiClient integration tests
-- Build verification (npx nx build core)
-- Coverage report (target: 100%)
-
-## Status
-✅ Implementation plan approved
-🚧 Implementation in progress
-
-See implementation_plan.md artifact for full details."
+forecast jira transition EP2-XXX --to "In Progress"
 ```
 
-**Note:** The `jira issue edit` command will prompt interactively:
-
-1. It may ask to confirm the summary - press Enter to keep existing
-2. It will show "What's next? Submit" - press Enter to confirm
-
-**Alternative if prompts are problematic:** Add details as a comment initially, then manually update the description via JIRA web UI.
-
-### 4. Assign and Move to In Progress
+### 4. Complete Implementation & Update Ticket
 
 ```bash
-jira issue assign EP2-XXX $(jira me)
-jira issue move EP2-XXX "In Progress"
-```
+# Move to Done with deliverables summary
+forecast jira transition EP2-XXX --to "Done" --comment "Implementation complete!
 
-### 5. Create Follow-Up Tasks (Recommended Approach)
-
-**IMPORTANT**: Most JIRA projects don't support sub-tasks under Task types. Instead, create separate linked tasks.
-
-**Why separate tasks are better:**
-
-- ✅ Each task tracks its own cycle time independently
-- ✅ More granular data for probabilistic forecasting
-- ✅ Can be worked on in parallel if needed
-- ✅ Clearer completion tracking
-
-```bash
-# Create follow-up task with proper description
-jira issue create -p EP2 -t Task \
-  -s "Refactor StoreContextProvider to use libs/core SessionManager" \
-  -b "Update native app React Context to use SessionManager from libs/core.
-
-## Dependencies
-- EP2-3 (completed)
-
-## Changes
-- Import SessionManager from @workspace/core
-- Replace local session state
-- Update login/logout methods
-
-## Verification
-- All auth flows still work
-- Session persists across restarts" \
-  -l "size:S" -l "type:refactor" \
-  --no-input
-
-# Link to parent task
-jira issue link EP2-17 EP2-3 "Relates"
-```
-
-**Available link types**: 'Blocks', 'Relates', 'Duplicate', etc.
-
-- Use "Blocks" if task must complete before another
-- Use "Relates" for general relationship
-
-### 6. Complete Implementation & Update Ticket
-
-```bash
-# Add completion comment with deliverables
-jira issue comment add EP2-XXX "✅ Implementation complete!
-
-**Results:**
+Results:
 - SessionManager: 14 tests, 100% coverage
 - Build successful
 - All modules exported
 
 See walkthrough.md for details."
 
-# Move to Done (ends cycle time tracking)
-jira issue move EP2-XXX "Done"
-
 # Sync with forecast tool
 forecast sync
 ```
 
-### 7. Create Follow-Up Tasks for Next Steps
+### 5. Create Follow-Up Tasks for Next Steps
 
 If implementation reveals additional work:
 
 ```bash
 # Create new tasks for follow-up work
-jira issue create -p EP2 -t Task \
-  -s "Follow-up task name" \
-  -b "Detailed description with dependencies" \
-  -l "size:S" -l "type:refactor" \
-  --no-input
-
-# Link to completed parent
-jira issue link EP2-NEW EP2-XXX "Relates"
+forecast jira create --summary "Follow-up task name" \
+  --type Task \
+  --description "Detailed description with dependencies" \
+  --labels "size:S,type:refactor"
 ```
 
 ## Dos and Don'ts
@@ -572,37 +430,38 @@ jira issue link EP2-NEW EP2-XXX "Relates"
 
 ```bash
 # View your tickets
-jira issue list -a$(jira me) --plain
+forecast jira search "assignee=currentUser() AND status not in (Done, Canceled)"
 
 # View specific ticket
-jira issue view {TICKET-KEY}
+forecast jira get {TICKET-KEY}
 
 # Create ticket with size
-jira issue create --project SMG --type Task \
-  --summary "Task name" \
-  --label "size:M" --label "type:component"
+forecast jira create --summary "Task name" \
+  --type Task \
+  --labels "size:M,type:component"
 
 # Start work
-jira issue assign {TICKET-KEY} $(jira me)
-jira issue move {TICKET-KEY} "In Progress"
+forecast jira transition {TICKET-KEY} --to "In Progress"
 
 # Complete work
-jira issue comment add {TICKET-KEY} "Completion summary"
-jira issue move {TICKET-KEY} "Done"
+forecast jira transition {TICKET-KEY} --to "Done" --comment "Completion summary"
+
+# Update ticket labels
+forecast jira update {TICKET-KEY} --labels "size:M,type:component"
+
+# List available transitions
+forecast jira transitions {TICKET-KEY}
 
 # Forecast commands
 forecast sync                    # Sync from JIRA
 forecast report                  # Show project status
 forecast run                     # Run Monte Carlo simulation
 forecast run --confidence 70,95  # Specific confidence levels
-
-# View epic status
-jira issue list --parent {EPIC-KEY} --plain
 ```
 
 ## Example Conversation Flow
 
-````
+```
 User: "We need to add user notifications. How long will that take?"
 
 AI: "Let me break down user notifications into sized items:
@@ -651,7 +510,7 @@ Would you like me to:
 A) Create these tickets in JIRA
 B) Break down the Large item into smaller pieces
 C) Show alternative scoping options?"
-````
+```
 
 ## Critical Reminders
 

@@ -1,10 +1,10 @@
-###Forecast - Probabilistic Software Project Forecasting
+### Forecast - Probabilistic Software Project Forecasting
 
 **Forecast** uses Reference Class Forecasting, Earned Value Analysis, and Monte Carlo simulation to provide probabilistic completion forecasts for software projects.
 
 ## Features
 
-- **JIRA Integration** - Automatically pull cycle time data from JIRA
+- **JIRA Integration** - Direct REST API integration for managing tickets and pulling cycle time data
 - **Monte Carlo Simulation** - Probabilistic forecasts with confidence levels
 - **Earned Value Analysis** - Track SPI, CPI, and earned schedule
 - **Reference Class Database** - Build historical database for better predictions
@@ -43,17 +43,22 @@ Edit `.forecast/config.yaml`:
 jira:
   url: https://yourcompany.atlassian.net
   email: your.email@company.com
-  api_token: ${JIRA_API_TOKEN}
+  api_token_file: ~/.config/jira/credentials  # or use api_token: ${JIRA_API_TOKEN}
   project_key: PROJ
   epic: PROJ-123
   labels:
     - phase1-refactor
 ```
 
-Set your JIRA API token:
+Set your JIRA API token (choose one method):
 
 ```bash
+# Option 1: Environment variable
 export JIRA_API_TOKEN="your_token_here"
+
+# Option 2: Credentials file (recommended)
+echo "your_token_here" > ~/.config/jira/credentials
+chmod 600 ~/.config/jira/credentials
 ```
 
 ### 3. Sync Data
@@ -148,6 +153,37 @@ forecast reference-class list
 
 # Add current project to reference database
 forecast reference-class add
+```
+
+### `forecast jira`
+
+Manage JIRA tickets directly via REST API:
+
+```bash
+# Create a new ticket
+forecast jira create --summary "Fix login bug" --type Bug --priority High
+forecast jira create --summary "Add dark mode" --type Story --labels ui,feature
+
+# Update a ticket
+forecast jira update PROJ-123 --priority Highest
+forecast jira update PROJ-123 --labels security,urgent
+
+# Get ticket details
+forecast jira get PROJ-123
+
+# Transition a ticket
+forecast jira transition PROJ-123 --to "In Development"
+forecast jira transition PROJ-123 --to Done --comment "Completed"
+
+# Search tickets
+forecast jira search "project=PROJ AND status='To Do'"
+
+# List available transitions for a ticket
+forecast jira transitions PROJ-123
+
+# List available issue types and priorities
+forecast jira types
+forecast jira priorities
 ```
 
 ## Configuration
@@ -266,10 +302,9 @@ Status: Done
 
 1. Go to https://id.atlassian.com/manage-profile/security/api-tokens
 2. Click "Create API token"
-3. Copy token and set environment variable:
-   ```bash
-   export JIRA_API_TOKEN="your_token"
-   ```
+3. Copy token and either:
+   - Set environment variable: `export JIRA_API_TOKEN="your_token"`
+   - Save to file: `echo "your_token" > ~/.config/jira/credentials && chmod 600 ~/.config/jira/credentials`
 
 ## Reference Class Database
 
@@ -312,7 +347,7 @@ Solution: Complete at least 20-30% of items before running Monte Carlo. The tool
 ### JIRA authentication fails
 
 Check:
-1. JIRA_API_TOKEN environment variable is set
+1. API token is set (environment variable or credentials file)
 2. Email matches your JIRA account
 3. Token has correct permissions
 
@@ -331,13 +366,14 @@ Possible causes:
 forecast/
 ├── cmd/forecast/          # CLI entry point
 ├── internal/
-│   ├── jira/             # JIRA API client
+│   ├── jira/             # JIRA REST API client
 │   ├── montecarlo/       # Monte Carlo engine
 │   ├── eva/              # Earned Value Analysis
 │   ├── referenceclass/   # Reference database
 │   ├── report/           # Report generation
 │   └── config/           # Configuration
 ├── pkg/forecast/         # Public types
+├── output/               # Generated reports (gitignored)
 └── configs/              # Example configs
 ```
 

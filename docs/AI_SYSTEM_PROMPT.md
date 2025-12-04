@@ -33,24 +33,22 @@ Every ticket must follow this workflow:
 
 ```bash
 # 1. View ticket
-jira issue view {TICKET-KEY}
+forecast jira get {TICKET-KEY}
 
 # 2. Add size and type labels if missing
-jira issue edit {TICKET-KEY} --label "size:M" --label "type:component"
+forecast jira update {TICKET-KEY} --labels "size:M,type:component"
 
-# 3. Assign and start (EXECUTE THIS)
-jira issue assign {TICKET-KEY} $(jira me)
-jira issue move {TICKET-KEY} "In Progress"  # Starts cycle time
+# 3. Start work (EXECUTE THIS)
+forecast jira transition {TICKET-KEY} --to "In Progress"  # Starts cycle time
 
 # 3a. Attach Implementation Plan (EXECUTE THIS)
 # If you created an implementation_plan.md and it was approved:
-jira issue comment add {TICKET-KEY} "Implementation Plan: \n\n$(cat implementation_plan.md)"
+# Add as a comment when transitioning or use the JIRA web interface
 
 # 4. Do the work...
 
 # 5. Complete (EXECUTE THIS)
-jira issue comment add {TICKET-KEY} "Summary of completion"
-jira issue move {TICKET-KEY} "Done"  # Stops cycle time
+forecast jira transition {TICKET-KEY} --to "Done" --comment "Summary of completion"
 
 # 6. Update forecast (EXECUTE THIS)
 forecast sync
@@ -126,8 +124,8 @@ forecast report        # Show project status
 **YOU MUST execute these commands after implementing any feature:**
 
 ```bash
-# 1. Add detailed completion comment (EXECUTE THIS)
-jira issue comment add {TICKET-KEY} "Implementation complete:
+# 1. Move to Done with detailed completion comment (EXECUTE THIS - stops cycle time tracking)
+forecast jira transition {TICKET-KEY} --to "Done" --comment "Implementation complete:
 
 Changes:
 - [List of changes]
@@ -137,13 +135,10 @@ Files modified:
 
 Tests: ✅ [Status]"
 
-# 2. Move to Done (EXECUTE THIS - stops cycle time tracking)
-jira issue move {TICKET-KEY} "Done"
-
-# 3. Update forecast data (EXECUTE THIS)
+# 2. Update forecast data (EXECUTE THIS)
 forecast sync
 
-# 4. Show updated status (EXECUTE THIS)
+# 3. Show updated status (EXECUTE THIS)
 forecast report
 ```
 
@@ -156,23 +151,21 @@ AI: "I'll implement user authentication and track it in JIRA.
 
 First, let me check if a ticket exists..."
 
-[Executes: jira issue list --jql "summary ~ 'auth*'"]
+[Executes: forecast jira search "project=SMG AND summary ~ 'auth*'"]
 
 "No ticket found. Creating one..."
 
-[Executes: jira issue create --project SMG --type Task --summary "Implement user authentication" --label "size:L" --label "type:component"]
+[Executes: forecast jira create --summary "Implement user authentication" --type Task --labels "size:L,type:component"]
 
 "Starting work..."
 
-[Executes: jira issue assign SMG-234 $(jira me)]
-[Executes: jira issue move SMG-234 "In Progress"]
+[Executes: forecast jira transition SMG-234 --to "In Progress"]
 
 [Implements the feature...]
 
 "Authentication implemented. Completing ticket..."
 
-[Executes: jira issue comment add SMG-234 "Implementation complete: ..."]
-[Executes: jira issue move SMG-234 "Done"]
+[Executes: forecast jira transition SMG-234 --to "Done" --comment "Implementation complete: ..."]
 [Executes: forecast sync]
 
 "✓ User authentication complete. Ticket SMG-234 is now Done and forecast data updated."
@@ -181,20 +174,21 @@ First, let me check if a ticket exists..."
 ### Available Commands
 
 ```bash
-# JIRA Commands
-jira issue list -a$(jira me) --plain              # Your tickets
-jira issue view {KEY}                             # View ticket
-jira issue create --project SMG --type Task       # Create ticket
-jira issue edit {KEY} --label "size:M"            # Add labels
-jira issue assign {KEY} $(jira me)                # Assign
-jira issue move {KEY} "In Progress"               # Change status
-jira issue comment add {KEY} "text"               # Add comment
+# JIRA Commands (via forecast tool)
+forecast jira search "assignee=currentUser()"    # Your tickets
+forecast jira get {KEY}                          # View ticket
+forecast jira create --summary "Task" --type Task # Create ticket
+forecast jira update {KEY} --labels "size:M"     # Update labels
+forecast jira transition {KEY} --to "In Progress" # Change status
+forecast jira transitions {KEY}                  # List available transitions
+forecast jira types                              # List issue types
+forecast jira priorities                         # List priorities
 
 # Forecast Commands
-forecast sync                                     # Sync from JIRA
-forecast report                                   # Project status
-forecast run                                      # Monte Carlo forecast
-forecast run --confidence 50,70,85,95             # Specific levels
+forecast sync                                    # Sync from JIRA
+forecast report                                  # Project status
+forecast run                                     # Monte Carlo forecast
+forecast run --confidence 50,70,85,95            # Specific levels
 ```
 
 ### Critical Don'ts

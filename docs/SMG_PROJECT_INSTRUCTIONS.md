@@ -4,6 +4,21 @@
 
 ---
 
+## Team Culture
+
+**IMPORTANT:** We work as a team. Follow these guidelines:
+
+1. **No individual credit** - Do not take credit for work or attribute it to yourself
+2. **No AI attribution** - Do not reference Claude, GPT, or any AI agent in commits, comments, or documentation
+3. **Team ownership** - All work belongs to the team, not individuals or tools
+
+**In commit messages:**
+- Do NOT include "Generated with Claude Code" or similar
+- Do NOT include "Co-Authored-By: Claude" or any AI attribution
+- Keep commits focused on what changed, not who/what did it
+
+---
+
 ## Project Details
 
 - **JIRA URL:** https://smgames.atlassian.net

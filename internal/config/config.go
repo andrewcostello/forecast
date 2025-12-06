@@ -15,9 +15,18 @@ type Config struct {
 	TeamSize       int                  `mapstructure:"team_size"`
 	TeamCapacity   float64              `mapstructure:"team_capacity"` // Hours per day
 	JIRA           JIRAConfig           `mapstructure:"jira"`
+	Projects       []ProjectConfig      `mapstructure:"projects"` // Multiple project/epic tracking
 	ItemTypes      []ItemTypeConfig     `mapstructure:"item_types"`
 	ReferenceClass ReferenceClassConfig `mapstructure:"reference_class"`
 	JIRAMapping    JIRAMappingConfig    `mapstructure:"jira_mapping"`
+}
+
+// ProjectConfig defines a trackable project/initiative
+type ProjectConfig struct {
+	Name     string `mapstructure:"name"`      // Display name
+	Epic     string `mapstructure:"epic"`      // Epic key (e.g., SMG-1688)
+	Key      string `mapstructure:"key"`       // Short key for CLI (e.g., "monorepo")
+	Capacity float64 `mapstructure:"capacity"` // Optional: team capacity for this project
 }
 
 type JIRAConfig struct {
@@ -87,6 +96,21 @@ func Get() *Config {
 		current = &Config{}
 	}
 	return current
+}
+
+// GetProject returns a project config by key or epic
+func (c *Config) GetProject(keyOrEpic string) *ProjectConfig {
+	for i := range c.Projects {
+		if c.Projects[i].Key == keyOrEpic || c.Projects[i].Epic == keyOrEpic {
+			return &c.Projects[i]
+		}
+	}
+	return nil
+}
+
+// GetAllProjects returns all configured projects
+func (c *Config) GetAllProjects() []ProjectConfig {
+	return c.Projects
 }
 
 // InitProject creates a new .forecast directory with default config

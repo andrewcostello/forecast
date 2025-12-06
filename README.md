@@ -396,6 +396,17 @@ make install
 2. **New report types**: Edit `internal/report/markdown.go`
 3. **New reference class types**: Edit `internal/referenceclass/database.go`
 
+## Documentation
+
+| Document | Audience | Description |
+|----------|----------|-------------|
+| [QUICK_START.md](docs/QUICK_START.md) | Team Leads | Setup guide and team onboarding |
+| [COMMAND_REFERENCE.md](docs/COMMAND_REFERENCE.md) | All Users | Quick reference for all commands |
+| [DEVELOPER_GUIDE.md](docs/DEVELOPER_GUIDE.md) | Developers | Day-to-day workflow guide |
+| [METHODOLOGY.md](docs/METHODOLOGY.md) | Everyone | Why probabilistic forecasting works |
+| [AI_AGENT_GUIDE.md](docs/AI_AGENT_GUIDE.md) | AI Agents | Instructions for AI assistants |
+| [AI_SYSTEM_PROMPT.md](docs/AI_SYSTEM_PROMPT.md) | AI Config | System prompt for AI tools |
+
 ## Contributing
 
 Contributions welcome! Please:

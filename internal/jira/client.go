@@ -83,8 +83,10 @@ type ChangeItem struct {
 
 // SearchResponse represents JIRA search API response
 type SearchResponse struct {
-	Issues []Issue `json:"issues"`
-	Total  int     `json:"total"`
+	Issues        []Issue `json:"issues"`
+	Total         int     `json:"total"`
+	NextPageToken string  `json:"nextPageToken,omitempty"`
+	IsLast        bool    `json:"isLast,omitempty"`
 }
 
 // FetchIssues fetches issues from JIRA based on config
@@ -134,44 +136,64 @@ func (c *Client) buildJQL(cfg *config.Config) string {
 func (c *Client) search(jql string) ([]Issue, error) {
 	u := fmt.Sprintf("%s/rest/api/3/search/jql", c.baseURL)
 
-	// Use POST with JSON body
-	requestBody := map[string]interface{}{
-		"jql":        jql,
-		"expand":     "changelog",
-		"maxResults": 1000,
+	var allIssues []Issue
+	var nextPageToken string
+
+	for {
+		// Use POST with JSON body
+		requestBody := map[string]interface{}{
+			"jql":        jql,
+			"expand":     "changelog",
+			"fields":     []string{"summary", "status", "issuetype", "labels", "assignee", "created", "updated", "resolution"},
+			"maxResults": 100,
+		}
+
+		if nextPageToken != "" {
+			requestBody["nextPageToken"] = nextPageToken
+		}
+
+		body, err := json.Marshal(requestBody)
+		if err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequest("POST", u, bytes.NewBuffer(body))
+		if err != nil {
+			return nil, err
+		}
+
+		req.SetBasicAuth(c.email, c.apiToken)
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := c.client.Do(req)
+		if err != nil {
+			return nil, err
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			respBody, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return nil, fmt.Errorf("JIRA API error: %d - %s", resp.StatusCode, string(respBody))
+		}
+
+		var searchResp SearchResponse
+		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
+			resp.Body.Close()
+			return nil, err
+		}
+		resp.Body.Close()
+
+		allIssues = append(allIssues, searchResp.Issues...)
+
+		// Check if there are more pages
+		if searchResp.IsLast || searchResp.NextPageToken == "" {
+			break
+		}
+		nextPageToken = searchResp.NextPageToken
 	}
 
-	body, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", u, bytes.NewBuffer(body))
-	if err != nil {
-		return nil, err
-	}
-
-	req.SetBasicAuth(c.email, c.apiToken)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("JIRA API error: %d - %s", resp.StatusCode, string(body))
-	}
-
-	var searchResp SearchResponse
-	if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-		return nil, err
-	}
-
-	return searchResp.Issues, nil
+	return allIssues, nil
 }
 
 func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
@@ -182,9 +204,21 @@ func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
 		Status:      issue.Fields.Status.Name,
 	}
 
-	// Parse created time
-	if created, err := time.Parse(time.RFC3339, issue.Fields.Created); err == nil {
-		item.Created = created
+	// Parse created time - JIRA uses format like "2025-12-04T05:24:06.077-0800"
+	if issue.Fields.Created != "" {
+		// Try multiple formats
+		formats := []string{
+			"2006-01-02T15:04:05.000-0700",
+			"2006-01-02T15:04:05.000Z",
+			time.RFC3339,
+			"2006-01-02T15:04:05.000-07:00",
+		}
+		for _, format := range formats {
+			if created, err := time.Parse(format, issue.Fields.Created); err == nil {
+				item.Created = created
+				break
+			}
+		}
 	}
 
 	// Extract item type from labels
@@ -241,6 +275,22 @@ func (c *Client) extractSize(labels []string, cfg *config.Config) string {
 	return "M" // Default to Medium
 }
 
+// parseJIRATime parses JIRA timestamp format
+func parseJIRATime(s string) (time.Time, error) {
+	formats := []string{
+		"2006-01-02T15:04:05.000-0700",
+		"2006-01-02T15:04:05.000Z",
+		time.RFC3339,
+		"2006-01-02T15:04:05.000-07:00",
+	}
+	for _, format := range formats {
+		if t, err := time.Parse(format, s); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("failed to parse time: %s", s)
+}
+
 func (c *Client) extractStateTransitions(changelog *Changelog) (*time.Time, *time.Time) {
 	if changelog == nil {
 		return nil, nil
@@ -251,13 +301,13 @@ func (c *Client) extractStateTransitions(changelog *Changelog) (*time.Time, *tim
 	for _, history := range changelog.Histories {
 		for _, item := range history.Items {
 			if item.Field == "status" {
-				timestamp, err := time.Parse(time.RFC3339, history.Created)
+				timestamp, err := parseJIRATime(history.Created)
 				if err != nil {
 					continue
 				}
 
-				// Track "In Progress" transition
-				if item.ToString == "In Progress" && inProgressTime == nil {
+				// Track "In Progress" or "In Development" transition
+				if (item.ToString == "In Progress" || item.ToString == "In Development") && inProgressTime == nil {
 					inProgressTime = &timestamp
 				}
 

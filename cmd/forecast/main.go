@@ -45,6 +45,7 @@ func init() {
 	rootCmd.AddCommand(reportCmd)
 	rootCmd.AddCommand(referenceClassCmd)
 	rootCmd.AddCommand(jiraCmd)
+	rootCmd.AddCommand(dashboardCmd)
 }
 
 func initConfig() {
@@ -110,11 +111,28 @@ var referenceClassCmd = &cobra.Command{
   add  - Add completed project to reference database`,
 }
 
+var dashboardCmd = &cobra.Command{
+	Use:   "dashboard",
+	Short: "Show summary of all tracked projects",
+	Long: `Displays a dashboard summary of all configured projects/epics.
+Shows completion status, forecast dates, and key metrics for each project.
+
+Use --project to get detailed view of a specific project.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		return runDashboard(project)
+	},
+}
+
 func init() {
 	runCmd.Flags().IntSlice("confidence", []int{50, 70, 85, 95}, "Confidence levels for forecast")
 	runCmd.Flags().Int("iterations", 10000, "Number of Monte Carlo iterations")
+	runCmd.Flags().StringP("project", "p", "", "Filter to specific project (by key or epic)")
 
 	reportCmd.Flags().String("type", "eva", "Report type: eva, montecarlo, full")
+	reportCmd.Flags().StringP("project", "p", "", "Filter to specific project (by key or epic)")
+
+	dashboardCmd.Flags().StringP("project", "p", "", "Show detailed view for specific project")
 
 	referenceClassCmd.AddCommand(&cobra.Command{
 		Use:   "list",
@@ -380,6 +398,223 @@ func addReferenceClass() error {
 	fmt.Printf("  Items: %d completed work items\n", len(rc.Items))
 
 	return nil
+}
+
+func runDashboard(projectFilter string) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("failed to load config")
+	}
+
+	projects := cfg.GetAllProjects()
+	if len(projects) == 0 {
+		fmt.Println("No projects configured.")
+		fmt.Println("\nAdd projects to your .forecast/config.yaml:")
+		fmt.Println(`
+projects:
+  - name: "Monorepo Migration"
+    key: "monorepo"
+    epic: "SMG-1688"
+  - name: "Feature X"
+    key: "feature-x"
+    epic: "SMG-1700"
+`)
+		return nil
+	}
+
+	// Create JIRA client
+	jiraClient := jira.NewClient(&cfg.JIRA)
+
+	// If filtering to specific project, show detailed view
+	if projectFilter != "" {
+		proj := cfg.GetProject(projectFilter)
+		if proj == nil {
+			return fmt.Errorf("project '%s' not found in config", projectFilter)
+		}
+		return showProjectDetail(jiraClient, cfg, proj)
+	}
+
+	// Show dashboard summary of all projects
+	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Println("  PROJECT DASHBOARD")
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("\n%-20s %-12s %8s %8s %8s %12s %12s\n",
+		"Project", "Epic", "Total", "Done", "Progress", "70% Conf", "95% Conf")
+	fmt.Println("────────────────────────────────────────────────────────────────────────────────")
+
+	for _, proj := range projects {
+		stats, err := getProjectStats(jiraClient, cfg, &proj)
+		if err != nil {
+			fmt.Printf("%-20s %-12s %s\n", truncate(proj.Name, 20), proj.Epic, fmt.Sprintf("Error: %v", err))
+			continue
+		}
+
+		progress := float64(0)
+		if stats.Total > 0 {
+			progress = float64(stats.Done) / float64(stats.Total) * 100
+		}
+
+		forecast70 := "-"
+		forecast95 := "-"
+		if stats.Forecast70 != "" {
+			forecast70 = stats.Forecast70
+		}
+		if stats.Forecast95 != "" {
+			forecast95 = stats.Forecast95
+		}
+
+		fmt.Printf("%-20s %-12s %8d %8d %7.1f%% %12s %12s\n",
+			truncate(proj.Name, 20),
+			proj.Epic,
+			stats.Total,
+			stats.Done,
+			progress,
+			forecast70,
+			forecast95)
+	}
+
+	fmt.Println("\n────────────────────────────────────────────────────────────────────────────────")
+	fmt.Println("Use 'forecast dashboard --project <key>' for detailed view")
+	fmt.Println()
+
+	return nil
+}
+
+type projectStats struct {
+	Total      int
+	Done       int
+	InProgress int
+	Remaining  int
+	AvgCycle   float64
+	Forecast70 string
+	Forecast95 string
+}
+
+func getProjectStats(client *jira.Client, cfg *config.Config, proj *config.ProjectConfig) (*projectStats, error) {
+	// Build JQL for this project's epic
+	jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+
+	issues, err := client.SearchJQL(jql)
+	if err != nil {
+		// Try parent field for next-gen projects
+		jql = fmt.Sprintf(`project = %s AND parent = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+		issues, err = client.SearchJQL(jql)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	stats := &projectStats{}
+	var totalCycleTime float64
+	var cycleTimeCount int
+
+	for _, issue := range issues {
+		stats.Total++
+		switch issue.Fields.Status.Name {
+		case "Done":
+			stats.Done++
+		case "In Progress", "In Development":
+			stats.InProgress++
+		default:
+			stats.Remaining++
+		}
+	}
+
+	// Calculate average cycle time from completed items with changelog
+	if cycleTimeCount > 0 {
+		stats.AvgCycle = totalCycleTime / float64(cycleTimeCount)
+	}
+
+	// Generate forecast if we have data
+	if stats.Done > 0 && stats.Remaining > 0 && stats.AvgCycle > 0 {
+		// Simple forecast based on average cycle time
+		capacity := cfg.TeamCapacity
+		if proj.Capacity > 0 {
+			capacity = proj.Capacity
+		}
+		if capacity <= 0 {
+			capacity = 8
+		}
+
+		daysPerItem := stats.AvgCycle / capacity
+		days70 := int(float64(stats.Remaining) * daysPerItem * 1.3)  // 30% buffer for 70%
+		days95 := int(float64(stats.Remaining) * daysPerItem * 1.8)  // 80% buffer for 95%
+
+		now := time.Now()
+		stats.Forecast70 = now.AddDate(0, 0, days70).Format("Jan 2")
+		stats.Forecast95 = now.AddDate(0, 0, days95).Format("Jan 2")
+	}
+
+	return stats, nil
+}
+
+func showProjectDetail(client *jira.Client, cfg *config.Config, proj *config.ProjectConfig) error {
+	stats, err := getProjectStats(client, cfg, proj)
+	if err != nil {
+		return err
+	}
+
+	progress := float64(0)
+	if stats.Total > 0 {
+		progress = float64(stats.Done) / float64(stats.Total) * 100
+	}
+
+	fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+	fmt.Printf("  %s\n", proj.Name)
+	fmt.Printf("  Epic: %s\n", proj.Epic)
+	fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+	fmt.Println("\n## Status")
+	fmt.Printf("  Total Items:    %d\n", stats.Total)
+	fmt.Printf("  Completed:      %d (%.1f%%)\n", stats.Done, progress)
+	fmt.Printf("  In Progress:    %d\n", stats.InProgress)
+	fmt.Printf("  Remaining:      %d\n", stats.Remaining)
+
+	if stats.AvgCycle > 0 {
+		fmt.Printf("\n## Metrics")
+		fmt.Printf("  Avg Cycle Time: %.1f hours\n", stats.AvgCycle)
+	}
+
+	if stats.Forecast70 != "" {
+		fmt.Println("\n## Forecast")
+		fmt.Printf("  70%% confidence: %s\n", stats.Forecast70)
+		fmt.Printf("  95%% confidence: %s\n", stats.Forecast95)
+	} else {
+		fmt.Println("\n## Forecast")
+		fmt.Println("  Insufficient data - need completed items with cycle times")
+	}
+
+	// Show recent activity
+	fmt.Println("\n## Recent Items")
+	jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s ORDER BY updated DESC`, cfg.JIRA.ProjectKey, proj.Epic)
+	issues, err := client.SearchJQL(jql)
+	if err != nil {
+		jql = fmt.Sprintf(`project = %s AND parent = %s ORDER BY updated DESC`, cfg.JIRA.ProjectKey, proj.Epic)
+		issues, _ = client.SearchJQL(jql)
+	}
+
+	count := 0
+	for _, issue := range issues {
+		if count >= 5 {
+			break
+		}
+		summary := issue.Fields.Summary
+		if len(summary) > 40 {
+			summary = summary[:40] + "..."
+		}
+		fmt.Printf("  %-12s %-15s %s\n", issue.Key, issue.Fields.Status.Name, summary)
+		count++
+	}
+
+	fmt.Println()
+	return nil
+}
+
+func truncate(s string, length int) string {
+	if len(s) <= length {
+		return s
+	}
+	return s[:length-2] + ".."
 }
 
 // JIRA management commands

@@ -38,6 +38,7 @@ forecast jira search "assignee=currentUser() AND status not in (Done, Canceled)"
 forecast jira search "project=SMG AND labels in (size:L)" --limit 20
 
 # List available options
+forecast jira projects           # List all accessible projects (useful for debugging)
 forecast jira types              # Issue types for project
 forecast jira priorities         # Available priorities
 forecast jira transitions SMG-123 # Transitions for a ticket
@@ -250,6 +251,15 @@ forecast jira priorities
 
 # Check config has correct email and token
 cat .forecast/config.yaml
+```
+
+### Project not found errors
+```bash
+# List all accessible projects
+forecast jira projects
+
+# Verify project_key in config matches an available project
+# Common issue: running from wrong directory (no .forecast/config.yaml)
 ```
 
 ### No forecast data

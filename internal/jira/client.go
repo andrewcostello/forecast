@@ -468,6 +468,28 @@ func (c *Client) GetPriorities() (map[string]string, error) {
 	return result, nil
 }
 
+// Project represents a JIRA project
+type Project struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Name string `json:"name"`
+}
+
+// GetProjects returns all accessible JIRA projects
+func (c *Client) GetProjects() ([]Project, error) {
+	respBody, err := c.doRequest("GET", "/rest/api/3/project", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var projects []Project
+	if err := json.Unmarshal(respBody, &projects); err != nil {
+		return nil, fmt.Errorf("failed to parse projects: %w", err)
+	}
+
+	return projects, nil
+}
+
 // GetUserAccountID looks up a user's account ID by email
 func (c *Client) GetUserAccountID(email string) (string, error) {
 	endpoint := fmt.Sprintf("/rest/api/3/user/search?query=%s", email)

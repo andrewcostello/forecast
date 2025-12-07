@@ -628,7 +628,8 @@ var jiraCmd = &cobra.Command{
   transition - Move ticket to a new status
   search     - Search tickets using JQL
   types      - List available issue types
-  priorities - List available priorities`,
+  priorities - List available priorities
+  projects   - List available JIRA projects`,
 }
 
 var jiraCreateCmd = &cobra.Command{
@@ -757,6 +758,16 @@ var jiraPrioritiesCmd = &cobra.Command{
 	},
 }
 
+var jiraProjectsCmd = &cobra.Command{
+	Use:   "projects",
+	Short: "List available JIRA projects",
+	Long: `List all JIRA projects accessible with the current credentials.
+Useful for debugging configuration issues or finding project keys.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraProjects()
+	},
+}
+
 func init() {
 	// Create command flags
 	jiraCreateCmd.Flags().StringP("summary", "s", "", "Issue summary (required)")
@@ -792,6 +803,7 @@ func init() {
 	jiraCmd.AddCommand(jiraTransitionsCmd)
 	jiraCmd.AddCommand(jiraTypesCmd)
 	jiraCmd.AddCommand(jiraPrioritiesCmd)
+	jiraCmd.AddCommand(jiraProjectsCmd)
 }
 
 // Helper function to create JIRA client from config
@@ -1009,6 +1021,34 @@ func runJiraPriorities() error {
 	for name, id := range priorities {
 		fmt.Printf("  %-15s (ID: %s)\n", name, id)
 	}
+
+	return nil
+}
+
+func runJiraProjects() error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+
+	projects, err := client.GetProjects()
+	if err != nil {
+		return fmt.Errorf("failed to get projects: %w", err)
+	}
+
+	fmt.Println("Available JIRA projects:\n")
+	fmt.Printf("  %-12s %-40s %s\n", "Key", "Name", "ID")
+	fmt.Println("  " + strings.Repeat("-", 60))
+	for _, p := range projects {
+		name := p.Name
+		if len(name) > 40 {
+			name = name[:37] + "..."
+		}
+		fmt.Printf("  %-12s %-40s %s\n", p.Key, name, p.ID)
+	}
+
+	cfg := config.Get()
+	fmt.Printf("\nConfigured project_key: %s\n", cfg.JIRA.ProjectKey)
 
 	return nil
 }

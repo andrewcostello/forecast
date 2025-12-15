@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"bitbucket.org/supermoneygames/forecast/internal/config"
@@ -513,6 +514,163 @@ func (c *Client) GetUserAccountID(email string) (string, error) {
 	return users[0].AccountID, nil
 }
 
+// parseDescriptionToADF converts a plain text description with simple markup to ADF format.
+// Supported markup:
+//   - Lines starting with "## " become h2 headings
+//   - Lines starting with "### " become h3 headings
+//   - Lines starting with "- " become bullet list items
+//   - Lines starting with "* " become bullet list items
+//   - Text wrapped in *asterisks* becomes bold
+//   - Empty lines separate paragraphs
+func parseDescriptionToADF(desc string) map[string]interface{} {
+	lines := strings.Split(desc, "\n")
+	content := []map[string]interface{}{}
+
+	var currentList []map[string]interface{}
+	flushList := func() {
+		if len(currentList) > 0 {
+			content = append(content, map[string]interface{}{
+				"type":    "bulletList",
+				"content": currentList,
+			})
+			currentList = nil
+		}
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+
+		// Empty line - flush any pending list
+		if trimmed == "" {
+			flushList()
+			continue
+		}
+
+		// H2 heading
+		if strings.HasPrefix(trimmed, "## ") {
+			flushList()
+			headingText := strings.TrimPrefix(trimmed, "## ")
+			content = append(content, map[string]interface{}{
+				"type":  "heading",
+				"attrs": map[string]interface{}{"level": 2},
+				"content": []map[string]interface{}{
+					{"type": "text", "text": headingText},
+				},
+			})
+			continue
+		}
+
+		// H3 heading
+		if strings.HasPrefix(trimmed, "### ") {
+			flushList()
+			headingText := strings.TrimPrefix(trimmed, "### ")
+			content = append(content, map[string]interface{}{
+				"type":  "heading",
+				"attrs": map[string]interface{}{"level": 3},
+				"content": []map[string]interface{}{
+					{"type": "text", "text": headingText},
+				},
+			})
+			continue
+		}
+
+		// Bullet list item (- or *)
+		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
+			itemText := strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* ")
+			listItem := map[string]interface{}{
+				"type": "listItem",
+				"content": []map[string]interface{}{
+					{
+						"type":    "paragraph",
+						"content": parseInlineText(itemText),
+					},
+				},
+			}
+			currentList = append(currentList, listItem)
+			continue
+		}
+
+		// Regular paragraph
+		flushList()
+		content = append(content, map[string]interface{}{
+			"type":    "paragraph",
+			"content": parseInlineText(trimmed),
+		})
+	}
+
+	// Flush any remaining list
+	flushList()
+
+	return map[string]interface{}{
+		"type":    "doc",
+		"version": 1,
+		"content": content,
+	}
+}
+
+// parseInlineText converts inline markup like *bold* to ADF text nodes
+func parseInlineText(text string) []map[string]interface{} {
+	var result []map[string]interface{}
+
+	// Simple regex-free parsing for *bold* text
+	i := 0
+	for i < len(text) {
+		// Look for opening *
+		start := strings.Index(text[i:], "*")
+		if start == -1 {
+			// No more asterisks, add remaining text
+			if i < len(text) {
+				result = append(result, map[string]interface{}{
+					"type": "text",
+					"text": text[i:],
+				})
+			}
+			break
+		}
+
+		// Add text before the asterisk
+		if start > 0 {
+			result = append(result, map[string]interface{}{
+				"type": "text",
+				"text": text[i : i+start],
+			})
+		}
+
+		// Look for closing *
+		end := strings.Index(text[i+start+1:], "*")
+		if end == -1 {
+			// No closing asterisk, treat as literal
+			result = append(result, map[string]interface{}{
+				"type": "text",
+				"text": text[i+start:],
+			})
+			break
+		}
+
+		// Add bold text
+		boldText := text[i+start+1 : i+start+1+end]
+		result = append(result, map[string]interface{}{
+			"type": "text",
+			"text": boldText,
+			"marks": []map[string]interface{}{
+				{"type": "strong"},
+			},
+		})
+
+		i = i + start + 1 + end + 1
+	}
+
+	// If no content was added, ensure we have at least empty text
+	if len(result) == 0 {
+		result = append(result, map[string]interface{}{
+			"type": "text",
+			"text": text,
+		})
+	}
+
+	return result
+}
+
 // CreateIssue creates a new JIRA issue
 func (c *Client) CreateIssue(req CreateIssueRequest) (*CreateIssueResponse, error) {
 	// Get issue type ID
@@ -545,23 +703,9 @@ func (c *Client) CreateIssue(req CreateIssueRequest) (*CreateIssueResponse, erro
 		"priority":  map[string]string{"id": priorityID},
 	}
 
-	// Add description in Atlassian Document Format
+	// Add description in Atlassian Document Format (with markdown parsing)
 	if req.Description != "" {
-		fields["description"] = map[string]interface{}{
-			"type":    "doc",
-			"version": 1,
-			"content": []map[string]interface{}{
-				{
-					"type": "paragraph",
-					"content": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": req.Description,
-						},
-					},
-				},
-			},
-		}
+		fields["description"] = parseDescriptionToADF(req.Description)
 	}
 
 	// Add labels
@@ -607,21 +751,7 @@ func (c *Client) UpdateIssue(issueKey string, req UpdateIssueRequest) error {
 	}
 
 	if req.Description != nil {
-		fields["description"] = map[string]interface{}{
-			"type":    "doc",
-			"version": 1,
-			"content": []map[string]interface{}{
-				{
-					"type": "paragraph",
-					"content": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": *req.Description,
-						},
-					},
-				},
-			},
-		}
+		fields["description"] = parseDescriptionToADF(*req.Description)
 	}
 
 	if req.Priority != nil {
@@ -777,6 +907,16 @@ func (c *Client) AddComment(issueKey, comment string) error {
 // SearchJQL searches for issues using JQL and returns raw issues
 func (c *Client) SearchJQL(jql string) ([]Issue, error) {
 	return c.search(jql)
+}
+
+// ConvertIssuesToItems converts JIRA issues to forecast items
+func (c *Client) ConvertIssuesToItems(issues []Issue, cfg *config.Config) []forecast.Item {
+	items := make([]forecast.Item, 0, len(issues))
+	for _, issue := range issues {
+		item := c.convertIssue(issue, cfg)
+		items = append(items, item)
+	}
+	return items
 }
 
 // Helper function to get map keys

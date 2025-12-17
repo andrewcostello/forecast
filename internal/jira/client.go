@@ -348,6 +348,7 @@ type UpdateIssueRequest struct {
 	Priority    *string
 	Labels      []string
 	Assignee    *string // email address
+	Epic        *string // parent epic key
 }
 
 // Transition represents a JIRA workflow transition
@@ -646,6 +647,10 @@ func (c *Client) UpdateIssue(issueKey string, req UpdateIssueRequest) error {
 			return fmt.Errorf("failed to find assignee: %w", err)
 		}
 		fields["assignee"] = map[string]string{"accountId": accountID}
+	}
+
+	if req.Epic != nil {
+		fields["parent"] = map[string]string{"key": *req.Epic}
 	}
 
 	if len(fields) == 0 {

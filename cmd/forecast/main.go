@@ -680,6 +680,7 @@ Examples:
 		priority, _ := cmd.Flags().GetString("priority")
 		labelsStr, _ := cmd.Flags().GetString("labels")
 		assignee, _ := cmd.Flags().GetString("assignee")
+		epic, _ := cmd.Flags().GetString("epic")
 
 		var labels []string
 		if labelsStr != "" {
@@ -688,7 +689,7 @@ Examples:
 			}
 		}
 
-		return runJiraUpdate(issueKey, summary, description, priority, labels, assignee)
+		return runJiraUpdate(issueKey, summary, description, priority, labels, assignee, epic)
 	},
 }
 
@@ -785,6 +786,7 @@ func init() {
 	jiraUpdateCmd.Flags().StringP("priority", "p", "", "New priority")
 	jiraUpdateCmd.Flags().StringP("labels", "l", "", "New labels (comma-separated)")
 	jiraUpdateCmd.Flags().StringP("assignee", "a", "", "New assignee email")
+	jiraUpdateCmd.Flags().StringP("epic", "e", "", "Parent epic key")
 
 	// Transition command flags
 	jiraTransitionCmd.Flags().String("to", "", "Target status (required)")
@@ -857,7 +859,7 @@ func runJiraCreate(summary, issueType, description, priority string, labels []st
 	return nil
 }
 
-func runJiraUpdate(issueKey, summary, description, priority string, labels []string, assignee string) error {
+func runJiraUpdate(issueKey, summary, description, priority string, labels []string, assignee, epic string) error {
 	client, err := getJiraClient()
 	if err != nil {
 		return err
@@ -879,6 +881,9 @@ func runJiraUpdate(issueKey, summary, description, priority string, labels []str
 	}
 	if assignee != "" {
 		req.Assignee = &assignee
+	}
+	if epic != "" {
+		req.Epic = &epic
 	}
 
 	if err := client.UpdateIssue(issueKey, req); err != nil {

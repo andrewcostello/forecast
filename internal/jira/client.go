@@ -35,16 +35,19 @@ func NewClient(cfg *config.JIRAConfig) *Client {
 type Issue struct {
 	Key    string `json:"key"`
 	Fields struct {
-		Summary     string    `json:"summary"`
-		Status      Status    `json:"status"`
-		IssueType   IssueType `json:"issuetype"`
-		Labels      []string  `json:"labels"`
-		Assignee    *User     `json:"assignee"`
-		Created     string    `json:"created"`
-		Updated     string    `json:"updated"`
-		Resolution  *Resolution `json:"resolution"`
+		Summary     string                 `json:"summary"`
+		Status      Status                 `json:"status"`
+		IssueType   IssueType              `json:"issuetype"`
+		Labels      []string               `json:"labels"`
+		Assignee    *User                  `json:"assignee"`
+		Created     string                 `json:"created"`
+		Updated     string                 `json:"updated"`
+		Resolution  *Resolution            `json:"resolution"`
+		TimeSpent   int                    `json:"timespent"` // Built-in time tracking (seconds)
+		Custom      map[string]interface{} `json:"-"`         // For custom fields
 	} `json:"fields"`
-	Changelog *Changelog `json:"changelog,omitempty"`
+	RawFields map[string]interface{} `json:"-"` // Raw fields for custom field access
+	Changelog *Changelog             `json:"changelog,omitempty"`
 }
 
 type Status struct {
@@ -69,7 +72,8 @@ type Changelog struct {
 }
 
 type History struct {
-	Created string `json:"created"`
+	Created string       `json:"created"`
+	Author  *User        `json:"author"`
 	Items   []ChangeItem `json:"items"`
 }
 
@@ -95,8 +99,17 @@ func (c *Client) FetchIssues(cfg *config.Config) ([]forecast.Item, error) {
 	// Build JQL query
 	jql := c.buildJQL(cfg)
 
+	// Include custom fields if configured
+	var extraFields []string
+	if cfg.JIRA.CycleTimeField != "" {
+		extraFields = append(extraFields, cfg.JIRA.CycleTimeField)
+	}
+	if cfg.JIRA.StoryPointsField != "" {
+		extraFields = append(extraFields, cfg.JIRA.StoryPointsField)
+	}
+
 	// Make API request
-	issues, err := c.search(jql)
+	issues, err := c.searchWithFields(jql, extraFields)
 	if err != nil {
 		return nil, err
 	}
@@ -135,17 +148,40 @@ func (c *Client) buildJQL(cfg *config.Config) string {
 }
 
 func (c *Client) search(jql string) ([]Issue, error) {
+	return c.searchWithFields(jql, nil)
+}
+
+func (c *Client) searchWithFields(jql string, extraFields []string) ([]Issue, error) {
+	return c.searchWithFieldsInternal(jql, extraFields, false)
+}
+
+// SearchWithAllFields searches and returns all fields (for field discovery)
+func (c *Client) SearchWithAllFields(jql string) ([]Issue, error) {
+	return c.searchWithFieldsInternal(jql, nil, true)
+}
+
+func (c *Client) searchWithFieldsInternal(jql string, extraFields []string, allFields bool) ([]Issue, error) {
 	u := fmt.Sprintf("%s/rest/api/3/search/jql", c.baseURL)
 
 	var allIssues []Issue
 	var nextPageToken string
+
+	// Base fields to fetch
+	var fields interface{}
+	if allFields {
+		fields = []string{"*all"}
+	} else {
+		f := []string{"summary", "status", "issuetype", "labels", "assignee", "created", "updated", "resolution", "timespent"}
+		f = append(f, extraFields...)
+		fields = f
+	}
 
 	for {
 		// Use POST with JSON body
 		requestBody := map[string]interface{}{
 			"jql":        jql,
 			"expand":     "changelog",
-			"fields":     []string{"summary", "status", "issuetype", "labels", "assignee", "created", "updated", "resolution"},
+			"fields":     fields,
 			"maxResults": 100,
 		}
 
@@ -178,12 +214,33 @@ func (c *Client) search(jql string) ([]Issue, error) {
 			return nil, fmt.Errorf("JIRA API error: %d - %s", resp.StatusCode, string(respBody))
 		}
 
-		var searchResp SearchResponse
-		if err := json.NewDecoder(resp.Body).Decode(&searchResp); err != nil {
-			resp.Body.Close()
+		// Decode into raw structure first to capture custom fields
+		respBody, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if err != nil {
 			return nil, err
 		}
-		resp.Body.Close()
+
+		var searchResp SearchResponse
+		if err := json.Unmarshal(respBody, &searchResp); err != nil {
+			return nil, err
+		}
+
+		// Also decode raw to get custom fields
+		var rawResp struct {
+			Issues []struct {
+				Key    string                 `json:"key"`
+				Fields map[string]interface{} `json:"fields"`
+			} `json:"issues"`
+		}
+		json.Unmarshal(respBody, &rawResp)
+
+		// Merge raw fields into issues
+		for i := range searchResp.Issues {
+			if i < len(rawResp.Issues) {
+				searchResp.Issues[i].RawFields = rawResp.Issues[i].Fields
+			}
+		}
 
 		allIssues = append(allIssues, searchResp.Issues...)
 
@@ -243,6 +300,30 @@ func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
 		if inProgressTime != nil {
 			item.CycleTime = doneTime.Sub(*inProgressTime).Hours()
 		}
+	}
+
+	// Check for cycle time overrides (custom field takes priority, then TimeSpent)
+	// 1. Custom field override (if configured)
+	if cfg.JIRA.CycleTimeField != "" && issue.RawFields != nil {
+		if val, ok := issue.RawFields[cfg.JIRA.CycleTimeField]; ok && val != nil {
+			// Custom field value could be a number (hours)
+			switch v := val.(type) {
+			case float64:
+				if v > 0 {
+					item.CycleTime = v
+				}
+			case int:
+				if v > 0 {
+					item.CycleTime = float64(v)
+				}
+			}
+		}
+	}
+
+	// 2. JIRA TimeSpent field override (if no cycle time yet and TimeSpent is set)
+	if item.CycleTime == 0 && issue.Fields.TimeSpent > 0 {
+		// TimeSpent is in seconds, convert to hours
+		item.CycleTime = float64(issue.Fields.TimeSpent) / 3600.0
 	}
 
 	return item
@@ -321,6 +402,26 @@ func (c *Client) extractStateTransitions(changelog *Changelog) (*time.Time, *tim
 	}
 
 	return inProgressTime, doneTime
+}
+
+// ExtractClosedBy returns the name of the person who transitioned the issue to Done
+func (c *Client) ExtractClosedBy(changelog *Changelog) string {
+	if changelog == nil {
+		return ""
+	}
+
+	for _, history := range changelog.Histories {
+		for _, item := range history.Items {
+			if item.Field == "status" && item.ToString == "Done" {
+				if history.Author != nil {
+					return history.Author.DisplayName
+				}
+				return ""
+			}
+		}
+	}
+
+	return ""
 }
 
 // CreateIssueRequest represents the request body for creating an issue
@@ -922,6 +1023,74 @@ func (c *Client) ConvertIssuesToItems(issues []Issue, cfg *config.Config) []fore
 		items = append(items, item)
 	}
 	return items
+}
+
+// LogWork adds a worklog entry to a JIRA issue
+func (c *Client) LogWork(issueKey string, timeSpentSeconds int, comment string) error {
+	payload := map[string]interface{}{
+		"timeSpentSeconds": timeSpentSeconds,
+	}
+
+	if comment != "" {
+		payload["comment"] = map[string]interface{}{
+			"type":    "doc",
+			"version": 1,
+			"content": []map[string]interface{}{
+				{
+					"type": "paragraph",
+					"content": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": comment,
+						},
+					},
+				},
+			},
+		}
+	}
+
+	_, err := c.doRequest("POST", fmt.Sprintf("/rest/api/3/issue/%s/worklog", issueKey), payload)
+	return err
+}
+
+// GetStoryPoints extracts story points from an issue's raw fields
+func GetStoryPoints(rawFields map[string]interface{}, storyPointsField string) float64 {
+	if rawFields == nil || storyPointsField == "" {
+		return 0
+	}
+
+	if val, ok := rawFields[storyPointsField]; ok && val != nil {
+		switch v := val.(type) {
+		case float64:
+			return v
+		case int:
+			return float64(v)
+		}
+	}
+
+	return 0
+}
+
+// FieldDefinition represents a JIRA field definition
+type FieldDefinition struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Custom bool   `json:"custom"`
+}
+
+// GetFields returns all field definitions from JIRA
+func (c *Client) GetFields() ([]FieldDefinition, error) {
+	respBody, err := c.doRequest("GET", "/rest/api/3/field", nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var fields []FieldDefinition
+	if err := json.Unmarshal(respBody, &fields); err != nil {
+		return nil, fmt.Errorf("failed to parse fields: %w", err)
+	}
+
+	return fields, nil
 }
 
 // Helper function to get map keys

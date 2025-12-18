@@ -46,9 +46,14 @@ type Database struct {
 
 // NewDatabase creates or opens the reference class database
 func NewDatabase() (*Database, error) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
+	// Check HOME env var first (for tests), then fall back to UserHomeDir
+	homeDir := os.Getenv("HOME")
+	if homeDir == "" {
+		var err error
+		homeDir, err = os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	dbDir := filepath.Join(homeDir, ".forecast")

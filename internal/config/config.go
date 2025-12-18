@@ -30,12 +30,14 @@ type ProjectConfig struct {
 }
 
 type JIRAConfig struct {
-	URL        string   `mapstructure:"url"`
-	Email      string   `mapstructure:"email"`
-	APIToken   string   `mapstructure:"api_token"`
-	ProjectKey string   `mapstructure:"project_key"`
-	Epic       string   `mapstructure:"epic"`
-	Labels     []string `mapstructure:"labels"`
+	URL              string   `mapstructure:"url"`
+	Email            string   `mapstructure:"email"`
+	APIToken         string   `mapstructure:"api_token"`
+	ProjectKey       string   `mapstructure:"project_key"`
+	Epic             string   `mapstructure:"epic"`
+	Labels           []string `mapstructure:"labels"`
+	CycleTimeField   string   `mapstructure:"cycle_time_field"`   // Custom field ID for manual cycle time override (e.g., "customfield_10001")
+	StoryPointsField string   `mapstructure:"story_points_field"` // Custom field ID for story points (e.g., "customfield_10004")
 }
 
 type ItemTypeConfig struct {
@@ -143,6 +145,9 @@ jira:
   epic: PROJ-123
   labels:
     - phase1-refactor
+  # Optional: Custom field for manual cycle time override (in hours)
+  # cycle_time_field: customfield_10001
+  # Note: JIRA's built-in "Time Spent" field is also used as fallback
 
 item_types:
   - name: Component

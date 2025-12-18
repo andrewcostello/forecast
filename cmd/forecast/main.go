@@ -417,8 +417,7 @@ projects:
     epic: "SMG-1688"
   - name: "Feature X"
     key: "feature-x"
-    epic: "SMG-1700"
-`)
+    epic: "SMG-1700"`)
 		return nil
 	}
 
@@ -508,11 +507,19 @@ func getProjectStats(client *jira.Client, cfg *config.Config, proj *config.Proje
 	var totalCycleTime float64
 	var cycleTimeCount int
 
-	for _, issue := range issues {
+	// Convert issues to forecast items to get cycle time data
+	items := client.ConvertIssuesToItems(issues, cfg)
+
+	for _, item := range items {
 		stats.Total++
-		switch issue.Fields.Status.Name {
+		switch item.Status {
 		case "Done":
 			stats.Done++
+			// Add cycle time if available
+			if item.CycleTime > 0 {
+				totalCycleTime += item.CycleTime
+				cycleTimeCount++
+			}
 		case "In Progress", "In Development":
 			stats.InProgress++
 		default:
@@ -622,14 +629,15 @@ var jiraCmd = &cobra.Command{
 	Use:   "jira",
 	Short: "JIRA ticket management",
 	Long: `Commands for managing JIRA tickets directly via the REST API:
-  create     - Create a new ticket
-  update     - Update an existing ticket
-  get        - Get ticket details
-  transition - Move ticket to a new status
-  search     - Search tickets using JQL
-  types      - List available issue types
-  priorities - List available priorities
-  projects   - List available JIRA projects`,
+  create        - Create a new ticket
+  update        - Update an existing ticket
+  get           - Get ticket details
+  transition    - Move ticket to a new status
+  search        - Search tickets using JQL
+  missing-times - List done tickets missing cycle time data
+  types         - List available issue types
+  priorities    - List available priorities
+  projects      - List available JIRA projects`,
 }
 
 var jiraCreateCmd = &cobra.Command{
@@ -769,6 +777,35 @@ Useful for debugging configuration issues or finding project keys.`,
 	},
 }
 
+var jiraFieldsCmd = &cobra.Command{
+	Use:   "fields [issue-key]",
+	Short: "List custom fields and their values for an issue",
+	Long: `Shows all custom fields for a JIRA issue to help identify field IDs.
+Useful for finding the story_points_field or cycle_time_field IDs.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraFields(args[0])
+	},
+}
+
+var jiraMissingTimesCmd = &cobra.Command{
+	Use:   "missing-times",
+	Short: "List done tickets missing cycle time data",
+	Long: `List all tickets that are marked as Done but don't have cycle time data.
+These tickets need manual time entry via JIRA's Time Spent field or a custom field.
+
+Use --project to filter to a specific project/epic.
+Use --fix to automatically log time based on story points (requires story_points_field in config).
+Use --default-hours to specify hours for tickets without story points.`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		fix, _ := cmd.Flags().GetBool("fix")
+		hoursPerPoint, _ := cmd.Flags().GetFloat64("hours-per-point")
+		defaultHours, _ := cmd.Flags().GetFloat64("default-hours")
+		return runJiraMissingTimes(project, fix, hoursPerPoint, defaultHours)
+	},
+}
+
 func init() {
 	// Create command flags
 	jiraCreateCmd.Flags().StringP("summary", "s", "", "Issue summary (required)")
@@ -796,6 +833,12 @@ func init() {
 	// Search command flags
 	jiraSearchCmd.Flags().Int("limit", 20, "Maximum results to show")
 
+	// Missing times command flags
+	jiraMissingTimesCmd.Flags().StringP("project", "p", "", "Filter to specific project (by key or epic)")
+	jiraMissingTimesCmd.Flags().Bool("fix", false, "Automatically log time based on story points")
+	jiraMissingTimesCmd.Flags().Float64("hours-per-point", 4.0, "Hours per story point for --fix")
+	jiraMissingTimesCmd.Flags().Float64("default-hours", 8.0, "Default hours for tickets without story points")
+
 	// Add subcommands to jira command
 	jiraCmd.AddCommand(jiraCreateCmd)
 	jiraCmd.AddCommand(jiraUpdateCmd)
@@ -806,6 +849,8 @@ func init() {
 	jiraCmd.AddCommand(jiraTypesCmd)
 	jiraCmd.AddCommand(jiraPrioritiesCmd)
 	jiraCmd.AddCommand(jiraProjectsCmd)
+	jiraCmd.AddCommand(jiraFieldsCmd)
+	jiraCmd.AddCommand(jiraMissingTimesCmd)
 }
 
 // Helper function to create JIRA client from config
@@ -1003,7 +1048,7 @@ func runJiraTypes() error {
 		return fmt.Errorf("failed to get issue types: %w", err)
 	}
 
-	fmt.Println("Available issue types:\n")
+	fmt.Println("Available issue types:")
 	for name, id := range types {
 		fmt.Printf("  %-20s (ID: %s)\n", name, id)
 	}
@@ -1022,7 +1067,7 @@ func runJiraPriorities() error {
 		return fmt.Errorf("failed to get priorities: %w", err)
 	}
 
-	fmt.Println("Available priorities:\n")
+	fmt.Println("Available priorities:")
 	for name, id := range priorities {
 		fmt.Printf("  %-15s (ID: %s)\n", name, id)
 	}
@@ -1041,7 +1086,7 @@ func runJiraProjects() error {
 		return fmt.Errorf("failed to get projects: %w", err)
 	}
 
-	fmt.Println("Available JIRA projects:\n")
+	fmt.Println("Available JIRA projects:")
 	fmt.Printf("  %-12s %-40s %s\n", "Key", "Name", "ID")
 	fmt.Println("  " + strings.Repeat("-", 60))
 	for _, p := range projects {
@@ -1054,6 +1099,265 @@ func runJiraProjects() error {
 
 	cfg := config.Get()
 	fmt.Printf("\nConfigured project_key: %s\n", cfg.JIRA.ProjectKey)
+
+	return nil
+}
+
+func runJiraFields(issueKey string) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("failed to load config - run 'forecast init' first")
+	}
+
+	client := jira.NewClient(&cfg.JIRA)
+
+	// Get field definitions to show names
+	fieldDefs, err := client.GetFields()
+	if err != nil {
+		fmt.Printf("Warning: couldn't get field definitions: %v\n", err)
+	}
+	fieldNames := make(map[string]string)
+	for _, f := range fieldDefs {
+		fieldNames[f.ID] = f.Name
+	}
+
+	// Fetch the issue with all fields
+	jql := fmt.Sprintf(`key = %s`, issueKey)
+	issues, err := client.SearchWithAllFields(jql)
+	if err != nil {
+		return fmt.Errorf("failed to fetch issue: %w", err)
+	}
+
+	if len(issues) == 0 {
+		return fmt.Errorf("issue %s not found", issueKey)
+	}
+
+	issue := issues[0]
+
+	fmt.Printf("\nCustom fields for %s:\n", issueKey)
+	fmt.Println("────────────────────────────────────────────────────────────────────────────────")
+	fmt.Printf("%-25s %-25s %-10s %s\n", "Field ID", "Name", "Type", "Value")
+	fmt.Println("────────────────────────────────────────────────────────────────────────────────")
+
+	// Look for story points and other interesting fields
+	for fieldID, value := range issue.RawFields {
+		if strings.HasPrefix(fieldID, "customfield_") && value != nil {
+			valueStr := fmt.Sprintf("%v", value)
+			if len(valueStr) > 25 {
+				valueStr = valueStr[:22] + "..."
+			}
+
+			name := fieldNames[fieldID]
+			if len(name) > 25 {
+				name = name[:22] + "..."
+			}
+
+			// Detect type
+			typeStr := "unknown"
+			switch value.(type) {
+			case float64:
+				typeStr = "number"
+			case string:
+				typeStr = "string"
+			case map[string]interface{}:
+				typeStr = "object"
+			case []interface{}:
+				typeStr = "array"
+			}
+
+			fmt.Printf("%-25s %-25s %-10s %s\n", fieldID, name, typeStr, valueStr)
+		}
+	}
+
+	// Show potential story points fields
+	fmt.Println("\nPotential story points fields:")
+	for _, f := range fieldDefs {
+		nameLower := strings.ToLower(f.Name)
+		if strings.Contains(nameLower, "story") || strings.Contains(nameLower, "point") || strings.Contains(nameLower, "estimate") {
+			fmt.Printf("  %-25s %s\n", f.ID, f.Name)
+		}
+	}
+
+	fmt.Println("\nTo use a field for story points, add to .forecast/config.yaml:")
+	fmt.Println("  jira:")
+	fmt.Println("    story_points_field: customfield_XXXXX")
+
+	return nil
+}
+
+func runJiraMissingTimes(projectFilter string, fix bool, hoursPerPoint float64, defaultHours float64) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("failed to load config - run 'forecast init' first")
+	}
+
+	// Warn if story points field not configured but fix is requested
+	if fix && cfg.JIRA.StoryPointsField == "" {
+		fmt.Printf("Note: story_points_field not configured, using default of %.0f hours per ticket\n", defaultHours)
+	}
+
+	client := jira.NewClient(&cfg.JIRA)
+
+	// Determine which projects to check
+	var projects []config.ProjectConfig
+	if projectFilter != "" {
+		proj := cfg.GetProject(projectFilter)
+		if proj == nil {
+			return fmt.Errorf("project '%s' not found in config", projectFilter)
+		}
+		projects = []config.ProjectConfig{*proj}
+	} else {
+		projects = cfg.GetAllProjects()
+	}
+
+	if len(projects) == 0 {
+		fmt.Println("No projects configured.")
+		return nil
+	}
+
+	// Include custom fields
+	var extraFields []string
+	if cfg.JIRA.CycleTimeField != "" {
+		extraFields = append(extraFields, cfg.JIRA.CycleTimeField)
+	}
+	if cfg.JIRA.StoryPointsField != "" {
+		extraFields = append(extraFields, cfg.JIRA.StoryPointsField)
+	}
+
+	if fix {
+		fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println("  LOGGING TIME FOR MISSING TICKETS")
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Printf("\nUsing %v hours per story point\n", hoursPerPoint)
+	} else {
+		fmt.Println("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println("  TICKETS MISSING CYCLE TIME DATA")
+		fmt.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+		fmt.Println("\nThese tickets are Done but have no cycle time from workflow transitions or time tracking.")
+		fmt.Println("Please log time in JIRA or update the custom cycle time field.")
+	}
+
+	totalMissing := 0
+	totalFixed := 0
+
+	for _, proj := range projects {
+		// Build JQL for done tickets in this epic
+		jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s AND status = Done`, cfg.JIRA.ProjectKey, proj.Epic)
+
+		issues, err := client.SearchJQL(jql)
+		if err != nil {
+			// Try parent field for next-gen projects
+			jql = fmt.Sprintf(`project = %s AND parent = %s AND status = Done`, cfg.JIRA.ProjectKey, proj.Epic)
+			issues, err = client.SearchJQL(jql)
+			if err != nil {
+				fmt.Printf("Error fetching %s: %v\n", proj.Name, err)
+				continue
+			}
+		}
+
+		// Build maps for lookup
+		issueMap := make(map[string]*jira.Changelog)
+		rawFieldsMap := make(map[string]map[string]interface{})
+		for i := range issues {
+			issueMap[issues[i].Key] = issues[i].Changelog
+			rawFieldsMap[issues[i].Key] = issues[i].RawFields
+		}
+
+		// Convert to items to calculate cycle times
+		items := client.ConvertIssuesToItems(issues, cfg)
+
+		// Filter for items missing cycle time
+		type missingItem struct {
+			key        string
+			summary    string
+			closedBy   string
+			rawFields  map[string]interface{}
+		}
+		var missing []missingItem
+		for _, item := range items {
+			if item.CycleTime == 0 {
+				closedBy := ""
+				if changelog, ok := issueMap[item.JiraKey]; ok {
+					closedBy = client.ExtractClosedBy(changelog)
+				}
+				missing = append(missing, missingItem{
+					key:       item.JiraKey,
+					summary:   item.Description,
+					closedBy:  closedBy,
+					rawFields: rawFieldsMap[item.JiraKey],
+				})
+			}
+		}
+
+		if len(missing) > 0 {
+			fmt.Printf("\n## %s (%d missing)\n", proj.Name, len(missing))
+			fmt.Println("────────────────────────────────────────────────────────────────────────────────")
+			for _, m := range missing {
+				summary := m.summary
+				if len(summary) > 40 {
+					summary = summary[:37] + "..."
+				}
+				closedByStr := m.closedBy
+				if closedByStr == "" {
+					closedByStr = "(unknown)"
+				}
+
+				if fix {
+					// Get story points and log time
+					storyPoints := jira.GetStoryPoints(m.rawFields, cfg.JIRA.StoryPointsField)
+					var hours float64
+					var comment string
+					if storyPoints > 0 {
+						hours = storyPoints * hoursPerPoint
+						comment = fmt.Sprintf("Retroactive time log: %.0f story points × %.0f hours = %.0f hours", storyPoints, hoursPerPoint, hours)
+					} else {
+						// Use default hours for tickets without story points
+						hours = defaultHours
+						comment = fmt.Sprintf("Retroactive time log: default %.0f hours (no story points)", hours)
+					}
+
+					seconds := int(hours * 3600)
+					err := client.LogWork(m.key, seconds, comment)
+					if err != nil {
+						fmt.Printf("  %-12s %-42s [%s] ✗ Error: %v\n", m.key, summary, closedByStr, err)
+					} else {
+						if storyPoints > 0 {
+							fmt.Printf("  %-12s %-42s [%s] ✓ Logged %.0fh (%.0f pts)\n", m.key, summary, closedByStr, hours, storyPoints)
+						} else {
+							fmt.Printf("  %-12s %-42s [%s] ✓ Logged %.0fh (default)\n", m.key, summary, closedByStr, hours)
+						}
+						totalFixed++
+					}
+				} else {
+					fmt.Printf("  %-12s %-52s [%s]\n", m.key, summary, closedByStr)
+					fmt.Printf("               %s/browse/%s\n", cfg.JIRA.URL, m.key)
+				}
+			}
+			totalMissing += len(missing)
+		}
+	}
+
+	fmt.Println()
+	if totalMissing == 0 {
+		fmt.Println("✓ All done tickets have cycle time data!")
+	} else if fix {
+		fmt.Println("────────────────────────────────────────────────────────────────────────────────")
+		fmt.Printf("Summary: %d tickets processed\n", totalMissing)
+		fmt.Printf("  ✓ Fixed:   %d\n", totalFixed)
+		fmt.Printf("  ✗ Errors:  %d\n", totalMissing-totalFixed)
+		if totalFixed > 0 {
+			fmt.Println("\nTime has been logged. Run 'forecast dashboard' to see updated forecasts.")
+		}
+	} else {
+		fmt.Println("────────────────────────────────────────────────────────────────────────────────")
+		fmt.Printf("Total: %d tickets need time data\n\n", totalMissing)
+		fmt.Println("To add time in JIRA:")
+		fmt.Println("  1. Open the ticket")
+		fmt.Println("  2. Click 'Log work' or update the Time Spent field")
+		fmt.Println("  3. Or set a custom cycle time field if configured")
+		fmt.Println("\nOr use --fix to automatically log time based on story points:")
+		fmt.Printf("  forecast jira missing-times --fix --default-hours %.0f\n", defaultHours)
+	}
 
 	return nil
 }

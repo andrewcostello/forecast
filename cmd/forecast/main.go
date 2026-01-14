@@ -12,6 +12,7 @@ import (
 	"bitbucket.org/supermoneygames/forecast/internal/referenceclass"
 	"bitbucket.org/supermoneygames/forecast/internal/report"
 	"bitbucket.org/supermoneygames/forecast/internal/storage"
+	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
 	"github.com/spf13/cobra"
 )
 
@@ -71,9 +72,19 @@ var syncCmd = &cobra.Command{
   - Issue status
   - Cycle times (Created → Done)
   - Item types and sizes
-  - Assignees`,
+  - Assignees
+
+Use --project to sync a specific project, or sync all configured projects.
+Use --file to sync tasks from a YAML file (bidirectional).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSync()
+		project, _ := cmd.Flags().GetString("project")
+		file, _ := cmd.Flags().GetString("file")
+		dryRun, _ := cmd.Flags().GetBool("dry-run")
+
+		if file != "" {
+			return runSyncFromFile(file, dryRun)
+		}
+		return runSync(project)
 	},
 }
 
@@ -81,11 +92,14 @@ var runCmd = &cobra.Command{
 	Use:   "run",
 	Short: "Run Monte Carlo simulation",
 	Long: `Executes Monte Carlo simulation to forecast project completion.
-Uses actual cycle time data to predict completion dates with confidence levels.`,
+Uses actual cycle time data to predict completion dates with confidence levels.
+
+Use --project to run forecast for a specific project.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		confidence, _ := cmd.Flags().GetIntSlice("confidence")
 		iterations, _ := cmd.Flags().GetInt("iterations")
-		return runMonteCarlo(confidence, iterations)
+		project, _ := cmd.Flags().GetString("project")
+		return runMonteCarlo(confidence, iterations, project)
 	},
 }
 
@@ -96,10 +110,13 @@ var reportCmd = &cobra.Command{
   - Earned Value Analysis metrics
   - Monte Carlo forecast results
   - Throughput trends
-  - Reference class comparisons`,
+  - Reference class comparisons
+
+Use --project to generate report for a specific project.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		reportType, _ := cmd.Flags().GetString("type")
-		return runReport(reportType)
+		project, _ := cmd.Flags().GetString("project")
+		return runReport(reportType, project)
 	},
 }
 
@@ -125,6 +142,10 @@ Use --project to get detailed view of a specific project.`,
 }
 
 func init() {
+	syncCmd.Flags().StringP("project", "p", "", "Sync specific project (by key or epic), or all if omitted")
+	syncCmd.Flags().StringP("file", "f", "", "Sync tasks from a YAML file (bidirectional)")
+	syncCmd.Flags().Bool("dry-run", false, "Preview what would be created without making changes")
+
 	runCmd.Flags().IntSlice("confidence", []int{50, 70, 85, 95}, "Confidence levels for forecast")
 	runCmd.Flags().Int("iterations", 10000, "Number of Monte Carlo iterations")
 	runCmd.Flags().StringP("project", "p", "", "Filter to specific project (by key or epic)")
@@ -157,9 +178,7 @@ func runInit() error {
 	return config.InitProject()
 }
 
-func runSync() error {
-	fmt.Println("Syncing from JIRA...")
-
+func runSync(projectFilter string) error {
 	cfg := config.Get()
 	if cfg == nil {
 		return fmt.Errorf("failed to load config")
@@ -167,31 +186,136 @@ func runSync() error {
 
 	// Create JIRA client
 	jiraClient := jira.NewClient(&cfg.JIRA)
-
-	// Fetch issues
-	items, err := jiraClient.FetchIssues(cfg)
-	if err != nil {
-		return fmt.Errorf("failed to fetch issues: %w", err)
-	}
-
-	fmt.Printf("Fetched %d items from JIRA\n", len(items))
-
-	// Save to storage
 	store := storage.New(".forecast")
-	if err := store.Save(items); err != nil {
-		return fmt.Errorf("failed to save items: %w", err)
+
+	// Get projects to sync
+	projects := cfg.GetAllProjects()
+
+	// If no projects configured, use legacy single-epic mode
+	if len(projects) == 0 {
+		fmt.Println("Syncing from JIRA (legacy mode)...")
+		items, err := jiraClient.FetchIssues(cfg)
+		if err != nil {
+			return fmt.Errorf("failed to fetch issues: %w", err)
+		}
+		fmt.Printf("Fetched %d items from JIRA\n", len(items))
+		if err := store.Save(items); err != nil {
+			return fmt.Errorf("failed to save items: %w", err)
+		}
+		fmt.Println("✓ Sync complete")
+		return nil
 	}
 
-	fmt.Println("✓ Sync complete")
+	// Filter to specific project if requested
+	if projectFilter != "" {
+		proj := cfg.GetProject(projectFilter)
+		if proj == nil {
+			return fmt.Errorf("project '%s' not found in config", projectFilter)
+		}
+		projects = []config.ProjectConfig{*proj}
+	}
+
+	// Sync each project
+	totalItems := 0
+	for _, proj := range projects {
+		fmt.Printf("Syncing %s (%s)...\n", proj.Name, proj.Epic)
+
+		// Build JQL for this project's epic
+		jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+		issues, err := jiraClient.SearchJQL(jql)
+		if err != nil {
+			// Try parent field for next-gen projects
+			jql = fmt.Sprintf(`project = %s AND parent = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+			issues, err = jiraClient.SearchJQL(jql)
+			if err != nil {
+				fmt.Printf("  Warning: failed to fetch %s: %v\n", proj.Epic, err)
+				continue
+			}
+		}
+
+		// Convert JIRA issues to forecast items with cycle time
+		items := jiraClient.ConvertIssuesToItems(issues, cfg)
+
+		// Save to project-specific file
+		projectKey := proj.Key
+		if projectKey == "" {
+			projectKey = proj.Epic
+		}
+		if err := store.SaveProject(items, projectKey); err != nil {
+			return fmt.Errorf("failed to save items for %s: %w", proj.Name, err)
+		}
+
+		fmt.Printf("  Fetched %d items\n", len(items))
+		totalItems += len(items)
+	}
+
+	fmt.Printf("\n✓ Sync complete: %d total items across %d projects\n", totalItems, len(projects))
 	return nil
 }
 
-func runMonteCarlo(confidence []int, iterations int) error {
+func runSyncFromFile(filePath string, dryRun bool) error {
+	fmt.Printf("Syncing from YAML file: %s\n", filePath)
+	if dryRun {
+		fmt.Println("(dry-run mode - no changes will be made)")
+	}
+	// TODO: Implement in next task
+	return fmt.Errorf("not yet implemented")
+}
+
+func runMonteCarlo(confidence []int, iterations int, projectFilter string) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("failed to load config")
+	}
+
+	store := storage.New(".forecast")
+
+	// Determine which project to forecast
+	var projectKey string
+	var projectName string
+	teamCapacity := cfg.TeamCapacity
+	if teamCapacity <= 0 {
+		teamCapacity = 8.0
+	}
+
+	projects := cfg.GetAllProjects()
+	if len(projects) > 0 {
+		// Multi-project mode
+		if projectFilter == "" {
+			fmt.Println("Available projects:")
+			for _, p := range projects {
+				fmt.Printf("  - %s (%s)\n", p.Key, p.Name)
+			}
+			return fmt.Errorf("specify a project with --project flag")
+		}
+
+		proj := cfg.GetProject(projectFilter)
+		if proj == nil {
+			return fmt.Errorf("project '%s' not found in config", projectFilter)
+		}
+		projectKey = proj.Key
+		if projectKey == "" {
+			projectKey = proj.Epic
+		}
+		projectName = proj.Name
+		if proj.Capacity > 0 {
+			teamCapacity = proj.Capacity
+		}
+	}
+
 	fmt.Printf("Running Monte Carlo simulation (%d iterations)...\n", iterations)
+	if projectName != "" {
+		fmt.Printf("Project: %s\n", projectName)
+	}
 
 	// Load items
-	store := storage.New(".forecast")
-	items, err := store.Load()
+	var items []forecast.Item
+	var err error
+	if projectKey != "" {
+		items, err = store.LoadProject(projectKey)
+	} else {
+		items, err = store.Load()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to load items: %w", err)
 	}
@@ -217,13 +341,6 @@ func runMonteCarlo(confidence []int, iterations int) error {
 
 	if cycleTimeCount == 0 {
 		return fmt.Errorf("no completed items with cycle time data - cannot forecast")
-	}
-
-	// Get team capacity from config, default to 8 hours/day
-	teamCapacity := 8.0
-	cfg := config.Get()
-	if cfg != nil && cfg.TeamCapacity > 0 {
-		teamCapacity = cfg.TeamCapacity
 	}
 
 	// Create and run Monte Carlo simulator
@@ -252,10 +369,58 @@ func runMonteCarlo(confidence []int, iterations int) error {
 	return nil
 }
 
-func runReport(reportType string) error {
-	// Load items
+func runReport(reportType string, projectFilter string) error {
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("failed to load config")
+	}
+
 	store := storage.New(".forecast")
-	items, err := store.Load()
+
+	// Determine which project to report on
+	var projectKey string
+	projectName := cfg.ProjectName
+	if projectName == "" {
+		projectName = "Project"
+	}
+	teamCapacity := cfg.TeamCapacity
+	if teamCapacity <= 0 {
+		teamCapacity = 8.0
+	}
+
+	projects := cfg.GetAllProjects()
+	if len(projects) > 0 {
+		// Multi-project mode
+		if projectFilter == "" {
+			fmt.Println("Available projects:")
+			for _, p := range projects {
+				fmt.Printf("  - %s (%s)\n", p.Key, p.Name)
+			}
+			return fmt.Errorf("specify a project with --project flag")
+		}
+
+		proj := cfg.GetProject(projectFilter)
+		if proj == nil {
+			return fmt.Errorf("project '%s' not found in config", projectFilter)
+		}
+		projectKey = proj.Key
+		if projectKey == "" {
+			projectKey = proj.Epic
+		}
+		projectName = proj.Name
+		if proj.Capacity > 0 {
+			teamCapacity = proj.Capacity
+		}
+	}
+
+	// Load items
+	var items []forecast.Item
+	var err error
+	if projectKey != "" {
+		items, err = store.LoadProject(projectKey)
+	} else {
+		items, err = store.Load()
+	}
 	if err != nil {
 		return fmt.Errorf("failed to load items: %w", err)
 	}
@@ -264,22 +429,8 @@ func runReport(reportType string) error {
 		return fmt.Errorf("no items found - run 'forecast sync' first")
 	}
 
-	// Get config for project settings
-	cfg := config.Get()
-	projectName := "Project"
-	teamCapacity := 8.0
-	var startDate time.Time
-
-	if cfg != nil {
-		if cfg.ProjectName != "" {
-			projectName = cfg.ProjectName
-		}
-		if cfg.TeamCapacity > 0 {
-			teamCapacity = cfg.TeamCapacity
-		}
-	}
-
 	// Estimate project start from earliest item
+	var startDate time.Time
 	for _, item := range items {
 		if !item.Created.IsZero() {
 			if startDate.IsZero() || item.Created.Before(startDate) {

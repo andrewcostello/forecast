@@ -54,3 +54,36 @@ func ParseTaskFile(path string) (*TaskFile, error) {
 
 	return &tf, nil
 }
+
+// Save writes the task file back to disk, preserving formatting where possible
+func (tf *TaskFile) Save() error {
+	if tf.filePath == "" {
+		return fmt.Errorf("no file path set")
+	}
+
+	data, err := yaml.Marshal(tf)
+	if err != nil {
+		return fmt.Errorf("failed to marshal YAML: %w", err)
+	}
+
+	if err := os.WriteFile(tf.filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write file: %w", err)
+	}
+
+	return nil
+}
+
+// GetTask returns a task by its key
+func (tf *TaskFile) GetTask(key string) *Task {
+	for i := range tf.Tasks {
+		if tf.Tasks[i].Key == key {
+			return &tf.Tasks[i]
+		}
+	}
+	return nil
+}
+
+// FilePath returns the path to the task file
+func (tf *TaskFile) FilePath() string {
+	return tf.filePath
+}

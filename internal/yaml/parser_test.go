@@ -48,3 +48,45 @@ tasks:
 		t.Errorf("expected summary 'Test task one', got %s", tf.Tasks[0].Summary)
 	}
 }
+
+func TestUpdateTaskJiraKey(t *testing.T) {
+	content := `project: NEON
+epic: NEON-2
+
+tasks:
+  - key: TEST-001
+    summary: Test task one
+    type: Story
+`
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "tasks.yaml")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tf, err := ParseTaskFile(tmpFile)
+	if err != nil {
+		t.Fatalf("ParseTaskFile failed: %v", err)
+	}
+
+	// Update the task
+	tf.Tasks[0].JiraKey = "NEON-123"
+	tf.Tasks[0].Status = "To Do"
+
+	if err := tf.Save(); err != nil {
+		t.Fatalf("Save failed: %v", err)
+	}
+
+	// Re-read and verify
+	tf2, err := ParseTaskFile(tmpFile)
+	if err != nil {
+		t.Fatalf("ParseTaskFile failed: %v", err)
+	}
+
+	if tf2.Tasks[0].JiraKey != "NEON-123" {
+		t.Errorf("expected jira_key NEON-123, got %s", tf2.Tasks[0].JiraKey)
+	}
+	if tf2.Tasks[0].Status != "To Do" {
+		t.Errorf("expected status 'To Do', got %s", tf2.Tasks[0].Status)
+	}
+}

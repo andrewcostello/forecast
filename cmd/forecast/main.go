@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -341,6 +342,45 @@ func runSyncFromFile(filePath string, dryRun bool) error {
 			return fmt.Errorf("failed to save updated YAML: %w", err)
 		}
 		fmt.Printf("\n✓ Updated %s with JIRA keys\n", filePath)
+	}
+
+	// Also save to local storage for forecasting
+	store := storage.New(".forecast")
+
+	// Convert tasks to forecast items
+	items := make([]forecast.Item, 0, len(tf.Tasks))
+	for _, task := range tf.Tasks {
+		item := forecast.Item{
+			ID:          task.Key,
+			JiraKey:     task.JiraKey,
+			Description: task.Summary,
+			Status:      task.Status,
+			Type:        task.Type,
+		}
+
+		// Parse size from labels
+		for _, label := range task.Labels {
+			if strings.HasPrefix(label, "size:") {
+				item.Size = strings.TrimPrefix(label, "size:")
+				break
+			}
+		}
+
+		items = append(items, item)
+	}
+
+	// Determine project key for storage
+	projectKey := tf.Project
+	if projectKey == "" {
+		projectKey = strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+	}
+
+	if !dryRun {
+		if err := store.SaveProject(items, projectKey); err != nil {
+			fmt.Printf("Warning: failed to save to local storage: %v\n", err)
+		} else {
+			fmt.Printf("✓ Saved %d items to .forecast/data-%s.json\n", len(items), projectKey)
+		}
 	}
 
 	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")

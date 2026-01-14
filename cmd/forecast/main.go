@@ -69,7 +69,7 @@ Sets up project-specific settings for JIRA integration and item tracking.`,
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync data from JIRA",
+	Short: "Sync data from JIRA or YAML files",
 	Long: `Pulls latest issue data from JIRA including:
   - Issue status
   - Cycle times (Created → Done)
@@ -77,7 +77,17 @@ var syncCmd = &cobra.Command{
   - Assignees
 
 Use --project to sync a specific project, or sync all configured projects.
-Use --file to sync tasks from a YAML file (bidirectional).`,
+
+YAML File Sync (--file):
+  Bidirectional sync between a YAML task file and JIRA:
+  - Creates JIRA tickets for tasks without jira_key
+  - Fetches status for tasks with jira_key
+  - Writes jira_key back to YAML after creation
+  - Saves items to local storage for forecasting
+
+Example:
+  forecast sync --file docs/tasks/WALLET_TASKS.yaml
+  forecast sync --file tasks.yaml --dry-run`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
 		file, _ := cmd.Flags().GetString("file")

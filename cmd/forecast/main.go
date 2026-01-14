@@ -12,6 +12,7 @@ import (
 	"bitbucket.org/supermoneygames/forecast/internal/referenceclass"
 	"bitbucket.org/supermoneygames/forecast/internal/report"
 	"bitbucket.org/supermoneygames/forecast/internal/storage"
+	yamlparser "bitbucket.org/supermoneygames/forecast/internal/yaml"
 	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
 	"github.com/spf13/cobra"
 )
@@ -254,12 +255,102 @@ func runSync(projectFilter string) error {
 }
 
 func runSyncFromFile(filePath string, dryRun bool) error {
-	fmt.Printf("Syncing from YAML file: %s\n", filePath)
-	if dryRun {
-		fmt.Println("(dry-run mode - no changes will be made)")
+	cfg := config.Get()
+	if cfg == nil {
+		return fmt.Errorf("failed to load config")
 	}
-	// TODO: Implement in next task
-	return fmt.Errorf("not yet implemented")
+
+	// Parse YAML file
+	tf, err := yamlparser.ParseTaskFile(filePath)
+	if err != nil {
+		return fmt.Errorf("failed to parse task file: %w", err)
+	}
+
+	fmt.Printf("Loaded %d tasks from %s\n", len(tf.Tasks), filePath)
+	fmt.Printf("Project: %s, Epic: %s\n\n", tf.Project, tf.Epic)
+
+	// Create JIRA client
+	jiraClient := jira.NewClient(&cfg.JIRA)
+
+	var created, updated, skipped int
+	var modified bool
+
+	for i := range tf.Tasks {
+		task := &tf.Tasks[i]
+
+		if task.JiraKey != "" {
+			// Task already has JIRA key - fetch status
+			fmt.Printf("  [%s] %s → fetching status from %s...\n", task.Key, truncate(task.Summary, 40), task.JiraKey)
+
+			if !dryRun {
+				issue, err := jiraClient.GetIssue(task.JiraKey)
+				if err != nil {
+					fmt.Printf("    Warning: failed to fetch %s: %v\n", task.JiraKey, err)
+					skipped++
+					continue
+				}
+
+				if task.Status != issue.Fields.Status.Name {
+					task.Status = issue.Fields.Status.Name
+					modified = true
+					fmt.Printf("    Status: %s\n", task.Status)
+				}
+			}
+			updated++
+		} else {
+			// No JIRA key - create new ticket
+			fmt.Printf("  [%s] %s → creating in JIRA...\n", task.Key, truncate(task.Summary, 40))
+
+			if !dryRun {
+				req := jira.CreateIssueRequest{
+					Summary:     fmt.Sprintf("%s: %s", task.Key, task.Summary),
+					IssueType:   task.Type,
+					Description: task.Description,
+					Priority:    "Medium",
+					Labels:      task.Labels,
+					Epic:        tf.Epic,
+					Project:     tf.Project,
+				}
+
+				// Default to Story if type not specified
+				if req.IssueType == "" {
+					req.IssueType = "Story"
+				}
+
+				result, err := jiraClient.CreateIssue(req)
+				if err != nil {
+					fmt.Printf("    Error: %v\n", err)
+					skipped++
+					continue
+				}
+
+				task.JiraKey = result.Key
+				task.Status = "To Do"
+				modified = true
+				fmt.Printf("    Created: %s\n", result.Key)
+			} else {
+				fmt.Printf("    Would create: %s: %s\n", task.Key, task.Summary)
+			}
+			created++
+		}
+	}
+
+	// Save updated YAML file
+	if modified && !dryRun {
+		if err := tf.Save(); err != nil {
+			return fmt.Errorf("failed to save updated YAML: %w", err)
+		}
+		fmt.Printf("\n✓ Updated %s with JIRA keys\n", filePath)
+	}
+
+	fmt.Printf("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
+	fmt.Printf("Summary: %d created, %d updated, %d skipped\n", created, updated, skipped)
+
+	if dryRun {
+		fmt.Println("\n(dry-run mode - no changes were made)")
+	}
+
+	return nil
 }
 
 func runMonteCarlo(confidence []int, iterations int, projectFilter string) error {

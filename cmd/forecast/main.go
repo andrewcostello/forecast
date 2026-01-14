@@ -278,10 +278,23 @@ func runSyncFromFile(filePath string, dryRun bool) error {
 	}
 
 	fmt.Printf("Loaded %d tasks from %s\n", len(tf.Tasks), filePath)
-	fmt.Printf("Project: %s, Epic: %s\n\n", tf.Project, tf.Epic)
 
-	// Create JIRA client
-	jiraClient := jira.NewClient(&cfg.JIRA)
+	// Get JIRA instance config (from yaml jira_instance field or default)
+	jiraCfg := cfg.GetJIRAInstance(tf.JiraInstance)
+	if tf.JiraInstance != "" {
+		fmt.Printf("Using JIRA instance: %s (%s)\n", tf.JiraInstance, jiraCfg.URL)
+	}
+
+	// Use project key from JIRA config if YAML project matches, otherwise use YAML project
+	projectKey := tf.Project
+	if jiraCfg.ProjectKey != "" {
+		projectKey = jiraCfg.ProjectKey
+	}
+
+	fmt.Printf("Project: %s, Epic: %s\n\n", projectKey, tf.Epic)
+
+	// Create JIRA client with the selected instance
+	jiraClient := jira.NewClient(jiraCfg)
 
 	var created, updated, skipped int
 	var modified bool
@@ -320,7 +333,7 @@ func runSyncFromFile(filePath string, dryRun bool) error {
 					Priority:    "Medium",
 					Labels:      task.Labels,
 					Epic:        tf.Epic,
-					Project:     tf.Project,
+					Project:     projectKey,
 				}
 
 				// Default to Story if type not specified
@@ -379,17 +392,17 @@ func runSyncFromFile(filePath string, dryRun bool) error {
 		items = append(items, item)
 	}
 
-	// Determine project key for storage
-	projectKey := tf.Project
-	if projectKey == "" {
-		projectKey = strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
+	// Use projectKey for storage (already resolved above, fallback to filename if empty)
+	storageKey := projectKey
+	if storageKey == "" {
+		storageKey = strings.TrimSuffix(filepath.Base(filePath), filepath.Ext(filePath))
 	}
 
 	if !dryRun {
-		if err := store.SaveProject(items, projectKey); err != nil {
+		if err := store.SaveProject(items, storageKey); err != nil {
 			fmt.Printf("Warning: failed to save to local storage: %v\n", err)
 		} else {
-			fmt.Printf("✓ Saved %d items to .forecast/data-%s.json\n", len(items), projectKey)
+			fmt.Printf("✓ Saved %d items to .forecast/data-%s.json\n", len(items), storageKey)
 		}
 	}
 

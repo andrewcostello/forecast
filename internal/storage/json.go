@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
 )
 
-// JSONStorage stores items as JSON in .forecast/data.json
+// JSONStorage stores items as JSON in .forecast/data.json or .forecast/data-{project}.json
 type JSONStorage struct {
 	dataDir string
 }
@@ -22,14 +23,19 @@ func New(dataDir string) *JSONStorage {
 	return &JSONStorage{dataDir: dataDir}
 }
 
-// Save writes items to JSON file
+// Save writes items to JSON file (legacy - uses data.json)
 func (s *JSONStorage) Save(items []forecast.Item) error {
+	return s.SaveProject(items, "")
+}
+
+// SaveProject writes items to a project-specific JSON file
+func (s *JSONStorage) SaveProject(items []forecast.Item, projectKey string) error {
 	// Ensure directory exists
 	if err := os.MkdirAll(s.dataDir, 0755); err != nil {
 		return fmt.Errorf("failed to create data directory: %w", err)
 	}
 
-	filePath := filepath.Join(s.dataDir, "data.json")
+	filePath := s.getDataFilePath(projectKey)
 
 	data, err := json.MarshalIndent(items, "", "  ")
 	if err != nil {
@@ -43,9 +49,14 @@ func (s *JSONStorage) Save(items []forecast.Item) error {
 	return nil
 }
 
-// Load reads items from JSON file
+// Load reads items from JSON file (legacy - uses data.json)
 func (s *JSONStorage) Load() ([]forecast.Item, error) {
-	filePath := filepath.Join(s.dataDir, "data.json")
+	return s.LoadProject("")
+}
+
+// LoadProject reads items from a project-specific JSON file
+func (s *JSONStorage) LoadProject(projectKey string) ([]forecast.Item, error) {
+	filePath := s.getDataFilePath(projectKey)
 
 	data, err := os.ReadFile(filePath)
 	if err != nil {
@@ -61,4 +72,34 @@ func (s *JSONStorage) Load() ([]forecast.Item, error) {
 	}
 
 	return items, nil
+}
+
+// getDataFilePath returns the appropriate data file path for a project
+func (s *JSONStorage) getDataFilePath(projectKey string) string {
+	if projectKey == "" {
+		return filepath.Join(s.dataDir, "data.json")
+	}
+	return filepath.Join(s.dataDir, fmt.Sprintf("data-%s.json", projectKey))
+}
+
+// ListProjects returns a list of project keys that have data files
+func (s *JSONStorage) ListProjects() ([]string, error) {
+	files, err := os.ReadDir(s.dataDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	var projects []string
+	for _, f := range files {
+		name := f.Name()
+		if strings.HasPrefix(name, "data-") && strings.HasSuffix(name, ".json") {
+			// Extract project key from "data-{key}.json"
+			key := strings.TrimSuffix(strings.TrimPrefix(name, "data-"), ".json")
+			projects = append(projects, key)
+		}
+	}
+	return projects, nil
 }

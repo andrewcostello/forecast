@@ -10,9 +10,10 @@ import (
 
 // TaskFile represents the structure of a YAML task file
 type TaskFile struct {
-	Project string `yaml:"project"`
-	Epic    string `yaml:"epic"`
-	Tasks   []Task `yaml:"tasks"`
+	JiraInstance string `yaml:"jira_instance,omitempty"` // Named JIRA instance from config
+	Project      string `yaml:"project"`
+	Epic         string `yaml:"epic"`
+	Tasks        []Task `yaml:"tasks"`
 
 	// Internal: preserve original for round-trip editing
 	filePath string

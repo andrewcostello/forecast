@@ -10,15 +10,16 @@ import (
 
 // Config holds the application configuration
 type Config struct {
-	ProjectName    string               `mapstructure:"project_name"`
-	ProjectType    string               `mapstructure:"project_type"`
-	TeamSize       int                  `mapstructure:"team_size"`
-	TeamCapacity   float64              `mapstructure:"team_capacity"` // Hours per day
-	JIRA           JIRAConfig           `mapstructure:"jira"`
-	Projects       []ProjectConfig      `mapstructure:"projects"` // Multiple project/epic tracking
-	ItemTypes      []ItemTypeConfig     `mapstructure:"item_types"`
-	ReferenceClass ReferenceClassConfig `mapstructure:"reference_class"`
-	JIRAMapping    JIRAMappingConfig    `mapstructure:"jira_mapping"`
+	ProjectName    string                 `mapstructure:"project_name"`
+	ProjectType    string                 `mapstructure:"project_type"`
+	TeamSize       int                    `mapstructure:"team_size"`
+	TeamCapacity   float64                `mapstructure:"team_capacity"` // Hours per day
+	JIRA           JIRAConfig             `mapstructure:"jira"`
+	JIRAInstances  map[string]JIRAConfig  `mapstructure:"jira_instances"` // Named JIRA instances for multi-JIRA support
+	Projects       []ProjectConfig        `mapstructure:"projects"`       // Multiple project/epic tracking
+	ItemTypes      []ItemTypeConfig       `mapstructure:"item_types"`
+	ReferenceClass ReferenceClassConfig   `mapstructure:"reference_class"`
+	JIRAMapping    JIRAMappingConfig      `mapstructure:"jira_mapping"`
 }
 
 // ProjectConfig defines a trackable project/initiative
@@ -113,6 +114,21 @@ func (c *Config) GetProject(keyOrEpic string) *ProjectConfig {
 // GetAllProjects returns all configured projects
 func (c *Config) GetAllProjects() []ProjectConfig {
 	return c.Projects
+}
+
+// GetJIRAInstance returns a JIRA instance config by name
+// Falls back to default JIRA config if name is empty or not found
+func (c *Config) GetJIRAInstance(name string) *JIRAConfig {
+	if name == "" {
+		return &c.JIRA
+	}
+	if c.JIRAInstances != nil {
+		if instance, ok := c.JIRAInstances[name]; ok {
+			return &instance
+		}
+	}
+	// Fall back to default
+	return &c.JIRA
 }
 
 // InitProject creates a new .forecast directory with default config

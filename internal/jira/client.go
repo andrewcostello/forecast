@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"bitbucket.org/supermoneygames/forecast/internal/config"
-	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/internal/config"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 )
 
 // Client represents a JIRA API client

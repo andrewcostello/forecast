@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 	_ "modernc.org/sqlite"
 )
 

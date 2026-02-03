@@ -7,9 +7,9 @@ import (
 	"strings"
 	"time"
 
-	"bitbucket.org/supermoneygames/forecast/internal/eva"
-	"bitbucket.org/supermoneygames/forecast/internal/montecarlo"
-	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/internal/eva"
+	"github.com/andrewcostello/forecast/internal/montecarlo"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 )
 
 // Generator creates project reports
@@ -233,17 +233,22 @@ func (g *Generator) calculateStats() Stats {
 	var totalCycleTime float64
 
 	for _, item := range g.Items {
-		stats.Total++
 		switch item.Status {
 		case "Done":
+			stats.Total++
 			stats.Completed++
 			if item.CycleTime > 0 {
 				totalCycleTime += item.CycleTime
 				stats.CycleTimeCount++
 			}
+		case "Canceled":
+			// Exclude canceled items from all counts
+			continue
 		case "In Progress":
+			stats.Total++
 			stats.InProgress++
 		default:
+			stats.Total++
 			stats.ToDo++
 		}
 	}
@@ -300,6 +305,11 @@ func (g *Generator) calculateTypeStats() map[string]TypeStats {
 	result := make(map[string]TypeStats)
 
 	for _, item := range g.Items {
+		// Exclude canceled items
+		if item.Status == "Canceled" {
+			continue
+		}
+
 		itemType := item.Type
 		if itemType == "" {
 			itemType = "Untyped"

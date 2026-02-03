@@ -3,7 +3,7 @@ package eva
 import (
 	"time"
 
-	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 )
 
 // Calculator calculates Earned Value Analysis metrics

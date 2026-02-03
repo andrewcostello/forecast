@@ -6,7 +6,7 @@ import (
 	"sort"
 	"time"
 
-	"bitbucket.org/supermoneygames/forecast/pkg/forecast"
+	"github.com/andrewcostello/forecast/pkg/forecast"
 	"gonum.org/v1/gonum/stat"
 )
 
@@ -27,9 +27,9 @@ func NewSimulator(items []forecast.Item, teamCapacity float64) *Simulator {
 		Rand:         rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
 
-	// Count remaining items by size
+	// Count remaining items by size (exclude Done and Canceled)
 	for _, item := range items {
-		if item.Status != "Done" {
+		if item.Status != "Done" && item.Status != "Canceled" {
 			s.Remaining[item.Size]++
 		}
 	}

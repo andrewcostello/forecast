@@ -68,6 +68,13 @@ type FieldMapping struct {
 
 var current *Config
 
+// ConfigNotFoundError indicates config file was not found
+type ConfigNotFoundError struct{}
+
+func (e ConfigNotFoundError) Error() string {
+	return "config file not found"
+}
+
 // Load loads configuration from file
 func Load(configFile string) error {
 	if configFile != "" {
@@ -83,14 +90,22 @@ func Load(configFile string) error {
 
 	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; use defaults
-			return nil
+			// Config file not found
+			return ConfigNotFoundError{}
 		}
-		return err
+		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
 	current = &Config{}
-	return viper.Unmarshal(current)
+	if err := viper.Unmarshal(current); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+	return nil
+}
+
+// IsLoaded returns true if a config has been loaded
+func IsLoaded() bool {
+	return current != nil && (current.JIRA.URL != "" || len(current.Projects) > 0)
 }
 
 // Get returns the current configuration
@@ -145,7 +160,7 @@ func InitProject() error {
 	}
 
 	defaultConfig := `# Forecast Configuration
-# See https://bitbucket.org/supermoneygames/forecast for documentation
+# See https://github.com/andrewcostello/forecast for documentation
 
 # Project settings
 project_name: "My Project"

@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Forecast Dashboard</title>
+    <link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+    <header>
+        <h1>Forecast Dashboard</h1>
+        <div id="health-status" class="status-indicator"></div>
+    </header>
+
+    <main>
+        <section id="projects-section">
+            <h2>Projects</h2>
+            <div id="projects-list" class="projects-grid">
+                <div class="loading">Loading projects...</div>
+            </div>
+        </section>
+
+        <section id="detail-section" class="hidden">
+            <div class="detail-header">
+                <button id="back-btn" class="btn btn-secondary">&larr; Back</button>
+                <h2 id="project-title"></h2>
+            </div>
+            <div id="project-detail">
+                <div class="stats-grid" id="project-stats"></div>
+                <div class="forecast-section" id="project-forecast"></div>
+                <div class="diagram-section" id="project-diagram"></div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <p>Forecast v1.0.0 | <a href="https://github.com/andrewcostello/forecast" target="_blank">GitHub</a></p>
+    </footer>
+
+    <script src="/js/app.js"></script>
+    <script src="/js/charts.js"></script>
+</body>
+</html>

@@ -255,11 +255,17 @@ func (c *Client) searchWithFieldsInternal(jql string, extraFields []string, allF
 }
 
 func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
+	doneStatuses := cfg.JIRA.EffectiveDoneStatuses()
+	rawStatus := issue.Fields.Status.Name
+	normalizedStatus := rawStatus
+	if isDoneStatus(rawStatus, doneStatuses) {
+		normalizedStatus = "Done"
+	}
 	item := forecast.Item{
 		ID:          issue.Key,
 		JiraKey:     issue.Key,
 		Description: issue.Fields.Summary,
-		Status:      issue.Fields.Status.Name,
+		Status:      normalizedStatus,
 	}
 
 	// Parse created time - JIRA uses format like "2025-12-04T05:24:06.077-0800"
@@ -291,7 +297,7 @@ func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
 	}
 
 	// Calculate cycle time from changelog
-	inProgressTime, doneTime := c.extractStateTransitions(issue.Changelog)
+	inProgressTime, doneTime := c.extractStateTransitions(issue.Changelog, doneStatuses)
 	if inProgressTime != nil {
 		item.InProgress = inProgressTime
 	}
@@ -373,7 +379,18 @@ func parseJIRATime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("failed to parse time: %s", s)
 }
 
-func (c *Client) extractStateTransitions(changelog *Changelog) (*time.Time, *time.Time) {
+// isDoneStatus reports whether status is in the configured done-equivalent set.
+// Comparison is exact (case-sensitive) to match raw Jira status names.
+func isDoneStatus(status string, doneStatuses []string) bool {
+	for _, s := range doneStatuses {
+		if s == status {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) extractStateTransitions(changelog *Changelog, doneStatuses []string) (*time.Time, *time.Time) {
 	if changelog == nil {
 		return nil, nil
 	}
@@ -393,8 +410,11 @@ func (c *Client) extractStateTransitions(changelog *Changelog) (*time.Time, *tim
 					inProgressTime = &timestamp
 				}
 
-				// Track "Done" transition
-				if item.ToString == "Done" && doneTime == nil {
+				// Track first transition into any done-equivalent status.
+				// "Awaiting Dev Deployment" can be treated as done via config so
+				// dev-complete tickets contribute cycle-time samples to Monte Carlo
+				// before the deploy gate clears.
+				if isDoneStatus(item.ToString, doneStatuses) && doneTime == nil {
 					doneTime = &timestamp
 				}
 			}

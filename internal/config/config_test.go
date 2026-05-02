@@ -225,6 +225,76 @@ item_types:
 	}
 }
 
+func TestEffectiveDoneStatuses(t *testing.T) {
+	t.Run("defaults to Done when unset", func(t *testing.T) {
+		j := JIRAConfig{}
+		got := j.EffectiveDoneStatuses()
+		if len(got) != 1 || got[0] != "Done" {
+			t.Errorf("expected [Done], got %v", got)
+		}
+	})
+
+	t.Run("returns configured list verbatim", func(t *testing.T) {
+		j := JIRAConfig{DoneStatuses: []string{"Done", "Awaiting Dev Deployment"}}
+		got := j.EffectiveDoneStatuses()
+		if len(got) != 2 || got[0] != "Done" || got[1] != "Awaiting Dev Deployment" {
+			t.Errorf("expected [Done, Awaiting Dev Deployment], got %v", got)
+		}
+	})
+}
+
+func TestLoadExpandsAPITokenEnvVar(t *testing.T) {
+	tempDir := t.TempDir()
+	t.Setenv("TEST_JIRA_TOKEN", "expanded-secret")
+	configContent := `
+jira:
+  url: https://test.atlassian.net
+  email: test@example.com
+  api_token: ${TEST_JIRA_TOKEN}
+  project_key: TEST
+`
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	current = nil
+	if err := Load(configPath); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	cfg := Get()
+	if cfg.JIRA.APIToken != "expanded-secret" {
+		t.Errorf("expected token to be expanded to 'expanded-secret', got %q", cfg.JIRA.APIToken)
+	}
+}
+
+func TestLoadDoneStatuses(t *testing.T) {
+	tempDir := t.TempDir()
+	configContent := `
+jira:
+  url: https://test.atlassian.net
+  project_key: TEST
+  done_statuses:
+    - Done
+    - Awaiting Dev Deployment
+`
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	current = nil
+	if err := Load(configPath); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	got := Get().JIRA.EffectiveDoneStatuses()
+	if len(got) != 2 || got[0] != "Done" || got[1] != "Awaiting Dev Deployment" {
+		t.Errorf("expected [Done, Awaiting Dev Deployment], got %v", got)
+	}
+}
+
 func TestJIRAMappingConfig(t *testing.T) {
 	tempDir := t.TempDir()
 	configContent := `

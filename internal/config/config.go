@@ -39,6 +39,22 @@ type JIRAConfig struct {
 	Labels           []string `mapstructure:"labels"`
 	CycleTimeField   string   `mapstructure:"cycle_time_field"`   // Custom field ID for manual cycle time override (e.g., "customfield_10001")
 	StoryPointsField string   `mapstructure:"story_points_field"` // Custom field ID for story points (e.g., "customfield_10004")
+	// DoneStatuses lists Jira workflow statuses that should be treated as
+	// "Done" for forecasting (cycle-time anchoring + completion counts).
+	// Defaults to {"Done"} when unset. Use this to fold dev-complete-but-
+	// not-yet-deployed states (e.g. "Awaiting Dev Deployment") into the
+	// completed bucket so Monte Carlo has cycle-time samples while a
+	// merge-to-main / deploy gate is still pending.
+	DoneStatuses []string `mapstructure:"done_statuses"`
+}
+
+// EffectiveDoneStatuses returns the configured done-equivalent status list,
+// or {"Done"} if unset. Always returns a non-empty slice.
+func (j *JIRAConfig) EffectiveDoneStatuses() []string {
+	if len(j.DoneStatuses) == 0 {
+		return []string{"Done"}
+	}
+	return j.DoneStatuses
 }
 
 type ItemTypeConfig struct {
@@ -100,6 +116,14 @@ func Load(configFile string) error {
 	if err := viper.Unmarshal(current); err != nil {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
+
+	// Expand environment variables in API tokens (supports ${VAR} syntax in YAML)
+	current.JIRA.APIToken = os.ExpandEnv(current.JIRA.APIToken)
+	for name, inst := range current.JIRAInstances {
+		inst.APIToken = os.ExpandEnv(inst.APIToken)
+		current.JIRAInstances[name] = inst
+	}
+
 	return nil
 }
 

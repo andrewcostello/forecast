@@ -243,6 +243,24 @@ func TestEffectiveDoneStatuses(t *testing.T) {
 	})
 }
 
+func TestEffectiveInProgressStatuses(t *testing.T) {
+	t.Run("defaults to In Progress + In Development when unset", func(t *testing.T) {
+		j := JIRAConfig{}
+		got := j.EffectiveInProgressStatuses()
+		if len(got) != 2 || got[0] != "In Progress" || got[1] != "In Development" {
+			t.Errorf("expected [In Progress, In Development], got %v", got)
+		}
+	})
+
+	t.Run("returns configured list verbatim", func(t *testing.T) {
+		j := JIRAConfig{InProgressStatuses: []string{"Coding"}}
+		got := j.EffectiveInProgressStatuses()
+		if len(got) != 1 || got[0] != "Coding" {
+			t.Errorf("expected [Coding], got %v", got)
+		}
+	})
+}
+
 func TestLoadExpandsAPITokenEnvVar(t *testing.T) {
 	tempDir := t.TempDir()
 	t.Setenv("TEST_JIRA_TOKEN", "expanded-secret")

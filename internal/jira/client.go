@@ -256,10 +256,14 @@ func (c *Client) searchWithFieldsInternal(jql string, extraFields []string, allF
 
 func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
 	doneStatuses := cfg.JIRA.EffectiveDoneStatuses()
+	inProgressStatuses := cfg.JIRA.EffectiveInProgressStatuses()
 	rawStatus := issue.Fields.Status.Name
 	normalizedStatus := rawStatus
-	if isDoneStatus(rawStatus, doneStatuses) {
+	switch {
+	case isStatusIn(rawStatus, doneStatuses):
 		normalizedStatus = "Done"
+	case isStatusIn(rawStatus, inProgressStatuses):
+		normalizedStatus = "In Progress"
 	}
 	item := forecast.Item{
 		ID:          issue.Key,
@@ -297,7 +301,7 @@ func (c *Client) convertIssue(issue Issue, cfg *config.Config) forecast.Item {
 	}
 
 	// Calculate cycle time from changelog
-	inProgressTime, doneTime := c.extractStateTransitions(issue.Changelog, doneStatuses)
+	inProgressTime, doneTime := c.extractStateTransitions(issue.Changelog, inProgressStatuses, doneStatuses)
 	if inProgressTime != nil {
 		item.InProgress = inProgressTime
 	}
@@ -379,10 +383,10 @@ func parseJIRATime(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("failed to parse time: %s", s)
 }
 
-// isDoneStatus reports whether status is in the configured done-equivalent set.
+// isStatusIn reports whether status is in the supplied set.
 // Comparison is exact (case-sensitive) to match raw Jira status names.
-func isDoneStatus(status string, doneStatuses []string) bool {
-	for _, s := range doneStatuses {
+func isStatusIn(status string, statuses []string) bool {
+	for _, s := range statuses {
 		if s == status {
 			return true
 		}
@@ -390,7 +394,7 @@ func isDoneStatus(status string, doneStatuses []string) bool {
 	return false
 }
 
-func (c *Client) extractStateTransitions(changelog *Changelog, doneStatuses []string) (*time.Time, *time.Time) {
+func (c *Client) extractStateTransitions(changelog *Changelog, inProgressStatuses, doneStatuses []string) (*time.Time, *time.Time) {
 	if changelog == nil {
 		return nil, nil
 	}
@@ -405,8 +409,9 @@ func (c *Client) extractStateTransitions(changelog *Changelog, doneStatuses []st
 					continue
 				}
 
-				// Track "In Progress" or "In Development" transition
-				if (item.ToString == "In Progress" || item.ToString == "In Development") && inProgressTime == nil {
+				// Track first transition into any in-progress-equivalent status
+				// (e.g. "In Progress" or "In Development").
+				if isStatusIn(item.ToString, inProgressStatuses) && inProgressTime == nil {
 					inProgressTime = &timestamp
 				}
 
@@ -414,7 +419,7 @@ func (c *Client) extractStateTransitions(changelog *Changelog, doneStatuses []st
 				// "Awaiting Dev Deployment" can be treated as done via config so
 				// dev-complete tickets contribute cycle-time samples to Monte Carlo
 				// before the deploy gate clears.
-				if isDoneStatus(item.ToString, doneStatuses) && doneTime == nil {
+				if isStatusIn(item.ToString, doneStatuses) && doneTime == nil {
 					doneTime = &timestamp
 				}
 			}

@@ -46,6 +46,10 @@ type JIRAConfig struct {
 	// completed bucket so Monte Carlo has cycle-time samples while a
 	// merge-to-main / deploy gate is still pending.
 	DoneStatuses []string `mapstructure:"done_statuses"`
+	// InProgressStatuses lists Jira workflow statuses that should be treated
+	// as "In Progress" for forecasting (cycle-time start anchor + WIP counts).
+	// Defaults to {"In Progress", "In Development"} when unset.
+	InProgressStatuses []string `mapstructure:"in_progress_statuses"`
 }
 
 // EffectiveDoneStatuses returns the configured done-equivalent status list,
@@ -55,6 +59,16 @@ func (j *JIRAConfig) EffectiveDoneStatuses() []string {
 		return []string{"Done"}
 	}
 	return j.DoneStatuses
+}
+
+// EffectiveInProgressStatuses returns the configured in-progress-equivalent
+// status list, or {"In Progress", "In Development"} if unset. Always returns
+// a non-empty slice.
+func (j *JIRAConfig) EffectiveInProgressStatuses() []string {
+	if len(j.InProgressStatuses) == 0 {
+		return []string{"In Progress", "In Development"}
+	}
+	return j.InProgressStatuses
 }
 
 type ItemTypeConfig struct {

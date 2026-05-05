@@ -32,8 +32,9 @@ This project uses **probabilistic forecasting** instead of traditional time esti
 Every ticket must follow this workflow:
 
 ```bash
-# 1. View ticket
-forecast jira get {TICKET-KEY}
+# 1. View ticket — description AND existing discussion
+forecast jira get {TICKET-KEY}              # description rendered as Markdown
+forecast jira comments {TICKET-KEY}         # read recent comments first
 
 # 2. Add size and type labels if missing
 forecast jira update {TICKET-KEY} --labels "size:M,type:component"
@@ -41,14 +42,20 @@ forecast jira update {TICKET-KEY} --labels "size:M,type:component"
 # 3. Start work (EXECUTE THIS)
 forecast jira transition {TICKET-KEY} --to "In Progress"  # Starts cycle time
 
-# 3a. Attach Implementation Plan (EXECUTE THIS)
-# If you created an implementation_plan.md and it was approved:
-# Add as a comment when transitioning or use the JIRA web interface
+# 3a. Post the implementation plan as a comment (EXECUTE THIS)
+forecast jira comment {TICKET-KEY} --body "## Implementation plan
+- step one
+- step two
+See implementation_plan.md"
 
-# 4. Do the work...
+# 4. Do the work — log time and surface blockers as they happen
+forecast jira log {TICKET-KEY} --time 1h30m --comment "investigation"
+forecast jira link {TICKET-KEY} --to {OTHER-KEY} --type "is blocked by"   # if blocked
 
-# 5. Complete (EXECUTE THIS)
-forecast jira transition {TICKET-KEY} --to "Done" --comment "Summary of completion"
+# 5. Complete (EXECUTE THIS) — include the resolution
+forecast jira transition {TICKET-KEY} --to "Done" \
+  --resolution Done \
+  --comment "Summary of completion"
 
 # 6. Update forecast (EXECUTE THIS)
 forecast sync
@@ -173,23 +180,58 @@ First, let me check if a ticket exists..."
 
 ### Available Commands
 
-```bash
-# JIRA Commands (via forecast tool)
-forecast jira search "assignee=currentUser()"    # Your tickets
-forecast jira get {KEY}                          # View ticket
-forecast jira create --summary "Task" --type Task # Create ticket
-forecast jira update {KEY} --labels "size:M"     # Update labels
-forecast jira transition {KEY} --to "In Progress" # Change status
-forecast jira transitions {KEY}                  # List available transitions
-forecast jira types                              # List issue types
-forecast jira priorities                         # List priorities
+`forecast jira --help` is the full grouped reference. The most relevant
+for AI agents:
 
-# Forecast Commands
-forecast sync                                    # Sync from JIRA
-forecast report                                  # Project status
-forecast run                                     # Monte Carlo forecast
-forecast run --confidence 50,70,85,95            # Specific levels
+```bash
+# Read & search
+forecast jira search "assignee=currentUser()"        # Your tickets
+forecast jira get {KEY}                              # Description rendered as Markdown + links
+forecast jira get {KEY} --history                    # Also dump changelog
+forecast jira comments {KEY}                         # Read existing discussion
+forecast jira worklogs {KEY}                         # Time logged (with total)
+forecast jira watchers {KEY}                         # Who's watching
+forecast jira attachments {KEY}                      # List attachments
+
+# Create & edit
+forecast jira create --summary "Task" --type Task --labels "size:M" --story-points 5
+forecast jira create --summary "Sub-task" --type Sub-task --parent {PARENT-KEY}
+forecast jira update {KEY} --labels "size:M" --story-points 8 --due-date 2026-06-30
+forecast jira comment {KEY} --body "..."             # ## headings, - bullets, *bold*
+forecast jira attach {KEY} ./file.png                # Upload attachment
+
+# Workflow & collaboration
+forecast jira transition {KEY} --to "In Progress"
+forecast jira transition {KEY} --to "Done" --resolution Done --comment "..."
+forecast jira log {KEY} --time 1h30m --comment "..."
+forecast jira link {FROM} --to {TO} --type Blocks    # Surface dependencies
+forecast jira watch {KEY}                            # Get notified
+
+# Sprint & release
+forecast jira sprints                                # Active sprints (auto-discovers board)
+forecast jira sprint-add {SPRINT-ID} {KEY} {KEY}
+forecast jira sprint-backlog {KEY}
+
+# Bulk over JQL
+forecast jira bulk transition --jql "..." --to "Done" --dry-run
+forecast jira bulk label --jql "..." --add foo --remove bar
+
+# Discovery
+forecast jira transitions {KEY}                      # Valid transitions out of current status
+forecast jira types / priorities / resolutions / link-types
+
+# Forecast
+forecast sync                                        # Sync from JIRA
+forecast report                                      # Project status
+forecast run --confidence 50,70,85,95                # Monte Carlo
 ```
+
+### Reading rich text
+
+Descriptions, comments, and worklog comments live in JIRA as Atlassian
+Document Format (ADF). The CLI renders them as Markdown, so `get`,
+`comments`, and `worklogs` output is human-readable. When writing, use
+the same lightweight subset: `## headings`, `- bullets`, `*bold*`.
 
 ### Critical Don'ts
 

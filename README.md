@@ -157,34 +157,107 @@ forecast reference-class add
 
 ### `forecast jira`
 
-Manage JIRA tickets directly via REST API:
+Full ticket lifecycle CLI on top of the JIRA REST + Agile APIs. Run
+`forecast jira --help` for the grouped subcommand list, or
+`forecast jira <cmd> --help` for flags. Highlights:
+
+**Read & search**
 
 ```bash
-# Create a new ticket
-forecast jira create --summary "Fix login bug" --type Bug --priority High
-forecast jira create --summary "Add dark mode" --type Story --labels ui,feature
-
-# Update a ticket
-forecast jira update PROJ-123 --priority Highest
-forecast jira update PROJ-123 --labels security,urgent
-
-# Get ticket details
+# Ticket details: summary, description (rendered from ADF to Markdown),
+# issue links with link IDs, and optional changelog
 forecast jira get PROJ-123
+forecast jira get PROJ-123 --history
 
-# Transition a ticket
-forecast jira transition PROJ-123 --to "In Development"
-forecast jira transition PROJ-123 --to Done --comment "Completed"
+# Comments and worklog (rendered from ADF; worklogs include a total)
+forecast jira comments PROJ-123
+forecast jira worklogs PROJ-123
 
-# Search tickets
+# Watchers and attachments
+forecast jira watchers PROJ-123
+forecast jira attachments PROJ-123
+
+# JQL search
 forecast jira search "project=PROJ AND status='To Do'"
-
-# List available transitions for a ticket
-forecast jira transitions PROJ-123
-
-# List available issue types and priorities
-forecast jira types
-forecast jira priorities
 ```
+
+**Create & edit**
+
+```bash
+# Create with the full field surface (story points / due date / parent /
+# fix versions / components are all optional)
+forecast jira create --summary "Add dark mode" --type Story \
+  --labels ui,feature --story-points 5 --due-date 2026-06-30
+
+# Sub-task: --parent is distinct from --epic
+forecast jira create --summary "Add UI toggle" --type Sub-task --parent PROJ-100
+
+# Update fields (omit to leave unchanged; --clear-due-date to wipe)
+forecast jira update PROJ-123 --priority Highest --story-points 8
+
+# Comments: write supports markdown subset (## headings, - bullets, *bold*)
+forecast jira comment PROJ-123 --body "Verified in staging."
+
+# Attachments
+forecast jira attach PROJ-123 ./screenshot.png
+forecast jira download <attachment-id> --out screenshot.png
+```
+
+**Workflow & collaboration**
+
+```bash
+# Transitions can carry a comment and/or set the resolution
+forecast jira transition PROJ-123 --to "In Development"
+forecast jira transition PROJ-123 --to Done --comment "Shipped" --resolution Done
+
+# Worklog (parses 2h, 30m, 1h30m, 1.5h)
+forecast jira log PROJ-123 --time 2h --comment "pairing with @alex"
+
+# Issue links
+forecast jira link PROJ-100 --to PROJ-200 --type Blocks       # PROJ-100 blocks PROJ-200
+forecast jira unlink <link-id>                                # IDs shown in `get`
+forecast jira link-types
+
+# Watchers (defaults to the authenticated user)
+forecast jira watch PROJ-123
+forecast jira unwatch PROJ-123 --user other@company.com
+```
+
+**Sprint & release**
+
+```bash
+forecast jira boards                              # discover board IDs
+forecast jira sprints                             # active sprints; auto-discovers single board
+forecast jira sprints --board 42 --state active,future
+forecast jira sprint-add 42 PROJ-100 PROJ-101     # add issues to sprint 42
+forecast jira sprint-backlog PROJ-100             # remove from any sprint
+```
+
+**Bulk over JQL**
+
+```bash
+forecast jira bulk transition --jql "project=PROJ AND status='To Do'" \
+  --to "In Progress" --dry-run
+forecast jira bulk label --jql "project=PROJ AND status=Done" --add archived
+```
+
+**Discovery**
+
+```bash
+forecast jira projects        # accessible projects
+forecast jira types           # issue types
+forecast jira priorities      # priorities
+forecast jira resolutions     # resolutions
+forecast jira link-types      # issue link types
+forecast jira transitions PROJ-123   # valid transitions out of current status
+forecast jira fields PROJ-123        # custom field IDs (find story_points_field, etc.)
+forecast jira missing-times          # audit Done tickets without cycle time
+```
+
+> **Rich-text rendering.** Descriptions, comments, and worklog comments
+> are stored in JIRA as Atlassian Document Format (ADF). The CLI renders
+> them as Markdown for reading, and accepts a small markdown subset
+> (`## headings`, `- bullets`, `*bold*`) for writing.
 
 ## Configuration
 

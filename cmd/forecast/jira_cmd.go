@@ -15,18 +15,48 @@ import (
 var jiraCmd = &cobra.Command{
 	Use:   "jira",
 	Short: "JIRA ticket management",
-	Long: `Commands for managing JIRA tickets directly via the REST API:
-  create        - Create a new ticket
-  update        - Update an existing ticket
-  get           - Get ticket details (including description)
-  comment       - Add a comment to a ticket
-  comments      - List comments on a ticket
-  transition    - Move ticket to a new status
-  search        - Search tickets using JQL
-  missing-times - List done tickets missing cycle time data
-  types         - List available issue types
-  priorities    - List available priorities
-  projects      - List available JIRA projects`,
+	Long: `Manage JIRA tickets across the full lifecycle, grouped by phase.
+
+Read & search:
+  get [--history]      Ticket details (summary, description, links, optional changelog)
+  search <jql>         JQL search
+  comments <key>       Read comments (rendered from ADF to Markdown)
+  worklogs <key>       Read worklog history with totals
+  watchers <key>       List watchers
+  attachments <key>    List attachments
+
+Create & edit:
+  create               Create ticket (--story-points, --due-date, --parent for sub-tasks,
+                       --fix-versions, --components)
+  update <key>         Update fields on an existing ticket
+  comment <key>        Add a comment (markdown subset: ## headings, - bullets, *bold*)
+  attach <key> <file>  Upload an attachment
+  download <id>        Download an attachment by ID
+
+Workflow & collaboration:
+  transition <key>     Move to a new status (--comment, --resolution)
+  log <key>            Log work (--time 2h / 1h30m / 1.5h)
+  link <from>          Create issue link (--to <key> --type Blocks|Relates|...)
+  unlink <link-id>     Delete an issue link
+  watch / unwatch      Add or remove a watcher
+
+Sprint & release:
+  boards               List Agile boards for the configured project
+  sprints              List sprints (auto-discovers single board, or --board <id>)
+  sprint-add <id> ...  Add issues to a sprint
+  sprint-backlog ...   Move issues out of any sprint
+
+Bulk:
+  bulk transition --jql ... --to ...   Apply transition over a JQL query (--dry-run)
+  bulk label --jql ... --add ... --remove ...
+
+Discovery:
+  types / priorities / resolutions / link-types / projects
+  fields <key>          Show custom field IDs (find story_points_field, etc.)
+  transitions <key>     Show valid transitions out of a ticket's current status
+  missing-times         Audit Done tickets without cycle-time data; --fix to backfill
+
+Run "forecast jira <cmd> --help" for the full flag set on each subcommand.`,
 }
 
 var jiraCreateCmd = &cobra.Command{
@@ -100,7 +130,14 @@ Examples:
 var jiraGetCmd = &cobra.Command{
 	Use:   "get [issue-key]",
 	Short: "Get JIRA ticket details",
-	Args:  cobra.ExactArgs(1),
+	Long: `Show summary, status, type, assignee, labels, dates, description (rendered
+from ADF to Markdown) and issue links. Pass --history to also dump the
+changelog (status/assignee/priority transitions with author + timestamp).
+
+Examples:
+  forecast jira get SMG-1234
+  forecast jira get SMG-1234 --history`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		history, _ := cmd.Flags().GetBool("history")
 		return runJiraGet(args[0], history)
@@ -172,6 +209,7 @@ var jiraUnlinkCmd = &cobra.Command{
 var jiraLinkTypesCmd = &cobra.Command{
 	Use:   "link-types",
 	Short: "List available issue link types",
+	Long:  `List the link type names you can pass to 'forecast jira link --type', with the verbs they read in each direction.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraLinkTypes()
 	},
@@ -203,6 +241,7 @@ var jiraUnwatchCmd = &cobra.Command{
 var jiraWatchersCmd = &cobra.Command{
 	Use:   "watchers [issue-key]",
 	Short: "List watchers on an issue",
+	Long:  `List everyone watching an issue, with display name and email when available.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraWatchers(args[0])
@@ -229,7 +268,9 @@ Examples:
 var jiraWorklogsCmd = &cobra.Command{
 	Use:   "worklogs [issue-key]",
 	Short: "List worklog entries on a ticket",
-	Args:  cobra.ExactArgs(1),
+	Long: `List every worklog entry on a ticket with author, time spent, and any
+comment (rendered from ADF to Markdown). Prints a total at the end.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraWorklogs(args[0])
 	},
@@ -257,7 +298,9 @@ Examples:
 var jiraAttachmentsCmd = &cobra.Command{
 	Use:   "attachments [issue-key]",
 	Short: "List attachments on a ticket",
-	Args:  cobra.ExactArgs(1),
+	Long: `List every attachment on a ticket with its ID, filename, size, upload date,
+and author. Use the ID with 'forecast jira download'.`,
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraAttachments(args[0])
 	},
@@ -266,7 +309,11 @@ var jiraAttachmentsCmd = &cobra.Command{
 var jiraAttachCmd = &cobra.Command{
 	Use:   "attach [issue-key] [file-path]",
 	Short: "Upload a file as an attachment",
-	Args:  cobra.ExactArgs(2),
+	Long: `Upload a local file as an attachment on the ticket.
+
+Example:
+  forecast jira attach SMG-1234 ./screenshot.png`,
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraAttach(args[0], args[1])
 	},
@@ -332,6 +379,11 @@ Examples:
 var jiraBoardsCmd = &cobra.Command{
 	Use:   "boards",
 	Short: "List Agile boards (filtered to configured project by default)",
+	Long: `List Agile boards visible to your account. Defaults to filtering by the
+configured project_key; pass --project to override.
+
+Use the board ID with 'forecast jira sprints --board <id>' if your project
+has more than one board.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		project, _ := cmd.Flags().GetString("project")
 		return runJiraBoards(project)
@@ -358,7 +410,12 @@ Examples:
 var jiraSprintAddCmd = &cobra.Command{
 	Use:   "sprint-add [sprint-id] [issue-key...]",
 	Short: "Add issues to a sprint",
-	Args:  cobra.MinimumNArgs(2),
+	Long: `Add one or more issues to a sprint by sprint ID. Get sprint IDs from
+'forecast jira sprints'.
+
+Example:
+  forecast jira sprint-add 42 SMG-100 SMG-101 SMG-102`,
+	Args: cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraSprintAdd(args[0], args[1:])
 	},
@@ -367,7 +424,11 @@ var jiraSprintAddCmd = &cobra.Command{
 var jiraSprintBacklogCmd = &cobra.Command{
 	Use:   "sprint-backlog [issue-key...]",
 	Short: "Move issues out of any sprint and into the backlog",
-	Args:  cobra.MinimumNArgs(1),
+	Long: `Move one or more issues out of their current sprint and back to the backlog.
+
+Example:
+  forecast jira sprint-backlog SMG-100 SMG-101`,
+	Args: cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraSprintBacklog(args)
 	},
@@ -376,6 +437,7 @@ var jiraSprintBacklogCmd = &cobra.Command{
 var jiraResolutionsCmd = &cobra.Command{
 	Use:   "resolutions",
 	Short: "List available resolutions",
+	Long:  `List available resolution names for use with 'forecast jira transition --resolution'.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runJiraResolutions()
 	},

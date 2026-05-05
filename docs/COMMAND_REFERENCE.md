@@ -26,71 +26,168 @@ forecast dashboard --project monorepo   # Detailed view of specific project
 
 ## JIRA Commands
 
-### View & Search
+`forecast jira --help` lists every subcommand grouped by lifecycle phase.
+The summary below mirrors that grouping.
+
+### Read & Search
 
 ```bash
-# Get ticket details
+# Ticket details: status, type, assignee, labels, dates, description
+# (rendered from ADF to Markdown), and issue links with link IDs.
 forecast jira get SMG-123
+forecast jira get SMG-123 --history     # also dumps changelog (status/assignee/priority)
 
-# Search tickets (JQL)
+# Comments and worklog (rendered from ADF; worklogs include a total)
+forecast jira comments SMG-123
+forecast jira comments SMG-123 --limit 5
+forecast jira worklogs SMG-123
+
+# Watchers and attachments
+forecast jira watchers SMG-123
+forecast jira attachments SMG-123
+
+# JQL search
 forecast jira search "project=SMG AND status='To Do'"
 forecast jira search "assignee=currentUser() AND status not in (Done, Canceled)"
 forecast jira search "project=SMG AND labels in (size:L)" --limit 20
-
-# List available options
-forecast jira projects           # List all accessible projects (useful for debugging)
-forecast jira types              # Issue types for project
-forecast jira priorities         # Available priorities
-forecast jira transitions SMG-123 # Transitions for a ticket
 ```
 
-### Create & Update
+### Create & Edit
 
 ```bash
-# Create ticket
+# Create — full field surface
 forecast jira create --summary "Fix login bug" --type Bug --priority High
-forecast jira create --summary "Add feature" --type Story --labels "size:M,type:component"
-forecast jira create --summary "Task" --type Task --assignee user@email.com --epic SMG-100
+forecast jira create --summary "Add feature" --type Story \
+  --labels "size:M,type:component" --story-points 5 --due-date 2026-06-30
+forecast jira create --summary "Task" --type Task \
+  --assignee user@email.com --epic SMG-100
 
-# Update ticket
+# Sub-task: --parent is distinct from --epic
+forecast jira create --summary "Add UI toggle" --type Sub-task --parent SMG-100
+
+# Fix versions / components
+forecast jira create --summary "Hotfix" --type Bug \
+  --fix-versions "v1.4.2" --components "Backend,API"
+
+# Update — omit fields to leave them unchanged
 forecast jira update SMG-123 --priority Highest
-forecast jira update SMG-123 --labels "size:L,type:integration"
-forecast jira update SMG-123 --assignee user@email.com
-forecast jira update SMG-123 --summary "New summary"
+forecast jira update SMG-123 --story-points 8 --due-date 2026-07-15
+forecast jira update SMG-123 --clear-due-date    # explicit clear
+forecast jira update SMG-123 --labels "size:L,type:integration"  # replaces
+
+# Comments and attachments
+forecast jira comment SMG-123 --body "## Repro\n- step one\n- step two"
+forecast jira attach SMG-123 ./screenshot.png
+forecast jira download <attachment-id> --out screenshot.png
+forecast jira download <attachment-id> --out -    # write bytes to stdout
 ```
 
-### Workflow Transitions
+### Workflow & Collaboration
 
 ```bash
-# Move ticket to new status
+# Transitions (optionally with comment and/or resolution)
+forecast jira transitions SMG-123              # show valid transitions first
 forecast jira transition SMG-123 --to "In Progress"
-forecast jira transition SMG-123 --to "Done"
-forecast jira transition SMG-123 --to "Done" --comment "Completed the work"
+forecast jira transition SMG-123 --to "Done" --comment "Shipped" --resolution Done
+forecast jira transition SMG-123 --to "Done" --resolution "Won't Do"
 
-# Check available transitions first
-forecast jira transitions SMG-123
+# Worklog (parses 2h, 30m, 1h30m, 1.5h)
+forecast jira log SMG-123 --time 2h --comment "pairing with @alex"
+
+# Issue links — relationship reads: <from> <type.outward> <to>
+forecast jira link SMG-100 --to SMG-200 --type Blocks      # SMG-100 blocks SMG-200
+forecast jira link SMG-100 --to SMG-200 --type Relates
+forecast jira unlink <link-id>                              # IDs shown in `get` Links section
+forecast jira link-types
+
+# Watchers (defaults to the authenticated user)
+forecast jira watch SMG-123
+forecast jira watch SMG-123 --user other@company.com
+forecast jira unwatch SMG-123
 ```
+
+### Sprint & Release
+
+```bash
+forecast jira boards                                 # discover board IDs
+forecast jira sprints                                # active sprints; auto-discovers single board
+forecast jira sprints --board 42 --state active,future
+forecast jira sprint-add 42 SMG-100 SMG-101         # add issues to sprint 42
+forecast jira sprint-backlog SMG-100                 # remove from any sprint
+forecast jira resolutions                            # available resolution names
+```
+
+### Bulk Operations
+
+```bash
+# Apply a transition over a JQL query (use --dry-run to preview)
+forecast jira bulk transition --jql "project=SMG AND status='To Do'" \
+  --to "In Progress" --dry-run
+forecast jira bulk transition --jql "..." --to Done --resolution Done --comment "shipped"
+
+# Add and/or remove labels in bulk
+forecast jira bulk label --jql "project=SMG AND status=Done" --add archived
+forecast jira bulk label --jql "..." --add foo --remove bar --dry-run
+```
+
+### Discovery
+
+```bash
+forecast jira projects                  # accessible projects
+forecast jira types                     # issue types for the project
+forecast jira priorities                # priority names
+forecast jira resolutions               # resolution names (for --resolution)
+forecast jira link-types                # issue link type names
+forecast jira transitions SMG-123       # valid transitions out of current status
+forecast jira fields SMG-123            # custom field IDs (find story_points_field, etc.)
+forecast jira missing-times             # audit Done tickets without cycle time
+forecast jira missing-times --fix       # backfill from story points
+```
+
+> **Rich-text rendering.** Descriptions, comments, and worklog comments are
+> stored in JIRA as Atlassian Document Format (ADF). The CLI renders them
+> as Markdown for reading, and accepts a small markdown subset
+> (`## headings`, `- bullets`, `*bold*`) for writing.
 
 ## Typical Workflows
 
 ### Starting Work on a Ticket
 
 ```bash
-# 1. View ticket
+# 1. Read the ticket end-to-end (description + links + recent comments)
 forecast jira get SMG-123
+forecast jira comments SMG-123 --limit 5
 
 # 2. Ensure it has size/type labels
 forecast jira update SMG-123 --labels "size:M,type:component"
 
-# 3. Start work (begins cycle time tracking)
+# 3. Watch it so you see future updates
+forecast jira watch SMG-123
+
+# 4. Start work (begins cycle time tracking)
 forecast jira transition SMG-123 --to "In Progress"
+```
+
+### During Work
+
+```bash
+# Leave progress notes (markdown subset supported)
+forecast jira comment SMG-123 --body "## Status\n- backend done\n- starting UI"
+
+# Log time as you go
+forecast jira log SMG-123 --time 1h30m --comment "pairing with @alex"
+
+# Surface a blocker
+forecast jira link SMG-123 --to SMG-456 --type "is blocked by"
 ```
 
 ### Completing Work
 
 ```bash
-# 1. Mark done with summary
-forecast jira transition SMG-123 --to "Done" --comment "Implemented feature X. Files: src/foo.ts, src/bar.ts"
+# 1. Mark done with summary and resolution
+forecast jira transition SMG-123 --to "Done" \
+  --resolution Done \
+  --comment "Implemented feature X. Files: src/foo.ts, src/bar.ts"
 
 # 2. Sync forecast data
 forecast sync
@@ -102,18 +199,48 @@ forecast report --type eva
 ### Creating a New Feature
 
 ```bash
-# 1. Create sized ticket
+# 1. Create sized ticket with full context
 forecast jira create --summary "Add user notifications" \
   --type Story \
   --labels "size:L,type:component" \
+  --story-points 8 \
+  --due-date 2026-06-30 \
   --description "Implement email and push notifications"
 
-# 2. Start work
+# 2. Add a sub-task with --parent
+forecast jira create --summary "Email service integration" \
+  --type Sub-task --parent SMG-456 \
+  --labels "size:M,type:integration"
+
+# 3. Start work
 forecast jira transition SMG-456 --to "In Progress"
 
-# 3. Complete and sync
-forecast jira transition SMG-456 --to "Done" --comment "Complete"
+# 4. Complete and sync
+forecast jira transition SMG-456 --to "Done" --resolution Done --comment "Complete"
 forecast sync
+```
+
+### Sprint Operations
+
+```bash
+# Pull this sprint into focus
+forecast jira sprints                            # find active sprint ID
+forecast jira search "sprint = <id> AND assignee = currentUser()"
+
+# Move tickets in/out of the sprint
+forecast jira sprint-add 42 SMG-100 SMG-101
+forecast jira sprint-backlog SMG-099             # de-prioritize
+```
+
+### Bulk Triage
+
+```bash
+# Preview, then apply, a bulk transition over a query
+forecast jira bulk transition --jql "project=SMG AND status='To Do' AND created < -30d" \
+  --to "Won't Do" --resolution "Won't Do" --dry-run
+
+# Bulk-add a label to an entire epic
+forecast jira bulk label --jql "'Epic Link' = SMG-100" --add phase1-archive
 ```
 
 ### Getting a Project Forecast

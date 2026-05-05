@@ -19,8 +19,9 @@ When working on a software project that uses probabilistic forecasting and the f
 **Step-by-step workflow:**
 
 ```bash
-# 1. View the ticket details
-forecast jira get {TICKET-KEY}
+# 1. Read the ticket end-to-end — description AND existing discussion
+forecast jira get {TICKET-KEY}              # description rendered as Markdown + links
+forecast jira comments {TICKET-KEY}         # see what teammates already said
 
 # 2. Check if it has size and type labels
 # If missing, add them:
@@ -29,11 +30,16 @@ forecast jira update {TICKET-KEY} --labels "size:M,type:component"
 # 3. Move to "In Progress" (starts cycle time tracking) - EXECUTE THIS
 forecast jira transition {TICKET-KEY} --to "In Progress"
 
-# 4. Do the work...
-# (implement feature, write tests, etc.)
+# 4. Do the work, leaving signal as you go (optional but recommended):
+forecast jira comment {TICKET-KEY} --body "## Status\n- backend done\n- starting UI"
+forecast jira log {TICKET-KEY} --time 1h30m --comment "investigation"
+# If you discover a blocker:
+forecast jira link {TICKET-KEY} --to {OTHER-KEY} --type "is blocked by"
 
-# 5. When complete, move to Done with summary comment - EXECUTE THIS
-forecast jira transition {TICKET-KEY} --to "Done" --comment "Completed: [summary of work]
+# 5. When complete, move to Done with summary comment + resolution - EXECUTE THIS
+forecast jira transition {TICKET-KEY} --to "Done" \
+  --resolution Done \
+  --comment "Completed: [summary of work]
 
 Files modified:
 - [list of files]
@@ -428,29 +434,37 @@ forecast jira create --summary "Follow-up task name" \
 
 ## Useful Commands Reference
 
+`forecast jira --help` lists every subcommand grouped by lifecycle phase.
+The most relevant for agents:
+
 ```bash
-# View your tickets
+# Discovery
 forecast jira search "assignee=currentUser() AND status not in (Done, Canceled)"
+forecast jira get {TICKET-KEY}              # description rendered to Markdown + links
+forecast jira get {TICKET-KEY} --history    # changelog (status/assignee/priority)
+forecast jira comments {TICKET-KEY}         # read existing discussion before commenting
+forecast jira transitions {TICKET-KEY}      # valid transitions out of current status
 
-# View specific ticket
-forecast jira get {TICKET-KEY}
+# Create
+forecast jira create --summary "Task name" --type Task \
+  --labels "size:M,type:component" \
+  --story-points 5
+forecast jira create --summary "Sub-task" --type Sub-task --parent {PARENT-KEY}
 
-# Create ticket with size
-forecast jira create --summary "Task name" \
-  --type Task \
-  --labels "size:M,type:component"
-
-# Start work
-forecast jira transition {TICKET-KEY} --to "In Progress"
-
-# Complete work
-forecast jira transition {TICKET-KEY} --to "Done" --comment "Completion summary"
-
-# Update ticket labels
+# Update
 forecast jira update {TICKET-KEY} --labels "size:M,type:component"
+forecast jira update {TICKET-KEY} --story-points 8 --due-date 2026-06-30
 
-# List available transitions
-forecast jira transitions {TICKET-KEY}
+# Workflow during work
+forecast jira transition {TICKET-KEY} --to "In Progress"
+forecast jira comment {TICKET-KEY} --body "## Status\n- backend done"   # progress note
+forecast jira log {TICKET-KEY} --time 1h30m --comment "implemented X"   # log work
+forecast jira link {TICKET-KEY} --to {OTHER-KEY} --type "is blocked by" # surface blocker
+
+# Completion
+forecast jira transition {TICKET-KEY} --to "Done" \
+  --resolution Done \
+  --comment "Completion summary"
 
 # Forecast commands
 forecast sync                    # Sync from JIRA
@@ -458,6 +472,13 @@ forecast report                  # Show project status
 forecast run                     # Run Monte Carlo simulation
 forecast run --confidence 70,95  # Specific confidence levels
 ```
+
+### Reading rich text
+
+Descriptions, comments, and worklog comments live in JIRA as Atlassian
+Document Format (ADF). The CLI renders them as Markdown for you, so
+`get` / `comments` / `worklogs` output is human-readable. When writing,
+use the same lightweight subset: `## headings`, `- bullets`, `*bold*`.
 
 ## Example Conversation Flow
 

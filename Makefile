@@ -5,13 +5,14 @@ BINARY_NAME=forecast
 GO=go
 GOFLAGS=-v
 
-# Build
+# Build (builds the full cmd/forecast package, not just main.go — sibling files
+# in cmd/forecast hold individual command definitions)
 build:
-	$(GO) build $(GOFLAGS) -o $(BINARY_NAME) cmd/forecast/main.go
+	$(GO) build $(GOFLAGS) -o $(BINARY_NAME) ./cmd/forecast
 
 # Install to $GOPATH/bin
 install:
-	$(GO) install $(GOFLAGS) cmd/forecast/main.go
+	$(GO) install $(GOFLAGS) ./cmd/forecast
 
 # Run tests
 test:
@@ -42,7 +43,7 @@ lint:
 
 # Run
 run:
-	$(GO) run cmd/forecast/main.go
+	$(GO) run ./cmd/forecast
 
 # Help
 help:

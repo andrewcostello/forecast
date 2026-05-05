@@ -7,7 +7,26 @@ import (
 	"github.com/andrewcostello/forecast/internal/config"
 	apperrors "github.com/andrewcostello/forecast/internal/errors"
 	"github.com/andrewcostello/forecast/internal/jira"
+	"github.com/spf13/cobra"
 )
+
+// mustGetString returns the string flag value (empty if unset).
+func mustGetString(cmd *cobra.Command, name string) string {
+	v, _ := cmd.Flags().GetString(name)
+	return v
+}
+
+// mustGetFloat returns the float64 flag value.
+func mustGetFloat(cmd *cobra.Command, name string) float64 {
+	v, _ := cmd.Flags().GetFloat64(name)
+	return v
+}
+
+// mustGetBool returns the bool flag value.
+func mustGetBool(cmd *cobra.Command, name string) bool {
+	v, _ := cmd.Flags().GetBool(name)
+	return v
+}
 
 // truncate shortens a string to the specified length, adding ".." if truncated
 func truncate(s string, length int) string {

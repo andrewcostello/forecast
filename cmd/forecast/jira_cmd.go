@@ -2,7 +2,9 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/andrewcostello/forecast/internal/config"
 	"github.com/andrewcostello/forecast/internal/jira"
@@ -16,7 +18,9 @@ var jiraCmd = &cobra.Command{
 	Long: `Commands for managing JIRA tickets directly via the REST API:
   create        - Create a new ticket
   update        - Update an existing ticket
-  get           - Get ticket details
+  get           - Get ticket details (including description)
+  comment       - Add a comment to a ticket
+  comments      - List comments on a ticket
   transition    - Move ticket to a new status
   search        - Search tickets using JQL
   missing-times - List done tickets missing cycle time data
@@ -33,26 +37,28 @@ var jiraCreateCmd = &cobra.Command{
 Examples:
   forecast jira create --summary "Fix login bug" --type Bug --priority High
   forecast jira create --summary "Add dark mode" --type Story --labels ui,feature
-  forecast jira create --summary "Security audit" --type Task --assignee dev@company.com`,
+  forecast jira create --summary "Subtask" --type Sub-task --parent SMG-1234`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		summary, _ := cmd.Flags().GetString("summary")
-		issueType, _ := cmd.Flags().GetString("type")
-		description, _ := cmd.Flags().GetString("description")
-		priority, _ := cmd.Flags().GetString("priority")
 		labelsStr, _ := cmd.Flags().GetString("labels")
-		assignee, _ := cmd.Flags().GetString("assignee")
-		epic, _ := cmd.Flags().GetString("epic")
-
 		var labels []string
 		if labelsStr != "" {
-			for _, l := range splitAndTrim(labelsStr, ",") {
-				if l != "" {
-					labels = append(labels, l)
-				}
-			}
+			labels = splitAndTrim(labelsStr, ",")
 		}
-
-		return runJiraCreate(summary, issueType, description, priority, labels, assignee, epic)
+		opts := jiraCreateOpts{
+			Summary:     mustGetString(cmd, "summary"),
+			IssueType:   mustGetString(cmd, "type"),
+			Description: mustGetString(cmd, "description"),
+			Priority:    mustGetString(cmd, "priority"),
+			Labels:      labels,
+			Assignee:    mustGetString(cmd, "assignee"),
+			Epic:        mustGetString(cmd, "epic"),
+			Parent:      mustGetString(cmd, "parent"),
+			StoryPoints: mustGetFloat(cmd, "story-points"),
+			DueDate:     mustGetString(cmd, "due-date"),
+			FixVersions: splitAndTrim(mustGetString(cmd, "fix-versions"), ","),
+			Components:  splitAndTrim(mustGetString(cmd, "components"), ","),
+		}
+		return runJiraCreate(opts)
 	},
 }
 
@@ -64,25 +70,30 @@ var jiraUpdateCmd = &cobra.Command{
 Examples:
   forecast jira update SMG-1234 --priority Highest
   forecast jira update SMG-1234 --labels security,urgent
-  forecast jira update SMG-1234 --assignee dev@company.com`,
+  forecast jira update SMG-1234 --story-points 5 --due-date 2026-06-30`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		issueKey := args[0]
-		summary, _ := cmd.Flags().GetString("summary")
-		description, _ := cmd.Flags().GetString("description")
-		priority, _ := cmd.Flags().GetString("priority")
 		labelsStr, _ := cmd.Flags().GetString("labels")
-		assignee, _ := cmd.Flags().GetString("assignee")
-		epic, _ := cmd.Flags().GetString("epic")
-
 		var labels []string
 		if labelsStr != "" {
-			for _, l := range splitAndTrim(labelsStr, ",") {
-				labels = append(labels, l)
-			}
+			labels = splitAndTrim(labelsStr, ",")
 		}
-
-		return runJiraUpdate(issueKey, summary, description, priority, labels, assignee, epic)
+		opts := jiraUpdateOpts{
+			Key:          args[0],
+			Summary:      mustGetString(cmd, "summary"),
+			Description:  mustGetString(cmd, "description"),
+			Priority:     mustGetString(cmd, "priority"),
+			Labels:       labels,
+			Assignee:     mustGetString(cmd, "assignee"),
+			Epic:         mustGetString(cmd, "epic"),
+			Parent:       mustGetString(cmd, "parent"),
+			StoryPoints:  mustGetFloat(cmd, "story-points"),
+			DueDate:      mustGetString(cmd, "due-date"),
+			ClearDueDate: mustGetBool(cmd, "clear-due-date"),
+			FixVersions:  splitAndTrim(mustGetString(cmd, "fix-versions"), ","),
+			Components:   splitAndTrim(mustGetString(cmd, "components"), ","),
+		}
+		return runJiraUpdate(opts)
 	},
 }
 
@@ -91,24 +102,282 @@ var jiraGetCmd = &cobra.Command{
 	Short: "Get JIRA ticket details",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runJiraGet(args[0])
+		history, _ := cmd.Flags().GetBool("history")
+		return runJiraGet(args[0], history)
+	},
+}
+
+var jiraCommentCmd = &cobra.Command{
+	Use:   "comment [issue-key]",
+	Short: "Add a comment to a ticket",
+	Long: `Add a comment to a JIRA ticket. Supports a small markdown subset
+(## headings, - bullets, *bold*).
+
+Examples:
+  forecast jira comment SMG-1234 --body "Verified in staging."
+  forecast jira comment SMG-1234 -b "## Repro\n- step one\n- step two"`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		body, _ := cmd.Flags().GetString("body")
+		return runJiraComment(args[0], body)
+	},
+}
+
+var jiraCommentsCmd = &cobra.Command{
+	Use:   "comments [issue-key]",
+	Short: "List comments on a ticket",
+	Long: `List all comments on a JIRA ticket, oldest first, with author and timestamp.
+
+Examples:
+  forecast jira comments SMG-1234
+  forecast jira comments SMG-1234 --limit 5`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		limit, _ := cmd.Flags().GetInt("limit")
+		return runJiraComments(args[0], limit)
+	},
+}
+
+var jiraLinkCmd = &cobra.Command{
+	Use:   "link [from-key]",
+	Short: "Create an issue link",
+	Long: `Create a link between two issues. The relationship reads:
+  <from-key> <type-outward-verb> <to-key>
+
+Examples:
+  forecast jira link SMG-100 --to SMG-200 --type Blocks      # SMG-100 blocks SMG-200
+  forecast jira link SMG-100 --to SMG-200 --type Relates
+  forecast jira link SMG-100 --to SMG-200 --type Duplicate
+
+Run 'forecast jira link-types' to see available types.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		to, _ := cmd.Flags().GetString("to")
+		typ, _ := cmd.Flags().GetString("type")
+		return runJiraLink(args[0], to, typ)
+	},
+}
+
+var jiraUnlinkCmd = &cobra.Command{
+	Use:   "unlink [link-id]",
+	Short: "Delete an issue link by ID",
+	Long: `Delete an issue link by its ID. Get link IDs from 'forecast jira get <key>'
+(shown in brackets in the Links section).`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraUnlink(args[0])
+	},
+}
+
+var jiraLinkTypesCmd = &cobra.Command{
+	Use:   "link-types",
+	Short: "List available issue link types",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraLinkTypes()
+	},
+}
+
+var jiraWatchCmd = &cobra.Command{
+	Use:   "watch [issue-key]",
+	Short: "Add yourself (or another user) as a watcher",
+	Long: `Add a watcher to an issue. By default adds the authenticated user.
+Use --user to add someone else by email.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		userEmail, _ := cmd.Flags().GetString("user")
+		return runJiraWatch(args[0], userEmail)
+	},
+}
+
+var jiraUnwatchCmd = &cobra.Command{
+	Use:   "unwatch [issue-key]",
+	Short: "Remove a watcher from an issue",
+	Long:  `Remove a watcher. Use --user <email> to remove someone other than yourself (your own email is taken from config).`,
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		userEmail, _ := cmd.Flags().GetString("user")
+		return runJiraUnwatch(args[0], userEmail)
+	},
+}
+
+var jiraWatchersCmd = &cobra.Command{
+	Use:   "watchers [issue-key]",
+	Short: "List watchers on an issue",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraWatchers(args[0])
+	},
+}
+
+var jiraLogCmd = &cobra.Command{
+	Use:   "log [issue-key]",
+	Short: "Log work against a ticket",
+	Long: `Log time spent working on a ticket.
+
+Examples:
+  forecast jira log SMG-1234 --time 2h
+  forecast jira log SMG-1234 --time 1h30m --comment "pairing with @alex"
+  forecast jira log SMG-1234 --time 90m`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		timeStr, _ := cmd.Flags().GetString("time")
+		comment, _ := cmd.Flags().GetString("comment")
+		return runJiraLog(args[0], timeStr, comment)
+	},
+}
+
+var jiraWorklogsCmd = &cobra.Command{
+	Use:   "worklogs [issue-key]",
+	Short: "List worklog entries on a ticket",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraWorklogs(args[0])
 	},
 }
 
 var jiraTransitionCmd = &cobra.Command{
 	Use:   "transition [issue-key]",
 	Short: "Transition a ticket to a new status",
-	Long: `Move a JIRA ticket to a new status.
+	Long: `Move a JIRA ticket to a new status, optionally with a comment and/or resolution.
 
 Examples:
   forecast jira transition SMG-1234 --to "In Development"
-  forecast jira transition SMG-1234 --to Done --comment "Completed the work"`,
+  forecast jira transition SMG-1234 --to Done --comment "Completed the work"
+  forecast jira transition SMG-1234 --to Done --resolution "Won't Do"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		issueKey := args[0]
 		to, _ := cmd.Flags().GetString("to")
 		comment, _ := cmd.Flags().GetString("comment")
-		return runJiraTransition(issueKey, to, comment)
+		resolution, _ := cmd.Flags().GetString("resolution")
+		return runJiraTransition(issueKey, to, comment, resolution)
+	},
+}
+
+var jiraAttachmentsCmd = &cobra.Command{
+	Use:   "attachments [issue-key]",
+	Short: "List attachments on a ticket",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraAttachments(args[0])
+	},
+}
+
+var jiraAttachCmd = &cobra.Command{
+	Use:   "attach [issue-key] [file-path]",
+	Short: "Upload a file as an attachment",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraAttach(args[0], args[1])
+	},
+}
+
+var jiraDownloadCmd = &cobra.Command{
+	Use:   "download [attachment-id]",
+	Short: "Download an attachment by ID",
+	Long: `Download an attachment by its ID. Get IDs from 'forecast jira attachments <key>'.
+By default writes to <filename> in the current directory; use --out to override
+or "-" to write to stdout.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out := mustGetString(cmd, "out")
+		return runJiraDownload(args[0], out)
+	},
+}
+
+var jiraBulkCmd = &cobra.Command{
+	Use:   "bulk",
+	Short: "Bulk operations over a JQL query",
+	Long: `Apply an action to every issue matching a JQL query.
+Subcommands:
+  transition - move all matching issues to a new status
+  label      - add and/or remove labels on all matching issues`,
+}
+
+var jiraBulkTransitionCmd = &cobra.Command{
+	Use:   "transition",
+	Short: "Transition every issue matching --jql to a new status",
+	Long: `Transition every JQL-matching issue.
+
+Examples:
+  forecast jira bulk transition --jql "project=SMG AND status='To Do'" --to "In Progress"
+  forecast jira bulk transition --jql "..." --to Done --comment "shipped" --dry-run`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		jql := mustGetString(cmd, "jql")
+		to := mustGetString(cmd, "to")
+		comment := mustGetString(cmd, "comment")
+		resolution := mustGetString(cmd, "resolution")
+		dry := mustGetBool(cmd, "dry-run")
+		return runJiraBulkTransition(jql, to, comment, resolution, dry)
+	},
+}
+
+var jiraBulkLabelCmd = &cobra.Command{
+	Use:   "label",
+	Short: "Add and/or remove labels on every issue matching --jql",
+	Long: `Mutate labels on every JQL-matching issue.
+
+Examples:
+  forecast jira bulk label --jql "project=SMG AND status=Done" --add archived
+  forecast jira bulk label --jql "..." --add foo --remove bar --dry-run`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		jql := mustGetString(cmd, "jql")
+		add := splitAndTrim(mustGetString(cmd, "add"), ",")
+		remove := splitAndTrim(mustGetString(cmd, "remove"), ",")
+		dry := mustGetBool(cmd, "dry-run")
+		return runJiraBulkLabel(jql, add, remove, dry)
+	},
+}
+
+var jiraBoardsCmd = &cobra.Command{
+	Use:   "boards",
+	Short: "List Agile boards (filtered to configured project by default)",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		project, _ := cmd.Flags().GetString("project")
+		return runJiraBoards(project)
+	},
+}
+
+var jiraSprintsCmd = &cobra.Command{
+	Use:   "sprints",
+	Short: "List sprints on a board",
+	Long: `List sprints on an Agile board. By default uses the only board for the
+configured project; pass --board <id> if there are multiple.
+
+Examples:
+  forecast jira sprints
+  forecast jira sprints --state active
+  forecast jira sprints --board 42 --state active,future`,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		boardID, _ := cmd.Flags().GetInt("board")
+		state, _ := cmd.Flags().GetString("state")
+		return runJiraSprints(boardID, state)
+	},
+}
+
+var jiraSprintAddCmd = &cobra.Command{
+	Use:   "sprint-add [sprint-id] [issue-key...]",
+	Short: "Add issues to a sprint",
+	Args:  cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraSprintAdd(args[0], args[1:])
+	},
+}
+
+var jiraSprintBacklogCmd = &cobra.Command{
+	Use:   "sprint-backlog [issue-key...]",
+	Short: "Move issues out of any sprint and into the backlog",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraSprintBacklog(args)
+	},
+}
+
+var jiraResolutionsCmd = &cobra.Command{
+	Use:   "resolutions",
+	Short: "List available resolutions",
+	RunE: func(cmd *cobra.Command, args []string) error {
+		return runJiraResolutions()
 	},
 }
 
@@ -194,12 +463,17 @@ Use --default-hours to specify hours for tickets without story points.`,
 func init() {
 	// Create command flags
 	jiraCreateCmd.Flags().StringP("summary", "s", "", "Issue summary (required)")
-	jiraCreateCmd.Flags().StringP("type", "t", "Task", "Issue type (Bug, Story, Task, Epic)")
+	jiraCreateCmd.Flags().StringP("type", "t", "Task", "Issue type (Bug, Story, Task, Epic, Sub-task)")
 	jiraCreateCmd.Flags().StringP("description", "d", "", "Issue description")
 	jiraCreateCmd.Flags().StringP("priority", "p", "Medium", "Priority (Highest, High, Medium, Low, Lowest)")
 	jiraCreateCmd.Flags().StringP("labels", "l", "", "Comma-separated labels")
 	jiraCreateCmd.Flags().StringP("assignee", "a", "", "Assignee email")
-	jiraCreateCmd.Flags().StringP("epic", "e", "", "Parent epic key")
+	jiraCreateCmd.Flags().StringP("epic", "e", "", "Parent epic key (alias for --parent)")
+	jiraCreateCmd.Flags().String("parent", "", "Parent key (epic for stories, story for sub-tasks)")
+	jiraCreateCmd.Flags().Float64("story-points", 0, "Story points (requires story_points_field in config)")
+	jiraCreateCmd.Flags().String("due-date", "", "Due date (YYYY-MM-DD)")
+	jiraCreateCmd.Flags().String("fix-versions", "", "Comma-separated fix version names")
+	jiraCreateCmd.Flags().String("components", "", "Comma-separated component names")
 	jiraCreateCmd.MarkFlagRequired("summary")
 
 	// Update command flags
@@ -208,11 +482,65 @@ func init() {
 	jiraUpdateCmd.Flags().StringP("priority", "p", "", "New priority")
 	jiraUpdateCmd.Flags().StringP("labels", "l", "", "New labels (comma-separated)")
 	jiraUpdateCmd.Flags().StringP("assignee", "a", "", "New assignee email")
-	jiraUpdateCmd.Flags().StringP("epic", "e", "", "Parent epic key")
+	jiraUpdateCmd.Flags().StringP("epic", "e", "", "Parent epic key (alias for --parent)")
+	jiraUpdateCmd.Flags().String("parent", "", "New parent key (epic or sub-task parent)")
+	jiraUpdateCmd.Flags().Float64("story-points", -1, "New story points (-1 = unchanged)")
+	jiraUpdateCmd.Flags().String("due-date", "", "New due date (YYYY-MM-DD); empty unchanged")
+	jiraUpdateCmd.Flags().Bool("clear-due-date", false, "Clear the due date")
+	jiraUpdateCmd.Flags().String("fix-versions", "", "Comma-separated fix version names (replaces existing)")
+	jiraUpdateCmd.Flags().String("components", "", "Comma-separated component names (replaces existing)")
+
+	// Get command flags
+	jiraGetCmd.Flags().Bool("history", false, "Include changelog (status/assignee/priority changes)")
+
+	// Comment command flags
+	jiraCommentCmd.Flags().StringP("body", "b", "", "Comment body (required)")
+	jiraCommentCmd.MarkFlagRequired("body")
+
+	// Comments command flags
+	jiraCommentsCmd.Flags().Int("limit", 0, "Limit number of comments (0 = all)")
+
+	// Link command flags
+	jiraLinkCmd.Flags().String("to", "", "Target issue key (required)")
+	jiraLinkCmd.Flags().String("type", "Relates", "Link type name (e.g. Blocks, Relates, Duplicate)")
+	jiraLinkCmd.MarkFlagRequired("to")
+
+	// Watch / unwatch flags
+	jiraWatchCmd.Flags().String("user", "", "Email of user to add (default: authenticated user)")
+	jiraUnwatchCmd.Flags().String("user", "", "Email of user to remove (default: authenticated user)")
+
+	// Worklog flags
+	jiraLogCmd.Flags().String("time", "", "Time spent (e.g. 2h, 30m, 1h30m, 1.5h) — required")
+	jiraLogCmd.Flags().StringP("comment", "c", "", "Optional comment for the worklog")
+	jiraLogCmd.MarkFlagRequired("time")
+
+	// Board / sprint flags
+	jiraBoardsCmd.Flags().StringP("project", "p", "", "Project key (defaults to configured project_key)")
+	jiraSprintsCmd.Flags().Int("board", 0, "Board ID (default: auto-discover from project)")
+	jiraSprintsCmd.Flags().String("state", "active", "Sprint state filter: active, closed, future (comma-separated, blank for all)")
+
+	// Bulk flags
+	jiraBulkTransitionCmd.Flags().String("jql", "", "JQL query selecting issues (required)")
+	jiraBulkTransitionCmd.Flags().String("to", "", "Target status (required)")
+	jiraBulkTransitionCmd.Flags().StringP("comment", "c", "", "Comment to add with each transition")
+	jiraBulkTransitionCmd.Flags().String("resolution", "", "Resolution name (e.g. Done, Won't Do)")
+	jiraBulkTransitionCmd.Flags().Bool("dry-run", false, "Show what would happen without applying")
+	jiraBulkTransitionCmd.MarkFlagRequired("jql")
+	jiraBulkTransitionCmd.MarkFlagRequired("to")
+
+	jiraBulkLabelCmd.Flags().String("jql", "", "JQL query selecting issues (required)")
+	jiraBulkLabelCmd.Flags().String("add", "", "Comma-separated labels to add")
+	jiraBulkLabelCmd.Flags().String("remove", "", "Comma-separated labels to remove")
+	jiraBulkLabelCmd.Flags().Bool("dry-run", false, "Show what would happen without applying")
+	jiraBulkLabelCmd.MarkFlagRequired("jql")
+
+	// Download flag
+	jiraDownloadCmd.Flags().StringP("out", "o", "", "Output path (default: original filename; '-' for stdout)")
 
 	// Transition command flags
 	jiraTransitionCmd.Flags().String("to", "", "Target status (required)")
 	jiraTransitionCmd.Flags().StringP("comment", "c", "", "Comment to add with transition")
+	jiraTransitionCmd.Flags().String("resolution", "", "Resolution name (e.g. Done, Won't Do)")
 	jiraTransitionCmd.MarkFlagRequired("to")
 
 	// Search command flags
@@ -228,7 +556,30 @@ func init() {
 	jiraCmd.AddCommand(jiraCreateCmd)
 	jiraCmd.AddCommand(jiraUpdateCmd)
 	jiraCmd.AddCommand(jiraGetCmd)
+	jiraCmd.AddCommand(jiraCommentCmd)
+	jiraCmd.AddCommand(jiraCommentsCmd)
+	jiraCmd.AddCommand(jiraLinkCmd)
+	jiraCmd.AddCommand(jiraUnlinkCmd)
+	jiraCmd.AddCommand(jiraLinkTypesCmd)
+	jiraCmd.AddCommand(jiraWatchCmd)
+	jiraCmd.AddCommand(jiraUnwatchCmd)
+	jiraCmd.AddCommand(jiraWatchersCmd)
+	jiraCmd.AddCommand(jiraLogCmd)
+	jiraCmd.AddCommand(jiraWorklogsCmd)
 	jiraCmd.AddCommand(jiraTransitionCmd)
+	jiraCmd.AddCommand(jiraResolutionsCmd)
+	jiraCmd.AddCommand(jiraBoardsCmd)
+	jiraCmd.AddCommand(jiraSprintsCmd)
+	jiraCmd.AddCommand(jiraSprintAddCmd)
+	jiraCmd.AddCommand(jiraSprintBacklogCmd)
+
+	jiraBulkCmd.AddCommand(jiraBulkTransitionCmd)
+	jiraBulkCmd.AddCommand(jiraBulkLabelCmd)
+	jiraCmd.AddCommand(jiraBulkCmd)
+
+	jiraCmd.AddCommand(jiraAttachmentsCmd)
+	jiraCmd.AddCommand(jiraAttachCmd)
+	jiraCmd.AddCommand(jiraDownloadCmd)
 	jiraCmd.AddCommand(jiraSearchCmd)
 	jiraCmd.AddCommand(jiraTransitionsCmd)
 	jiraCmd.AddCommand(jiraTypesCmd)
@@ -238,24 +589,63 @@ func init() {
 	jiraCmd.AddCommand(jiraMissingTimesCmd)
 }
 
-func runJiraCreate(summary, issueType, description, priority string, labels []string, assignee, epic string) error {
+type jiraCreateOpts struct {
+	Summary     string
+	IssueType   string
+	Description string
+	Priority    string
+	Labels      []string
+	Assignee    string
+	Epic        string
+	Parent      string
+	StoryPoints float64
+	DueDate     string
+	FixVersions []string
+	Components  []string
+}
+
+type jiraUpdateOpts struct {
+	Key          string
+	Summary      string
+	Description  string
+	Priority     string
+	Labels       []string
+	Assignee     string
+	Epic         string
+	Parent       string
+	StoryPoints  float64 // -1 means unchanged
+	DueDate      string
+	ClearDueDate bool
+	FixVersions  []string
+	Components   []string
+}
+
+func runJiraCreate(opts jiraCreateOpts) error {
 	client, err := getJiraClient()
 	if err != nil {
 		return err
 	}
 
 	cfg := config.Get()
-	projectKey := cfg.JIRA.ProjectKey
-
 	req := jira.CreateIssueRequest{
-		Summary:     summary,
-		IssueType:   issueType,
-		Description: description,
-		Priority:    priority,
-		Labels:      labels,
-		Assignee:    assignee,
-		Epic:        epic,
-		Project:     projectKey,
+		Summary:          opts.Summary,
+		IssueType:        opts.IssueType,
+		Description:      opts.Description,
+		Priority:         opts.Priority,
+		Labels:           opts.Labels,
+		Assignee:         opts.Assignee,
+		Epic:             opts.Epic,
+		Parent:           opts.Parent,
+		StoryPoints:      opts.StoryPoints,
+		DueDate:          opts.DueDate,
+		FixVersions:      opts.FixVersions,
+		Components:       opts.Components,
+		StoryPointsField: cfg.JIRA.StoryPointsField,
+		Project:          cfg.JIRA.ProjectKey,
+	}
+
+	if opts.StoryPoints > 0 && cfg.JIRA.StoryPointsField == "" {
+		fmt.Println("Warning: --story-points ignored because story_points_field is not set in config")
 	}
 
 	result, err := client.CreateIssue(req)
@@ -268,42 +658,66 @@ func runJiraCreate(summary, issueType, description, priority string, labels []st
 	return nil
 }
 
-func runJiraUpdate(issueKey, summary, description, priority string, labels []string, assignee, epic string) error {
+func runJiraUpdate(opts jiraUpdateOpts) error {
 	client, err := getJiraClient()
 	if err != nil {
 		return err
 	}
+	cfg := config.Get()
 
-	req := jira.UpdateIssueRequest{}
+	req := jira.UpdateIssueRequest{StoryPointsField: cfg.JIRA.StoryPointsField}
 
-	if summary != "" {
-		req.Summary = &summary
+	if opts.Summary != "" {
+		req.Summary = &opts.Summary
 	}
-	if description != "" {
-		req.Description = &description
+	if opts.Description != "" {
+		req.Description = &opts.Description
 	}
-	if priority != "" {
-		req.Priority = &priority
+	if opts.Priority != "" {
+		req.Priority = &opts.Priority
 	}
-	if len(labels) > 0 {
-		req.Labels = labels
+	if len(opts.Labels) > 0 {
+		req.Labels = opts.Labels
 	}
-	if assignee != "" {
-		req.Assignee = &assignee
+	if opts.Assignee != "" {
+		req.Assignee = &opts.Assignee
 	}
-	if epic != "" {
-		req.Epic = &epic
+	if opts.Parent != "" {
+		req.Parent = &opts.Parent
+	} else if opts.Epic != "" {
+		req.Epic = &opts.Epic
+	}
+	if opts.StoryPoints >= 0 {
+		if cfg.JIRA.StoryPointsField == "" {
+			fmt.Println("Warning: --story-points ignored because story_points_field is not set in config")
+		} else {
+			pts := opts.StoryPoints
+			req.StoryPoints = &pts
+		}
+	}
+	if opts.ClearDueDate {
+		empty := ""
+		req.DueDate = &empty
+	} else if opts.DueDate != "" {
+		dd := opts.DueDate
+		req.DueDate = &dd
+	}
+	if len(opts.FixVersions) > 0 {
+		req.FixVersions = opts.FixVersions
+	}
+	if len(opts.Components) > 0 {
+		req.Components = opts.Components
 	}
 
-	if err := client.UpdateIssue(issueKey, req); err != nil {
+	if err := client.UpdateIssue(opts.Key, req); err != nil {
 		return fmt.Errorf("failed to update issue: %w", err)
 	}
 
-	fmt.Printf("Updated: %s\n", issueKey)
+	fmt.Printf("Updated: %s\n", opts.Key)
 	return nil
 }
 
-func runJiraGet(issueKey string) error {
+func runJiraGet(issueKey string, showHistory bool) error {
 	client, err := getJiraClient()
 	if err != nil {
 		return err
@@ -325,23 +739,615 @@ func runJiraGet(issueKey string) error {
 	if len(issue.Fields.Labels) > 0 {
 		fmt.Printf("  Labels:   %v\n", issue.Fields.Labels)
 	}
-	fmt.Printf("  Created:  %s\n", issue.Fields.Created[:10])
-	fmt.Printf("  Updated:  %s\n", issue.Fields.Updated[:10])
+	if len(issue.Fields.Created) >= 10 {
+		fmt.Printf("  Created:  %s\n", issue.Fields.Created[:10])
+	}
+	if len(issue.Fields.Updated) >= 10 {
+		fmt.Printf("  Updated:  %s\n", issue.Fields.Updated[:10])
+	}
+
+	if desc := jira.RenderADF(issue.Fields.Description); desc != "" {
+		fmt.Printf("\nDescription:\n%s\n", desc)
+	}
+
+	printIssueLinks(issue.Fields.IssueLinks)
+
+	if showHistory {
+		printChangelog(issue.Changelog)
+	}
 
 	return nil
 }
 
-func runJiraTransition(issueKey, to, comment string) error {
+func printIssueLinks(links []jira.IssueLink) {
+	if len(links) == 0 {
+		return
+	}
+	fmt.Println("\nLinks:")
+	for _, l := range links {
+		var verb string
+		var target *jira.LinkedIssue
+		if l.OutwardIssue != nil {
+			verb = l.Type.Outward
+			target = l.OutwardIssue
+		} else if l.InwardIssue != nil {
+			verb = l.Type.Inward
+			target = l.InwardIssue
+		} else {
+			continue
+		}
+		summary := target.Fields.Summary
+		if len(summary) > 50 {
+			summary = summary[:47] + "..."
+		}
+		fmt.Printf("  [%-8s] %-15s %-12s [%-12s] %s\n", l.ID, verb, target.Key, target.Fields.Status.Name, summary)
+	}
+}
+
+func printChangelog(cl *jira.Changelog) {
+	if cl == nil || len(cl.Histories) == 0 {
+		fmt.Println("\nHistory: (none)")
+		return
+	}
+	fmt.Println("\nHistory:")
+	for _, h := range cl.Histories {
+		when := h.Created
+		if len(when) >= 19 {
+			when = strings.Replace(when[:19], "T", " ", 1)
+		}
+		who := "Unknown"
+		if h.Author != nil && h.Author.DisplayName != "" {
+			who = h.Author.DisplayName
+		}
+		for _, item := range h.Items {
+			from := item.FromString
+			to := item.ToString
+			if from == "" {
+				from = "(none)"
+			}
+			if to == "" {
+				to = "(none)"
+			}
+			fmt.Printf("  %s · %-20s · %-12s %s → %s\n", when, who, item.Field, from, to)
+		}
+	}
+}
+
+func runJiraComment(issueKey, body string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.AddComment(issueKey, body); err != nil {
+		return fmt.Errorf("failed to add comment: %w", err)
+	}
+	fmt.Printf("Comment added to %s\n", issueKey)
+	return nil
+}
+
+func runJiraComments(issueKey string, limit int) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	comments, err := client.GetComments(issueKey)
+	if err != nil {
+		return fmt.Errorf("failed to fetch comments: %w", err)
+	}
+
+	if len(comments) == 0 {
+		fmt.Printf("No comments on %s\n", issueKey)
+		return nil
+	}
+
+	// If limited, take the most recent N (comments are oldest-first).
+	start := 0
+	if limit > 0 && len(comments) > limit {
+		start = len(comments) - limit
+		fmt.Printf("Showing %d of %d comments on %s\n", limit, len(comments), issueKey)
+	} else {
+		fmt.Printf("%d comment(s) on %s\n", len(comments), issueKey)
+	}
+
+	for i := start; i < len(comments); i++ {
+		c := comments[i]
+		author := "Unknown"
+		if c.Author != nil && c.Author.DisplayName != "" {
+			author = c.Author.DisplayName
+		}
+		when := c.Created
+		if len(when) >= 19 {
+			when = strings.Replace(when[:19], "T", " ", 1)
+		}
+		fmt.Printf("\n— %s · %s\n", author, when)
+		body := jira.RenderADF(c.Body)
+		if body == "" {
+			body = "(empty)"
+		}
+		fmt.Println(body)
+	}
+	return nil
+}
+
+func runJiraLink(fromKey, toKey, linkType string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.LinkIssues(fromKey, toKey, linkType); err != nil {
+		return fmt.Errorf("failed to create link: %w", err)
+	}
+	fmt.Printf("Linked: %s [%s] %s\n", fromKey, linkType, toKey)
+	return nil
+}
+
+func runJiraUnlink(linkID string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.DeleteIssueLink(linkID); err != nil {
+		return fmt.Errorf("failed to delete link: %w", err)
+	}
+	fmt.Printf("Deleted link %s\n", linkID)
+	return nil
+}
+
+func runJiraLinkTypes() error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	types, err := client.GetIssueLinkTypes()
+	if err != nil {
+		return fmt.Errorf("failed to fetch link types: %w", err)
+	}
+	fmt.Println("Available issue link types:")
+	fmt.Printf("  %-15s %-25s %-25s\n", "Name", "Outward (from→to)", "Inward (to→from)")
+	fmt.Println("  " + strings.Repeat("-", 65))
+	for _, t := range types {
+		fmt.Printf("  %-15s %-25s %-25s\n", t.Name, t.Outward, t.Inward)
+	}
+	return nil
+}
+
+func runJiraWatch(issueKey, userEmail string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	accountID := ""
+	who := "you"
+	if userEmail != "" {
+		accountID, err = client.GetUserAccountID(userEmail)
+		if err != nil {
+			return fmt.Errorf("failed to find user: %w", err)
+		}
+		who = userEmail
+	}
+	if err := client.AddWatcher(issueKey, accountID); err != nil {
+		return fmt.Errorf("failed to add watcher: %w", err)
+	}
+	fmt.Printf("Added %s as watcher on %s\n", who, issueKey)
+	return nil
+}
+
+func runJiraUnwatch(issueKey, userEmail string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	cfg := config.Get()
+	target := userEmail
+	if target == "" {
+		target = cfg.JIRA.Email
+	}
+	if target == "" {
+		return fmt.Errorf("no user specified and no email in config")
+	}
+	accountID, err := client.GetUserAccountID(target)
+	if err != nil {
+		return fmt.Errorf("failed to find user: %w", err)
+	}
+	if err := client.RemoveWatcher(issueKey, accountID); err != nil {
+		return fmt.Errorf("failed to remove watcher: %w", err)
+	}
+	fmt.Printf("Removed %s as watcher on %s\n", target, issueKey)
+	return nil
+}
+
+func runJiraWatchers(issueKey string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	resp, err := client.GetWatchers(issueKey)
+	if err != nil {
+		return fmt.Errorf("failed to fetch watchers: %w", err)
+	}
+	fmt.Printf("%d watcher(s) on %s\n", resp.WatchCount, issueKey)
+	for _, w := range resp.Watchers {
+		email := w.EmailAddress
+		if email == "" {
+			email = "(no email)"
+		}
+		fmt.Printf("  %s · %s\n", w.DisplayName, email)
+	}
+	return nil
+}
+
+func runJiraLog(issueKey, timeStr, comment string) error {
+	dur, err := time.ParseDuration(timeStr)
+	if err != nil {
+		return fmt.Errorf("invalid time %q: use 2h, 30m, 1h30m, 1.5h, etc.", timeStr)
+	}
+	if dur <= 0 {
+		return fmt.Errorf("time must be positive")
+	}
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	seconds := int(dur.Seconds())
+	if err := client.LogWork(issueKey, seconds, comment); err != nil {
+		return fmt.Errorf("failed to log work: %w", err)
+	}
+	fmt.Printf("Logged %s on %s\n", dur, issueKey)
+	return nil
+}
+
+func runJiraWorklogs(issueKey string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	logs, err := client.GetWorklogs(issueKey)
+	if err != nil {
+		return fmt.Errorf("failed to fetch worklogs: %w", err)
+	}
+	if len(logs) == 0 {
+		fmt.Printf("No worklog entries on %s\n", issueKey)
+		return nil
+	}
+	totalSeconds := 0
+	fmt.Printf("%d worklog entry(ies) on %s\n", len(logs), issueKey)
+	for _, w := range logs {
+		totalSeconds += w.TimeSpentSeconds
+		when := w.Started
+		if when == "" {
+			when = w.Created
+		}
+		if len(when) >= 19 {
+			when = strings.Replace(when[:19], "T", " ", 1)
+		}
+		who := "Unknown"
+		if w.Author != nil && w.Author.DisplayName != "" {
+			who = w.Author.DisplayName
+		}
+		fmt.Printf("\n— %s · %s · %s\n", who, when, w.TimeSpent)
+		body := jira.RenderADF(w.Comment)
+		if body != "" {
+			fmt.Println(body)
+		}
+	}
+	fmt.Printf("\nTotal: %s\n", time.Duration(totalSeconds)*time.Second)
+	return nil
+}
+
+func runJiraTransition(issueKey, to, comment, resolution string) error {
 	client, err := getJiraClient()
 	if err != nil {
 		return err
 	}
 
-	if err := client.TransitionIssue(issueKey, to, comment); err != nil {
+	if err := client.TransitionIssue(issueKey, jira.TransitionOptions{
+		Name:       to,
+		Comment:    comment,
+		Resolution: resolution,
+	}); err != nil {
 		return fmt.Errorf("failed to transition issue: %w", err)
 	}
 
 	fmt.Printf("Transitioned %s to '%s'\n", issueKey, to)
+	if resolution != "" {
+		fmt.Printf("Resolution: %s\n", resolution)
+	}
+	return nil
+}
+
+func runJiraAttachments(issueKey string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	issue, err := client.GetIssue(issueKey)
+	if err != nil {
+		return fmt.Errorf("failed to fetch issue: %w", err)
+	}
+	if len(issue.Fields.Attachment) == 0 {
+		fmt.Printf("No attachments on %s\n", issueKey)
+		return nil
+	}
+	fmt.Printf("%d attachment(s) on %s:\n", len(issue.Fields.Attachment), issueKey)
+	fmt.Printf("  %-12s %-30s %-10s %-12s %s\n", "ID", "Filename", "Size", "Created", "Author")
+	fmt.Println("  " + strings.Repeat("-", 75))
+	for _, a := range issue.Fields.Attachment {
+		author := ""
+		if a.Author != nil {
+			author = a.Author.DisplayName
+		}
+		filename := a.Filename
+		if len(filename) > 30 {
+			filename = filename[:27] + "..."
+		}
+		fmt.Printf("  %-12s %-30s %-10s %-12s %s\n", a.ID, filename, humanSize(a.Size), datePart(a.Created), author)
+	}
+	return nil
+}
+
+func runJiraAttach(issueKey, filePath string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	att, err := client.UploadAttachment(issueKey, filePath)
+	if err != nil {
+		return fmt.Errorf("upload failed: %w", err)
+	}
+	fmt.Printf("Uploaded %s (id=%s, %s) to %s\n", att.Filename, att.ID, humanSize(att.Size), issueKey)
+	return nil
+}
+
+func runJiraDownload(attachmentID, out string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if out == "" {
+		// Default: name file by attachment ID; user can re-set with --out.
+		// We can't know the original filename without an extra fetch, so use the
+		// ID as a safe default.
+		out = "attachment-" + attachmentID
+	}
+	n, err := client.DownloadAttachment(attachmentID, out)
+	if err != nil {
+		return fmt.Errorf("download failed: %w", err)
+	}
+	if out == "-" {
+		// Don't print to stdout — content already written there.
+		return nil
+	}
+	fmt.Printf("Wrote %s (%s)\n", out, humanSize(n))
+	return nil
+}
+
+// humanSize formats a byte count as a short human-readable string.
+func humanSize(n int64) string {
+	const k = 1024
+	if n < k {
+		return fmt.Sprintf("%dB", n)
+	}
+	if n < k*k {
+		return fmt.Sprintf("%.1fKB", float64(n)/k)
+	}
+	if n < k*k*k {
+		return fmt.Sprintf("%.1fMB", float64(n)/(k*k))
+	}
+	return fmt.Sprintf("%.1fGB", float64(n)/(k*k*k))
+}
+
+func runJiraBulkTransition(jql, to, comment, resolution string, dry bool) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	issues, err := client.SearchJQL(jql)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+	if len(issues) == 0 {
+		fmt.Println("No issues match.")
+		return nil
+	}
+	fmt.Printf("Matched %d issue(s); transitioning to %q\n", len(issues), to)
+	if dry {
+		for _, i := range issues {
+			fmt.Printf("  [dry-run] %-12s %s → %s\n", i.Key, i.Fields.Status.Name, to)
+		}
+		return nil
+	}
+	failed := 0
+	for _, i := range issues {
+		err := client.TransitionIssue(i.Key, jira.TransitionOptions{
+			Name:       to,
+			Comment:    comment,
+			Resolution: resolution,
+		})
+		if err != nil {
+			fmt.Printf("  ✗ %-12s %v\n", i.Key, err)
+			failed++
+		} else {
+			fmt.Printf("  ✓ %-12s → %s\n", i.Key, to)
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d transition(s) failed", failed)
+	}
+	return nil
+}
+
+func runJiraBulkLabel(jql string, add, remove []string, dry bool) error {
+	if len(add) == 0 && len(remove) == 0 {
+		return fmt.Errorf("specify --add and/or --remove")
+	}
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	issues, err := client.SearchJQL(jql)
+	if err != nil {
+		return fmt.Errorf("search failed: %w", err)
+	}
+	if len(issues) == 0 {
+		fmt.Println("No issues match.")
+		return nil
+	}
+	fmt.Printf("Matched %d issue(s); add=%v remove=%v\n", len(issues), add, remove)
+	if dry {
+		for _, i := range issues {
+			fmt.Printf("  [dry-run] %-12s\n", i.Key)
+		}
+		return nil
+	}
+	failed := 0
+	for _, i := range issues {
+		if err := client.UpdateLabels(i.Key, add, remove); err != nil {
+			fmt.Printf("  ✗ %-12s %v\n", i.Key, err)
+			failed++
+		} else {
+			fmt.Printf("  ✓ %-12s\n", i.Key)
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d label update(s) failed", failed)
+	}
+	return nil
+}
+
+func runJiraBoards(projectKey string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if projectKey == "" {
+		projectKey = config.Get().JIRA.ProjectKey
+	}
+	boards, err := client.GetBoards(projectKey)
+	if err != nil {
+		return fmt.Errorf("failed to fetch boards: %w", err)
+	}
+	if len(boards) == 0 {
+		fmt.Println("No boards found.")
+		return nil
+	}
+	fmt.Printf("Boards (project=%s):\n", projectKey)
+	fmt.Printf("  %-6s %-12s %s\n", "ID", "Type", "Name")
+	fmt.Println("  " + strings.Repeat("-", 50))
+	for _, b := range boards {
+		fmt.Printf("  %-6d %-12s %s\n", b.ID, b.Type, b.Name)
+	}
+	return nil
+}
+
+// resolveBoardID returns the board ID, auto-discovering from the configured
+// project when boardID is 0. Errors if zero or multiple boards exist.
+func resolveBoardID(client *jira.Client, boardID int) (int, error) {
+	if boardID > 0 {
+		return boardID, nil
+	}
+	cfg := config.Get()
+	boards, err := client.GetBoards(cfg.JIRA.ProjectKey)
+	if err != nil {
+		return 0, fmt.Errorf("failed to fetch boards for auto-discovery: %w", err)
+	}
+	switch len(boards) {
+	case 0:
+		return 0, fmt.Errorf("no boards found for project %s — pass --board <id>", cfg.JIRA.ProjectKey)
+	case 1:
+		return boards[0].ID, nil
+	default:
+		ids := make([]string, 0, len(boards))
+		for _, b := range boards {
+			ids = append(ids, fmt.Sprintf("%d (%s)", b.ID, b.Name))
+		}
+		return 0, fmt.Errorf("multiple boards for project %s — pass --board <id>: %s", cfg.JIRA.ProjectKey, strings.Join(ids, ", "))
+	}
+}
+
+func runJiraSprints(boardID int, state string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	boardID, err = resolveBoardID(client, boardID)
+	if err != nil {
+		return err
+	}
+	sprints, err := client.GetSprints(boardID, state)
+	if err != nil {
+		return fmt.Errorf("failed to fetch sprints: %w", err)
+	}
+	if len(sprints) == 0 {
+		fmt.Printf("No sprints found on board %d (state=%q)\n", boardID, state)
+		return nil
+	}
+	fmt.Printf("Sprints on board %d:\n", boardID)
+	fmt.Printf("  %-6s %-8s %-30s %-12s %s\n", "ID", "State", "Name", "Start", "End")
+	fmt.Println("  " + strings.Repeat("-", 75))
+	for _, s := range sprints {
+		start := datePart(s.StartDate)
+		end := datePart(s.EndDate)
+		name := s.Name
+		if len(name) > 30 {
+			name = name[:27] + "..."
+		}
+		fmt.Printf("  %-6d %-8s %-30s %-12s %s\n", s.ID, s.State, name, start, end)
+		if s.Goal != "" {
+			fmt.Printf("         Goal: %s\n", s.Goal)
+		}
+	}
+	return nil
+}
+
+func runJiraSprintAdd(sprintIDStr string, keys []string) error {
+	sprintID, err := strconv.Atoi(sprintIDStr)
+	if err != nil {
+		return fmt.Errorf("invalid sprint ID %q (must be a number)", sprintIDStr)
+	}
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.MoveIssuesToSprint(sprintID, keys); err != nil {
+		return fmt.Errorf("failed to move issues to sprint: %w", err)
+	}
+	fmt.Printf("Added %d issue(s) to sprint %d\n", len(keys), sprintID)
+	return nil
+}
+
+func runJiraSprintBacklog(keys []string) error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	if err := client.MoveIssuesToBacklog(keys); err != nil {
+		return fmt.Errorf("failed to move issues to backlog: %w", err)
+	}
+	fmt.Printf("Moved %d issue(s) to backlog\n", len(keys))
+	return nil
+}
+
+// datePart returns the YYYY-MM-DD prefix of a JIRA timestamp, or "" if absent.
+func datePart(s string) string {
+	if len(s) >= 10 {
+		return s[:10]
+	}
+	return ""
+}
+
+func runJiraResolutions() error {
+	client, err := getJiraClient()
+	if err != nil {
+		return err
+	}
+	resolutions, err := client.GetResolutions()
+	if err != nil {
+		return fmt.Errorf("failed to fetch resolutions: %w", err)
+	}
+	fmt.Println("Available resolutions:")
+	for _, r := range resolutions {
+		fmt.Printf("  %-20s (ID: %s)\n", r.Name, r.ID)
+	}
 	return nil
 }
 

@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -43,8 +47,11 @@ type Issue struct {
 		Created     string                 `json:"created"`
 		Updated     string                 `json:"updated"`
 		Resolution  *Resolution            `json:"resolution"`
-		TimeSpent   int                    `json:"timespent"` // Built-in time tracking (seconds)
-		Custom      map[string]interface{} `json:"-"`         // For custom fields
+		TimeSpent   int                    `json:"timespent"`   // Built-in time tracking (seconds)
+		Description interface{}            `json:"description"` // Raw ADF — render with RenderADF
+		IssueLinks  []IssueLink            `json:"issuelinks"`
+		Attachment  []Attachment           `json:"attachment"`
+		Custom      map[string]interface{} `json:"-"`           // For custom fields
 	} `json:"fields"`
 	RawFields map[string]interface{} `json:"-"` // Raw fields for custom field access
 	Changelog *Changelog             `json:"changelog,omitempty"`
@@ -65,6 +72,39 @@ type User struct {
 
 type Resolution struct {
 	Name string `json:"name"`
+}
+
+// IssueLink represents a link between two JIRA issues.
+type IssueLink struct {
+	ID           string         `json:"id"`
+	Type         IssueLinkType  `json:"type"`
+	InwardIssue  *LinkedIssue   `json:"inwardIssue,omitempty"`
+	OutwardIssue *LinkedIssue   `json:"outwardIssue,omitempty"`
+}
+
+type IssueLinkType struct {
+	Name    string `json:"name"`
+	Inward  string `json:"inward"`
+	Outward string `json:"outward"`
+}
+
+type LinkedIssue struct {
+	Key    string `json:"key"`
+	Fields struct {
+		Summary string `json:"summary"`
+		Status  Status `json:"status"`
+	} `json:"fields"`
+}
+
+// Attachment represents a file attached to an issue.
+type Attachment struct {
+	ID       string `json:"id"`
+	Filename string `json:"filename"`
+	MimeType string `json:"mimeType"`
+	Size     int64  `json:"size"`
+	Created  string `json:"created"`
+	Author   *User  `json:"author"`
+	Content  string `json:"content"` // Direct download URL
 }
 
 type Changelog struct {
@@ -451,14 +491,20 @@ func (c *Client) ExtractClosedBy(changelog *Changelog) string {
 
 // CreateIssueRequest represents the request body for creating an issue
 type CreateIssueRequest struct {
-	Summary     string
-	IssueType   string
-	Description string
-	Priority    string
-	Labels      []string
-	Assignee    string // email address
-	Epic        string // parent epic key
-	Project     string
+	Summary          string
+	IssueType        string
+	Description      string
+	Priority         string
+	Labels           []string
+	Assignee         string  // email address
+	Epic             string  // parent epic key (alias for Parent — kept for backward compat)
+	Parent           string  // parent issue key (epic or sub-task parent)
+	Project          string
+	StoryPoints      float64  // 0 = omit
+	DueDate          string   // YYYY-MM-DD; empty = omit
+	StoryPointsField string   // customfield_XXXXX for story points; if empty StoryPoints is ignored
+	FixVersions      []string // version names; empty = omit
+	Components       []string // component names; empty = omit
 }
 
 // CreateIssueResponse represents the response from creating an issue
@@ -470,12 +516,18 @@ type CreateIssueResponse struct {
 
 // UpdateIssueRequest represents the request body for updating an issue
 type UpdateIssueRequest struct {
-	Summary     *string
-	Description *string
-	Priority    *string
-	Labels      []string
-	Assignee    *string // email address
-	Epic        *string // parent epic key
+	Summary          *string
+	Description      *string
+	Priority         *string
+	Labels           []string
+	Assignee         *string  // email address
+	Epic             *string  // parent epic key (alias for Parent)
+	Parent           *string  // parent issue key (epic or sub-task parent)
+	StoryPoints      *float64 // nil = no change
+	DueDate          *string  // YYYY-MM-DD; nil = no change, "" = clear
+	StoryPointsField string   // customfield_XXXXX for story points; required if StoryPoints set
+	FixVersions      []string // version names; nil/empty = no change
+	Components       []string // component names; nil/empty = no change
 }
 
 // Transition represents a JIRA workflow transition
@@ -849,9 +901,33 @@ func (c *Client) CreateIssue(req CreateIssueRequest) (*CreateIssueResponse, erro
 		fields["assignee"] = map[string]string{"accountId": accountID}
 	}
 
-	// Add parent epic
-	if req.Epic != "" {
-		fields["parent"] = map[string]string{"key": req.Epic}
+	// Add parent (epic or sub-task parent). Parent takes precedence over Epic.
+	parentKey := req.Parent
+	if parentKey == "" {
+		parentKey = req.Epic
+	}
+	if parentKey != "" {
+		fields["parent"] = map[string]string{"key": parentKey}
+	}
+
+	// Story points (custom field)
+	if req.StoryPoints > 0 && req.StoryPointsField != "" {
+		fields[req.StoryPointsField] = req.StoryPoints
+	}
+
+	// Due date (standard field)
+	if req.DueDate != "" {
+		fields["duedate"] = req.DueDate
+	}
+
+	// Fix versions
+	if len(req.FixVersions) > 0 {
+		fields["fixVersions"] = namesArray(req.FixVersions)
+	}
+
+	// Components
+	if len(req.Components) > 0 {
+		fields["components"] = namesArray(req.Components)
 	}
 
 	payload := map[string]interface{}{"fields": fields}
@@ -905,8 +981,31 @@ func (c *Client) UpdateIssue(issueKey string, req UpdateIssueRequest) error {
 		fields["assignee"] = map[string]string{"accountId": accountID}
 	}
 
-	if req.Epic != nil {
+	if req.Parent != nil {
+		fields["parent"] = map[string]string{"key": *req.Parent}
+	} else if req.Epic != nil {
 		fields["parent"] = map[string]string{"key": *req.Epic}
+	}
+
+	if req.StoryPoints != nil && req.StoryPointsField != "" {
+		fields[req.StoryPointsField] = *req.StoryPoints
+	}
+
+	if req.DueDate != nil {
+		// Empty string clears the field; non-empty sets it.
+		if *req.DueDate == "" {
+			fields["duedate"] = nil
+		} else {
+			fields["duedate"] = *req.DueDate
+		}
+	}
+
+	if len(req.FixVersions) > 0 {
+		fields["fixVersions"] = namesArray(req.FixVersions)
+	}
+
+	if len(req.Components) > 0 {
+		fields["components"] = namesArray(req.Components)
 	}
 
 	if len(fields) == 0 {
@@ -919,9 +1018,115 @@ func (c *Client) UpdateIssue(issueKey string, req UpdateIssueRequest) error {
 	return err
 }
 
-// GetIssue retrieves a single issue by key
+// DownloadAttachment fetches an attachment's bytes by ID and writes them to dst.
+// dst may be a file path, or "-" for stdout.
+func (c *Client) DownloadAttachment(attachmentID, dst string) (int64, error) {
+	endpoint := fmt.Sprintf("%s/rest/api/3/attachment/content/%s", c.baseURL, attachmentID)
+	req, err := http.NewRequest("GET", endpoint, nil)
+	if err != nil {
+		return 0, err
+	}
+	req.SetBasicAuth(c.email, c.apiToken)
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return 0, fmt.Errorf("download request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("download failed %d: %s", resp.StatusCode, string(body))
+	}
+	var w io.Writer
+	if dst == "-" {
+		w = os.Stdout
+	} else {
+		f, err := os.Create(dst)
+		if err != nil {
+			return 0, fmt.Errorf("create file: %w", err)
+		}
+		defer f.Close()
+		w = f
+	}
+	return io.Copy(w, resp.Body)
+}
+
+// UploadAttachment uploads a local file as an attachment on the given issue.
+func (c *Client) UploadAttachment(issueKey, filePath string) (*Attachment, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open file: %w", err)
+	}
+	defer f.Close()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", filepath.Base(filePath))
+	if err != nil {
+		return nil, fmt.Errorf("create multipart: %w", err)
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return nil, fmt.Errorf("copy file: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart: %w", err)
+	}
+
+	endpoint := fmt.Sprintf("%s/rest/api/3/issue/%s/attachments", c.baseURL, issueKey)
+	req, err := http.NewRequest("POST", endpoint, &body)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth(c.email, c.apiToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Atlassian-Token", "no-check")
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("upload request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("upload failed %d: %s", resp.StatusCode, string(respBody))
+	}
+	// JIRA returns an array with the uploaded attachment(s)
+	var atts []Attachment
+	if err := json.Unmarshal(respBody, &atts); err != nil {
+		return nil, fmt.Errorf("parse upload response: %w", err)
+	}
+	if len(atts) == 0 {
+		return nil, fmt.Errorf("upload succeeded but no attachment returned")
+	}
+	return &atts[0], nil
+}
+
+// UpdateLabels adds and/or removes labels on an issue using JIRA's update
+// operations (atomic, no read-modify-write).
+func (c *Client) UpdateLabels(issueKey string, add, remove []string) error {
+	if len(add) == 0 && len(remove) == 0 {
+		return fmt.Errorf("no labels to add or remove")
+	}
+	ops := make([]map[string]string, 0, len(add)+len(remove))
+	for _, l := range add {
+		ops = append(ops, map[string]string{"add": l})
+	}
+	for _, l := range remove {
+		ops = append(ops, map[string]string{"remove": l})
+	}
+	payload := map[string]interface{}{
+		"update": map[string]interface{}{"labels": ops},
+	}
+	_, err := c.doRequest("PUT", fmt.Sprintf("/rest/api/3/issue/%s", issueKey), payload)
+	return err
+}
+
+// GetIssue retrieves a single issue by key, including changelog and issue links.
 func (c *Client) GetIssue(issueKey string) (*Issue, error) {
-	endpoint := fmt.Sprintf("/rest/api/3/issue/%s", issueKey)
+	endpoint := fmt.Sprintf("/rest/api/3/issue/%s?expand=changelog", issueKey)
 	respBody, err := c.doRequest("GET", endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -951,58 +1156,50 @@ func (c *Client) GetTransitions(issueKey string) ([]Transition, error) {
 	return result.Transitions, nil
 }
 
-// TransitionIssue moves an issue to a new status
-func (c *Client) TransitionIssue(issueKey, transitionName string, comment string) error {
-	// Get available transitions
+// TransitionOptions controls a transition. Comment and Resolution are optional.
+type TransitionOptions struct {
+	Name       string // transition name or target status
+	Comment    string
+	Resolution string // sets fields.resolution.name (e.g. "Done", "Won't Do")
+}
+
+// TransitionIssue moves an issue to a new status, optionally adding a comment
+// and/or setting a resolution.
+func (c *Client) TransitionIssue(issueKey string, opts TransitionOptions) error {
 	transitions, err := c.GetTransitions(issueKey)
 	if err != nil {
 		return fmt.Errorf("failed to get transitions: %w", err)
 	}
 
-	// Find matching transition by name or target status
 	var transitionID string
 	for _, t := range transitions {
-		if t.Name == transitionName || t.To.Name == transitionName {
+		if t.Name == opts.Name || t.To.Name == opts.Name {
 			transitionID = t.ID
 			break
 		}
 	}
-
 	if transitionID == "" {
 		available := make([]string, 0, len(transitions))
 		for _, t := range transitions {
 			available = append(available, fmt.Sprintf("%s -> %s", t.Name, t.To.Name))
 		}
-		return fmt.Errorf("transition '%s' not available, options: %v", transitionName, available)
+		return fmt.Errorf("transition '%s' not available, options: %v", opts.Name, available)
 	}
 
 	payload := map[string]interface{}{
 		"transition": map[string]string{"id": transitionID},
 	}
 
-	// Add comment if provided
-	if comment != "" {
+	if opts.Resolution != "" {
+		payload["fields"] = map[string]interface{}{
+			"resolution": map[string]string{"name": opts.Resolution},
+		}
+	}
+
+	if opts.Comment != "" {
 		payload["update"] = map[string]interface{}{
 			"comment": []map[string]interface{}{
-				{
-					"add": map[string]interface{}{
-						"body": map[string]interface{}{
-							"type":    "doc",
-							"version": 1,
-							"content": []map[string]interface{}{
-								{
-									"type": "paragraph",
-									"content": []map[string]interface{}{
-										{
-											"type": "text",
-											"text": comment,
-										},
-									},
-								},
-							},
-						},
-					},
-				},
+				{"add": map[string]interface{}{"body": parseDescriptionToADF(opts.Comment)}},
 			},
 		}
 	}
@@ -1011,26 +1208,146 @@ func (c *Client) TransitionIssue(issueKey, transitionName string, comment string
 	return err
 }
 
-// AddComment adds a comment to an issue
+// GetResolutions returns all configured resolutions.
+func (c *Client) GetResolutions() ([]struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}, error) {
+	respBody, err := c.doRequest("GET", "/rest/api/3/resolution", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resolutions []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(respBody, &resolutions); err != nil {
+		return nil, fmt.Errorf("failed to parse resolutions: %w", err)
+	}
+	return resolutions, nil
+}
+
+// Comment represents a JIRA comment with author and timestamps.
+type Comment struct {
+	ID      string      `json:"id"`
+	Author  *User       `json:"author"`
+	Created string      `json:"created"`
+	Updated string      `json:"updated"`
+	Body    interface{} `json:"body"` // Raw ADF — render with RenderADF
+}
+
+// CommentsResponse is the paginated comments envelope.
+type CommentsResponse struct {
+	Comments   []Comment `json:"comments"`
+	StartAt    int       `json:"startAt"`
+	MaxResults int       `json:"maxResults"`
+	Total      int       `json:"total"`
+}
+
+// GetComments returns all comments on an issue, oldest first.
+func (c *Client) GetComments(issueKey string) ([]Comment, error) {
+	var all []Comment
+	startAt := 0
+	for {
+		endpoint := fmt.Sprintf("/rest/api/3/issue/%s/comment?startAt=%d&maxResults=100&orderBy=created", issueKey, startAt)
+		respBody, err := c.doRequest("GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		var page CommentsResponse
+		if err := json.Unmarshal(respBody, &page); err != nil {
+			return nil, fmt.Errorf("failed to parse comments: %w", err)
+		}
+		all = append(all, page.Comments...)
+		if startAt+len(page.Comments) >= page.Total || len(page.Comments) == 0 {
+			break
+		}
+		startAt += len(page.Comments)
+	}
+	return all, nil
+}
+
+// WatchersResponse is the response from GET /watchers.
+type WatchersResponse struct {
+	WatchCount int    `json:"watchCount"`
+	IsWatching bool   `json:"isWatching"`
+	Watchers   []User `json:"watchers"`
+}
+
+// GetWatchers returns the watchers on an issue.
+func (c *Client) GetWatchers(issueKey string) (*WatchersResponse, error) {
+	respBody, err := c.doRequest("GET", fmt.Sprintf("/rest/api/3/issue/%s/watchers", issueKey), nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp WatchersResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse watchers: %w", err)
+	}
+	return &resp, nil
+}
+
+// AddWatcher adds a watcher to an issue. If accountID is empty, the
+// authenticated user is added.
+func (c *Client) AddWatcher(issueKey, accountID string) error {
+	endpoint := fmt.Sprintf("/rest/api/3/issue/%s/watchers", issueKey)
+	// JIRA expects the body to be the accountId as a raw JSON string. Empty body
+	// adds the calling user.
+	var body interface{}
+	if accountID != "" {
+		body = accountID
+	}
+	_, err := c.doRequest("POST", endpoint, body)
+	return err
+}
+
+// RemoveWatcher removes a watcher. accountID is required by the JIRA API.
+func (c *Client) RemoveWatcher(issueKey, accountID string) error {
+	endpoint := fmt.Sprintf("/rest/api/3/issue/%s/watchers?accountId=%s", issueKey, url.QueryEscape(accountID))
+	_, err := c.doRequest("DELETE", endpoint, nil)
+	return err
+}
+
+// LinkIssues creates a link between two issues.
+// The relationship reads: outwardKey [type.outward] inwardKey
+// e.g. for type "Blocks": outwardKey blocks inwardKey.
+func (c *Client) LinkIssues(outwardKey, inwardKey, typeName string) error {
+	payload := map[string]interface{}{
+		"type":         map[string]string{"name": typeName},
+		"outwardIssue": map[string]string{"key": outwardKey},
+		"inwardIssue":  map[string]string{"key": inwardKey},
+	}
+	_, err := c.doRequest("POST", "/rest/api/3/issueLink", payload)
+	return err
+}
+
+// DeleteIssueLink removes an issue link by its ID.
+func (c *Client) DeleteIssueLink(linkID string) error {
+	_, err := c.doRequest("DELETE", fmt.Sprintf("/rest/api/3/issueLink/%s", linkID), nil)
+	return err
+}
+
+// GetIssueLinkTypes returns all configured issue link types.
+func (c *Client) GetIssueLinkTypes() ([]IssueLinkType, error) {
+	respBody, err := c.doRequest("GET", "/rest/api/3/issueLinkType", nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		IssueLinkTypes []IssueLinkType `json:"issueLinkTypes"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse link types: %w", err)
+	}
+	return resp.IssueLinkTypes, nil
+}
+
+// AddComment adds a comment to an issue. The body supports the same simple
+// markdown subset as descriptions (## headings, - bullets, *bold*).
 func (c *Client) AddComment(issueKey, comment string) error {
 	payload := map[string]interface{}{
-		"body": map[string]interface{}{
-			"type":    "doc",
-			"version": 1,
-			"content": []map[string]interface{}{
-				{
-					"type": "paragraph",
-					"content": []map[string]interface{}{
-						{
-							"type": "text",
-							"text": comment,
-						},
-					},
-				},
-			},
-		},
+		"body": parseDescriptionToADF(comment),
 	}
-
 	_, err := c.doRequest("POST", fmt.Sprintf("/rest/api/3/issue/%s/comment", issueKey), payload)
 	return err
 }
@@ -1078,6 +1395,119 @@ func (c *Client) LogWork(issueKey string, timeSpentSeconds int, comment string) 
 	return err
 }
 
+// Board represents an Agile board.
+type Board struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// Sprint represents an Agile sprint.
+type Sprint struct {
+	ID            int    `json:"id"`
+	Name          string `json:"name"`
+	State         string `json:"state"` // active, closed, future
+	StartDate     string `json:"startDate"`
+	EndDate       string `json:"endDate"`
+	CompleteDate  string `json:"completeDate"`
+	OriginBoardID int    `json:"originBoardId"`
+	Goal          string `json:"goal"`
+}
+
+// GetBoards returns boards visible to the user, optionally filtered by project key.
+func (c *Client) GetBoards(projectKey string) ([]Board, error) {
+	endpoint := "/rest/agile/1.0/board"
+	if projectKey != "" {
+		endpoint += "?projectKeyOrId=" + url.QueryEscape(projectKey)
+	}
+	respBody, err := c.doRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Values []Board `json:"values"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse boards: %w", err)
+	}
+	return resp.Values, nil
+}
+
+// GetSprints returns sprints on a board. State filters: "active", "closed",
+// "future" (comma-separated). Empty returns all states.
+func (c *Client) GetSprints(boardID int, state string) ([]Sprint, error) {
+	endpoint := fmt.Sprintf("/rest/agile/1.0/board/%d/sprint", boardID)
+	if state != "" {
+		endpoint += "?state=" + url.QueryEscape(state)
+	}
+	respBody, err := c.doRequest("GET", endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	var resp struct {
+		Values []Sprint `json:"values"`
+	}
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return nil, fmt.Errorf("failed to parse sprints: %w", err)
+	}
+	return resp.Values, nil
+}
+
+// MoveIssuesToSprint adds the given issue keys to a sprint.
+func (c *Client) MoveIssuesToSprint(sprintID int, keys []string) error {
+	endpoint := fmt.Sprintf("/rest/agile/1.0/sprint/%d/issue", sprintID)
+	_, err := c.doRequest("POST", endpoint, map[string]interface{}{"issues": keys})
+	return err
+}
+
+// MoveIssuesToBacklog removes the given issues from any sprint.
+func (c *Client) MoveIssuesToBacklog(keys []string) error {
+	_, err := c.doRequest("POST", "/rest/agile/1.0/backlog/issue", map[string]interface{}{"issues": keys})
+	return err
+}
+
+// Worklog represents a worklog entry on an issue.
+type Worklog struct {
+	ID               string      `json:"id"`
+	Author           *User       `json:"author"`
+	Created          string      `json:"created"`
+	Started          string      `json:"started"`
+	TimeSpent        string      `json:"timeSpent"`
+	TimeSpentSeconds int         `json:"timeSpentSeconds"`
+	Comment          interface{} `json:"comment"` // Raw ADF
+}
+
+// WorklogResponse is the paginated worklogs envelope.
+type WorklogResponse struct {
+	Worklogs   []Worklog `json:"worklogs"`
+	StartAt    int       `json:"startAt"`
+	MaxResults int       `json:"maxResults"`
+	Total      int       `json:"total"`
+}
+
+// GetWorklogs returns worklog entries for an issue, oldest first.
+func (c *Client) GetWorklogs(issueKey string) ([]Worklog, error) {
+	var all []Worklog
+	startAt := 0
+	for {
+		endpoint := fmt.Sprintf("/rest/api/3/issue/%s/worklog?startAt=%d&maxResults=100", issueKey, startAt)
+		respBody, err := c.doRequest("GET", endpoint, nil)
+		if err != nil {
+			return nil, err
+		}
+		var page WorklogResponse
+		if err := json.Unmarshal(respBody, &page); err != nil {
+			return nil, fmt.Errorf("failed to parse worklogs: %w", err)
+		}
+		all = append(all, page.Worklogs...)
+		if startAt+len(page.Worklogs) >= page.Total || len(page.Worklogs) == 0 {
+			break
+		}
+		startAt += len(page.Worklogs)
+	}
+	return all, nil
+}
+
 // GetStoryPoints extracts story points from an issue's raw fields
 func GetStoryPoints(rawFields map[string]interface{}, storyPointsField string) float64 {
 	if rawFields == nil || storyPointsField == "" {
@@ -1116,6 +1546,16 @@ func (c *Client) GetFields() ([]FieldDefinition, error) {
 	}
 
 	return fields, nil
+}
+
+// namesArray converts a list of names into the [{name: "..."}] form JIRA expects
+// for fixVersions, components, etc.
+func namesArray(names []string) []map[string]string {
+	out := make([]map[string]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, map[string]string{"name": n})
+	}
+	return out
 }
 
 // Helper function to get map keys

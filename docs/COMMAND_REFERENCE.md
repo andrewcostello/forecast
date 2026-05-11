@@ -146,8 +146,10 @@ forecast jira missing-times --fix       # backfill from story points
 
 > **Rich-text rendering.** Descriptions, comments, and worklog comments are
 > stored in JIRA as Atlassian Document Format (ADF). The CLI renders them
-> as Markdown for reading, and accepts a small markdown subset
-> (`## headings`, `- bullets`, `*bold*`) for writing.
+> as Markdown for reading, and accepts CommonMark + GFM for writing —
+> headings, bullet/ordered lists, tables, fenced code blocks (with language
+> hint, e.g. ```` ```mermaid ````), inline code, links, **bold**, *italic*,
+> ~~strikethrough~~.
 
 ## Typical Workflows
 
@@ -171,7 +173,7 @@ forecast jira transition SMG-123 --to "In Progress"
 ### During Work
 
 ```bash
-# Leave progress notes (markdown subset supported)
+# Leave progress notes (CommonMark + GFM supported)
 forecast jira comment SMG-123 --body "## Status\n- backend done\n- starting UI"
 
 # Log time as you go

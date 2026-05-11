@@ -29,7 +29,7 @@ Create & edit:
   create               Create ticket (--story-points, --due-date, --parent for sub-tasks,
                        --fix-versions, --components)
   update <key>         Update fields on an existing ticket
-  comment <key>        Add a comment (markdown subset: ## headings, - bullets, *bold*)
+  comment <key>        Add a comment (CommonMark + GFM: headings, lists, tables, fenced code, **bold**)
   attach <key> <file>  Upload an attachment
   download <id>        Download an attachment by ID
 
@@ -147,8 +147,10 @@ Examples:
 var jiraCommentCmd = &cobra.Command{
 	Use:   "comment [issue-key]",
 	Short: "Add a comment to a ticket",
-	Long: `Add a comment to a JIRA ticket. Supports a small markdown subset
-(## headings, - bullets, *bold*).
+	Long: `Add a comment to a JIRA ticket. Body is parsed as CommonMark + GFM,
+so headings, bullet/ordered lists, tables, fenced code blocks (with language
+hint, e.g. ` + "```mermaid" + `), inline code, links, and **bold** / *italic*
+all render correctly in Jira.
 
 Examples:
   forecast jira comment SMG-1234 --body "Verified in staging."
@@ -683,12 +685,17 @@ type jiraUpdateOpts struct {
 }
 
 func runJiraCreate(opts jiraCreateOpts) error {
-	client, err := getJiraClient()
+	// Pick the JIRA instance from the parent/epic key when present so cross-
+	// instance projects route correctly. Falls back to the default instance.
+	parentKey := opts.Parent
+	if parentKey == "" {
+		parentKey = opts.Epic
+	}
+	client, inst, err := getJiraClientForKey(parentKey)
 	if err != nil {
 		return err
 	}
 
-	cfg := config.Get()
 	req := jira.CreateIssueRequest{
 		Summary:          opts.Summary,
 		IssueType:        opts.IssueType,
@@ -702,11 +709,11 @@ func runJiraCreate(opts jiraCreateOpts) error {
 		DueDate:          opts.DueDate,
 		FixVersions:      opts.FixVersions,
 		Components:       opts.Components,
-		StoryPointsField: cfg.JIRA.StoryPointsField,
-		Project:          cfg.JIRA.ProjectKey,
+		StoryPointsField: inst.StoryPointsField,
+		Project:          inst.ProjectKey,
 	}
 
-	if opts.StoryPoints > 0 && cfg.JIRA.StoryPointsField == "" {
+	if opts.StoryPoints > 0 && inst.StoryPointsField == "" {
 		fmt.Println("Warning: --story-points ignored because story_points_field is not set in config")
 	}
 
@@ -716,18 +723,17 @@ func runJiraCreate(opts jiraCreateOpts) error {
 	}
 
 	fmt.Printf("Created: %s\n", result.Key)
-	fmt.Printf("URL: %s/browse/%s\n", cfg.JIRA.URL, result.Key)
+	fmt.Printf("URL: %s/browse/%s\n", inst.URL, result.Key)
 	return nil
 }
 
 func runJiraUpdate(opts jiraUpdateOpts) error {
-	client, err := getJiraClient()
+	client, inst, err := getJiraClientForKey(opts.Key)
 	if err != nil {
 		return err
 	}
-	cfg := config.Get()
 
-	req := jira.UpdateIssueRequest{StoryPointsField: cfg.JIRA.StoryPointsField}
+	req := jira.UpdateIssueRequest{StoryPointsField: inst.StoryPointsField}
 
 	if opts.Summary != "" {
 		req.Summary = &opts.Summary
@@ -750,7 +756,7 @@ func runJiraUpdate(opts jiraUpdateOpts) error {
 		req.Epic = &opts.Epic
 	}
 	if opts.StoryPoints >= 0 {
-		if cfg.JIRA.StoryPointsField == "" {
+		if inst.StoryPointsField == "" {
 			fmt.Println("Warning: --story-points ignored because story_points_field is not set in config")
 		} else {
 			pts := opts.StoryPoints
@@ -780,7 +786,7 @@ func runJiraUpdate(opts jiraUpdateOpts) error {
 }
 
 func runJiraGet(issueKey string, showHistory bool) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -876,7 +882,7 @@ func printChangelog(cl *jira.Changelog) {
 }
 
 func runJiraComment(issueKey, body string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -888,7 +894,7 @@ func runJiraComment(issueKey, body string) error {
 }
 
 func runJiraComments(issueKey string, limit int) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -932,7 +938,7 @@ func runJiraComments(issueKey string, limit int) error {
 }
 
 func runJiraLink(fromKey, toKey, linkType string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(fromKey)
 	if err != nil {
 		return err
 	}
@@ -974,7 +980,7 @@ func runJiraLinkTypes() error {
 }
 
 func runJiraWatch(issueKey, userEmail string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -995,14 +1001,13 @@ func runJiraWatch(issueKey, userEmail string) error {
 }
 
 func runJiraUnwatch(issueKey, userEmail string) error {
-	client, err := getJiraClient()
+	client, inst, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
-	cfg := config.Get()
 	target := userEmail
 	if target == "" {
-		target = cfg.JIRA.Email
+		target = inst.Email
 	}
 	if target == "" {
 		return fmt.Errorf("no user specified and no email in config")
@@ -1019,7 +1024,7 @@ func runJiraUnwatch(issueKey, userEmail string) error {
 }
 
 func runJiraWatchers(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1046,7 +1051,7 @@ func runJiraLog(issueKey, timeStr, comment string) error {
 	if dur <= 0 {
 		return fmt.Errorf("time must be positive")
 	}
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1059,7 +1064,7 @@ func runJiraLog(issueKey, timeStr, comment string) error {
 }
 
 func runJiraWorklogs(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1097,7 +1102,7 @@ func runJiraWorklogs(issueKey string) error {
 }
 
 func runJiraTransition(issueKey, to, comment, resolution string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1118,7 +1123,7 @@ func runJiraTransition(issueKey, to, comment, resolution string) error {
 }
 
 func runJiraAttachments(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1148,7 +1153,7 @@ func runJiraAttachments(issueKey string) error {
 }
 
 func runJiraAttach(issueKey, filePath string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1366,7 +1371,9 @@ func runJiraSprintAdd(sprintIDStr string, keys []string) error {
 	if err != nil {
 		return fmt.Errorf("invalid sprint ID %q (must be a number)", sprintIDStr)
 	}
-	client, err := getJiraClient()
+	// Sprint and issue keys must live in the same JIRA instance; pick the
+	// instance from the first issue key.
+	client, _, err := getJiraClientForKey(keys[0])
 	if err != nil {
 		return err
 	}
@@ -1378,7 +1385,7 @@ func runJiraSprintAdd(sprintIDStr string, keys []string) error {
 }
 
 func runJiraSprintBacklog(keys []string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(keys[0])
 	if err != nil {
 		return err
 	}
@@ -1450,7 +1457,7 @@ func runJiraSearch(jql string, limit int) error {
 }
 
 func runJiraTransitions(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1536,12 +1543,10 @@ func runJiraProjects() error {
 }
 
 func runJiraFields(issueKey string) error {
-	cfg := config.Get()
-	if cfg == nil {
-		return fmt.Errorf("failed to load config - run 'forecast init' first")
+	client, _, err := getJiraClientForKey(issueKey)
+	if err != nil {
+		return err
 	}
-
-	client := jira.NewClient(&cfg.JIRA)
 
 	// Get field definitions to show names
 	fieldDefs, err := client.GetFields()

@@ -59,6 +59,20 @@ func init() {
 	syncCmd.Flags().Bool("json", false, "Output results as JSON")
 }
 
+// projectKeyFromEpic extracts the JIRA project key from an epic key
+// (e.g. "FSG-8348" → "FSG"). Falls back to fallback when epic is malformed.
+func projectKeyFromEpic(epic, fallback string) string {
+	for i := 0; i < len(epic); i++ {
+		if epic[i] == '-' {
+			if i == 0 {
+				return fallback
+			}
+			return epic[:i]
+		}
+	}
+	return fallback
+}
+
 // SyncResult holds sync operation results for JSON output
 type SyncResult struct {
 	Projects    []ProjectSyncResult `json:"projects"`
@@ -98,8 +112,6 @@ func runSync(projectFilter string, jsonOutput bool) error {
 		projectFilter = appcontext.GetProject()
 	}
 
-	// Create JIRA client
-	jiraClient := jira.NewClient(&cfg.JIRA)
 	store := storage.New(".forecast")
 
 	// Get projects to sync
@@ -113,6 +125,7 @@ func runSync(projectFilter string, jsonOutput bool) error {
 
 	// If no projects configured, use legacy single-epic mode
 	if len(projects) == 0 {
+		jiraClient := jira.NewClient(&cfg.JIRA)
 		if !jsonOutput {
 			fmt.Println("Syncing from JIRA (legacy mode)...")
 		}
@@ -157,11 +170,18 @@ func runSync(projectFilter string, jsonOutput bool) error {
 		projects = []config.ProjectConfig{*proj}
 	}
 
-	// Sync each project
+	// Sync each project against its own JIRA instance.
 	totalItems := 0
 	for _, proj := range projects {
+		inst := cfg.GetJIRAInstanceForProject(&proj)
+		jiraClient := jira.NewClient(inst)
+
 		if !jsonOutput {
-			fmt.Printf("Syncing %s (%s)...\n", proj.Name, proj.Epic)
+			label := proj.Epic
+			if proj.JIRAInstance != "" {
+				label = fmt.Sprintf("%s @ %s", proj.Epic, proj.JIRAInstance)
+			}
+			fmt.Printf("Syncing %s (%s)...\n", proj.Name, label)
 		}
 
 		projResult := ProjectSyncResult{
@@ -170,12 +190,14 @@ func runSync(projectFilter string, jsonOutput bool) error {
 			Epic: proj.Epic,
 		}
 
-		// Build JQL for this project's epic
-		jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+		// JQL is anchored on the project key the epic actually belongs to,
+		// which lives on the resolved instance — not on cfg.JIRA.
+		projectKeyForJQL := projectKeyFromEpic(proj.Epic, inst.ProjectKey)
+		jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s`, projectKeyForJQL, proj.Epic)
 		issues, err := jiraClient.SearchJQL(jql)
 		if err != nil {
 			// Try parent field for next-gen projects
-			jql = fmt.Sprintf(`project = %s AND parent = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+			jql = fmt.Sprintf(`project = %s AND parent = %s`, projectKeyForJQL, proj.Epic)
 			issues, err = jiraClient.SearchJQL(jql)
 			if err != nil {
 				if !jsonOutput {
@@ -187,8 +209,11 @@ func runSync(projectFilter string, jsonOutput bool) error {
 			}
 		}
 
-		// Convert JIRA issues to forecast items with cycle time
-		items := jiraClient.ConvertIssuesToItems(issues, cfg)
+		// Convert JIRA issues to forecast items with cycle time, using the
+		// project's instance config (story-points field, done statuses, etc.).
+		instCfg := *cfg
+		instCfg.JIRA = *inst
+		items := jiraClient.ConvertIssuesToItems(issues, &instCfg)
 
 		// Save to project-specific file
 		projectKey := proj.Key

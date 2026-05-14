@@ -253,28 +253,26 @@ func runSync(projectFilter string, jsonOutput bool) error {
 	return nil
 }
 
-// runSyncFromAuthoritativeYAML loads forecast items directly from the yaml
-// file pointed to by cfg.Source.Path. The file is the system of record:
-// status and timestamps come from yaml, cycle time is computed locally, and
-// no JIRA call is made. The resulting items are written to .forecast/data.json
-// so the existing run/report/dashboard commands work unchanged.
+// runSyncFromAuthoritativeYAML loads forecast items from yaml files. yaml is
+// the system of record: status and timestamps come from yaml, cycle time is
+// computed locally, and no JIRA call is made. Two layouts are supported:
+//
+//   - Single-file (cfg.Source.Path): one tasks file → .forecast/data.json
+//   - Multi-project (cfg.Source.Projects): each entry → .forecast/data-{key}.json
+//
+// Projects wins if both are set.
 func runSyncFromAuthoritativeYAML(cfg *config.Config, jsonOutput bool) error {
+	if len(cfg.Source.Projects) > 0 {
+		return runSyncFromMultiYAML(cfg, jsonOutput)
+	}
 	if cfg.Source.Path == "" {
-		return fmt.Errorf("source.type=yaml but source.path is empty in .forecast/config.yaml")
+		return fmt.Errorf("source.type=yaml requires source.path (single file) or source.projects (multi-file)")
 	}
 	path := config.ResolvePath(cfg.Source.Path)
 
-	tf, err := yamlparser.ParseTaskFile(path)
+	items, breakdown, err := loadYAMLItems(path)
 	if err != nil {
-		return apperrors.WrapWithSuggestion(err,
-			fmt.Sprintf("Failed to parse authoritative yaml: %s", path),
-			"Check that the file exists and is valid YAML",
-		)
-	}
-
-	items, err := tf.ToItems()
-	if err != nil {
-		return fmt.Errorf("convert yaml tasks to forecast items: %w", err)
+		return err
 	}
 
 	store := storage.New(".forecast")
@@ -282,28 +280,9 @@ func runSyncFromAuthoritativeYAML(cfg *config.Config, jsonOutput bool) error {
 		return fmt.Errorf("save items: %w", err)
 	}
 
-	var done, inProg, todo, blocked, other int
-	for _, it := range items {
-		switch it.Status {
-		case "Done":
-			done++
-		case "In Progress":
-			inProg++
-		case "To Do":
-			todo++
-		case "Blocked":
-			blocked++
-		default:
-			other++
-		}
-	}
-
 	if jsonOutput {
 		result := SyncResult{
 			Projects: []ProjectSyncResult{{
-				Key:       tf.Project,
-				Name:      tf.Project,
-				Epic:      tf.Epic,
 				ItemCount: len(items),
 			}},
 			TotalItems: len(items),
@@ -313,12 +292,102 @@ func runSyncFromAuthoritativeYAML(cfg *config.Config, jsonOutput bool) error {
 		fmt.Println(string(data))
 	} else {
 		fmt.Printf("Loaded %d items from authoritative yaml: %s\n", len(items), path)
-		fmt.Printf("  Done: %d  In Progress: %d  To Do: %d  Blocked: %d  Other: %d\n",
-			done, inProg, todo, blocked, other)
+		printBreakdown(breakdown)
 	}
 
 	appcontext.SetLastSync(time.Now())
 	return nil
+}
+
+// runSyncFromMultiYAML loads each yaml file in cfg.Source.Projects into its
+// own data-{key}.json so the existing multi-project run/report flows can
+// forecast each independently.
+func runSyncFromMultiYAML(cfg *config.Config, jsonOutput bool) error {
+	store := storage.New(".forecast")
+	now := time.Now()
+	result := SyncResult{SyncedAt: now}
+
+	for _, proj := range cfg.Source.Projects {
+		if proj.Key == "" {
+			return fmt.Errorf("source.projects: key is required for every entry")
+		}
+		if proj.Path == "" {
+			return fmt.Errorf("source.projects[%s]: path is required", proj.Key)
+		}
+		path := config.ResolvePath(proj.Path)
+
+		items, breakdown, err := loadYAMLItems(path)
+		if err != nil {
+			return fmt.Errorf("project %s: %w", proj.Key, err)
+		}
+
+		if err := store.SaveProject(items, proj.Key); err != nil {
+			return fmt.Errorf("save %s: %w", proj.Key, err)
+		}
+
+		name := proj.Name
+		if name == "" {
+			name = proj.Key
+		}
+		result.Projects = append(result.Projects, ProjectSyncResult{
+			Key: proj.Key, Name: name, ItemCount: len(items),
+		})
+		result.TotalItems += len(items)
+
+		if !jsonOutput {
+			fmt.Printf("Loaded %d items from %s → data-%s.json\n", len(items), path, proj.Key)
+			printBreakdown(breakdown)
+		}
+	}
+
+	if jsonOutput {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("\nSync complete: %d items across %d projects\n", result.TotalItems, len(result.Projects))
+	}
+
+	appcontext.SetLastSync(now)
+	return nil
+}
+
+type statusBreakdown struct {
+	Done, InProgress, ToDo, Blocked, Other int
+}
+
+func loadYAMLItems(path string) ([]forecast.Item, statusBreakdown, error) {
+	tf, err := yamlparser.ParseTaskFile(path)
+	if err != nil {
+		return nil, statusBreakdown{}, apperrors.WrapWithSuggestion(err,
+			fmt.Sprintf("Failed to parse authoritative yaml: %s", path),
+			"Check that the file exists and is valid YAML",
+		)
+	}
+	items, err := tf.ToItems()
+	if err != nil {
+		return nil, statusBreakdown{}, fmt.Errorf("convert yaml tasks to forecast items: %w", err)
+	}
+	var b statusBreakdown
+	for _, it := range items {
+		switch it.Status {
+		case "Done":
+			b.Done++
+		case "In Progress":
+			b.InProgress++
+		case "To Do":
+			b.ToDo++
+		case "Blocked":
+			b.Blocked++
+		default:
+			b.Other++
+		}
+	}
+	return items, b, nil
+}
+
+func printBreakdown(b statusBreakdown) {
+	fmt.Printf("  Done: %d  In Progress: %d  To Do: %d  Blocked: %d  Other: %d\n",
+		b.Done, b.InProgress, b.ToDo, b.Blocked, b.Other)
 }
 
 func runSyncFromFile(filePath string, dryRun bool, jsonOutput bool) error {

@@ -128,6 +128,64 @@ jira:
 	}
 }
 
+func TestLoadYAMLSourceMultiProject(t *testing.T) {
+	tempDir := t.TempDir()
+	configContent := `
+project_name: "Yaml Multi"
+
+source:
+  type: yaml
+  projects:
+    - key: alpha
+      name: "Project Alpha"
+      path: alpha-tasks.yaml
+    - key: beta
+      path: ./sub/beta-tasks.yaml
+`
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	current = nil
+	if err := Load(configPath); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg := Get()
+	if cfg.Source.Type != "yaml" {
+		t.Errorf("Source.Type: %q", cfg.Source.Type)
+	}
+	if len(cfg.Source.Projects) != 2 {
+		t.Fatalf("Source.Projects: got %d, want 2", len(cfg.Source.Projects))
+	}
+	if cfg.Source.Projects[0].Key != "alpha" || cfg.Source.Projects[0].Name != "Project Alpha" {
+		t.Errorf("alpha: %+v", cfg.Source.Projects[0])
+	}
+	if cfg.Source.Projects[1].Key != "beta" || cfg.Source.Projects[1].Path != "./sub/beta-tasks.yaml" {
+		t.Errorf("beta: %+v", cfg.Source.Projects[1])
+	}
+
+	// GetAllProjects surfaces yaml projects as synthetic ProjectConfigs.
+	all := cfg.GetAllProjects()
+	if len(all) != 2 {
+		t.Fatalf("GetAllProjects: got %d, want 2", len(all))
+	}
+	if all[0].Key != "alpha" || all[0].Name != "Project Alpha" {
+		t.Errorf("synth alpha: %+v", all[0])
+	}
+	if all[1].Key != "beta" || all[1].Name != "beta" {
+		t.Errorf("synth beta: %+v (name should default to key)", all[1])
+	}
+
+	// GetProject finds yaml-source projects too.
+	if p := cfg.GetProject("alpha"); p == nil || p.Name != "Project Alpha" {
+		t.Errorf("GetProject(alpha): %+v", p)
+	}
+	if p := cfg.GetProject("nonexistent"); p != nil {
+		t.Errorf("GetProject(nonexistent): expected nil, got %+v", p)
+	}
+}
+
 func TestGetReturnsDefaultWhenNil(t *testing.T) {
 	current = nil
 	cfg := Get()

@@ -27,14 +27,25 @@ type Config struct {
 // SourceConfig selects where forecast items come from.
 //
 //   - type: "jira" (or unset) — current behavior; sync pulls from JIRA.
-//   - type: "yaml"            — yaml file at Path is authoritative; sync
-//     reads it directly and does not talk to JIRA.
+//   - type: "yaml"            — yaml file is authoritative; sync reads it
+//     directly and does not talk to JIRA. Use Path for a single-file project
+//     (written to data.json), or Projects for multi-project layouts (each
+//     entry written to data-{key}.json).
 //
 // Paths are resolved relative to the directory containing the config file when
-// relative, or used as-is when absolute.
+// relative, or used as-is when absolute. Path and Projects are mutually
+// exclusive; if both are set, Projects wins.
 type SourceConfig struct {
-	Type string `mapstructure:"type"` // "jira" | "yaml"
-	Path string `mapstructure:"path"` // for type=yaml: path to authoritative task file
+	Type     string              `mapstructure:"type"`     // "jira" | "yaml"
+	Path     string              `mapstructure:"path"`     // single-file yaml mode
+	Projects []YAMLProjectConfig `mapstructure:"projects"` // multi-file yaml mode
+}
+
+// YAMLProjectConfig is one project in a yaml-authoritative multi-project setup.
+type YAMLProjectConfig struct {
+	Key  string `mapstructure:"key"`            // short key for CLI; drives data-{key}.json
+	Name string `mapstructure:"name,omitempty"` // display name; defaults to Key
+	Path string `mapstructure:"path"`           // path to this project's tasks yaml
 }
 
 // ProjectConfig defines a trackable project/initiative
@@ -182,7 +193,8 @@ func IsLoaded() bool {
 	if current.JIRA.URL != "" || len(current.Projects) > 0 {
 		return true
 	}
-	if strings.EqualFold(current.Source.Type, "yaml") && current.Source.Path != "" {
+	if strings.EqualFold(current.Source.Type, "yaml") &&
+		(current.Source.Path != "" || len(current.Source.Projects) > 0) {
 		return true
 	}
 	return false
@@ -203,12 +215,39 @@ func (c *Config) GetProject(keyOrEpic string) *ProjectConfig {
 			return &c.Projects[i]
 		}
 	}
+	if strings.EqualFold(c.Source.Type, "yaml") {
+		for _, yp := range c.Source.Projects {
+			if yp.Key == keyOrEpic {
+				p := yamlProjectToProjectConfig(yp)
+				return &p
+			}
+		}
+	}
 	return nil
 }
 
-// GetAllProjects returns all configured projects
+// GetAllProjects returns all configured projects. In yaml-authoritative mode
+// with Source.Projects, the yaml projects are surfaced as synthetic
+// ProjectConfigs so the existing multi-project run/report/dashboard flows
+// work uniformly across JIRA and yaml sources.
 func (c *Config) GetAllProjects() []ProjectConfig {
-	return c.Projects
+	if !strings.EqualFold(c.Source.Type, "yaml") || len(c.Source.Projects) == 0 {
+		return c.Projects
+	}
+	out := make([]ProjectConfig, 0, len(c.Projects)+len(c.Source.Projects))
+	out = append(out, c.Projects...)
+	for _, yp := range c.Source.Projects {
+		out = append(out, yamlProjectToProjectConfig(yp))
+	}
+	return out
+}
+
+func yamlProjectToProjectConfig(yp YAMLProjectConfig) ProjectConfig {
+	name := yp.Name
+	if name == "" {
+		name = yp.Key
+	}
+	return ProjectConfig{Key: yp.Key, Name: name}
 }
 
 // GetJIRAInstance returns a JIRA instance config by name

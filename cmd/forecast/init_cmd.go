@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/andrewcostello/forecast/internal/config"
 	"github.com/andrewcostello/forecast/internal/jira"
@@ -22,9 +23,14 @@ Interactive setup will guide you through:
   - Project configuration
   - Auto-discovery of custom fields
 
-Use --non-interactive to create a template config file instead.`,
+Use --non-interactive to create a template config file instead.
+Use --source=yaml to scaffold a yaml-authoritative project (no JIRA).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		nonInteractive, _ := cmd.Flags().GetBool("non-interactive")
+		source, _ := cmd.Flags().GetString("source")
+		if strings.EqualFold(source, "yaml") {
+			return runInitYAML()
+		}
 		if nonInteractive {
 			return runInitNonInteractive()
 		}
@@ -34,6 +40,7 @@ Use --non-interactive to create a template config file instead.`,
 
 func init() {
 	initCmd.Flags().Bool("non-interactive", false, "Create template config without prompts")
+	initCmd.Flags().String("source", "jira", "Item source: jira | yaml")
 }
 
 func runInitInteractive() error {
@@ -330,6 +337,93 @@ jira:
 	fmt.Println("2. Set JIRA_API_TOKEN environment variable")
 	fmt.Println("3. Run 'forecast sync' to pull data from JIRA")
 
+	return nil
+}
+
+// runInitYAML scaffolds a yaml-authoritative project: a minimal
+// .forecast/config.yaml pointing at ../tasks.yaml, plus a starter tasks.yaml
+// with one example task. No JIRA prompts; no network. Intentionally simple
+// so the user can edit-and-go.
+func runInitYAML() error {
+	configPath := filepath.Join(".forecast", "config.yaml")
+	if _, err := os.Stat(configPath); err == nil {
+		return fmt.Errorf("config already exists at %s", configPath)
+	}
+	if err := os.MkdirAll(".forecast", 0755); err != nil {
+		return fmt.Errorf("create .forecast: %w", err)
+	}
+
+	wd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getwd: %w", err)
+	}
+	projectName := filepath.Base(wd)
+	today := time.Now().Format("2006-01-02")
+	target := time.Now().AddDate(0, 6, 0).Format("2006-01-02")
+
+	cfg := fmt.Sprintf(`# Forecast configuration — yaml-authoritative mode.
+# Tasks live in ../tasks.yaml; forecast reads them directly, no JIRA round-trip.
+
+project_name: %q
+team_capacity: 8
+
+source:
+  type: yaml
+  path: ../tasks.yaml
+
+reference_class:
+  name: %q
+  type: ""   # categorize for the reference-class database (e.g. "Go CLI", "React refactor")
+`, projectName, projectName)
+
+	if err := os.WriteFile(configPath, []byte(cfg), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", configPath, err)
+	}
+	terminal.PrintSuccess("Created %s", configPath)
+
+	tasksPath := "tasks.yaml"
+	if _, err := os.Stat(tasksPath); err == nil {
+		terminal.PrintInfo("Skipped %s (already exists)", tasksPath)
+	} else {
+		starter := fmt.Sprintf(`# %s tasks — authoritative source for forecast.
+#
+# Conventions:
+#   status: todo | in_progress | done | blocked
+#   size:   S | M | L | XL
+#   dates:  YYYY-MM-DD
+#
+# When a task starts, set status: in_progress and started_at.
+# When a task finishes, set status: done and completed_at — forecast computes
+# cycle time from started_at → completed_at.
+
+project: %s
+reference_class: %q
+
+milestones:
+  - name: v1.0
+    target: %s
+    scope: "Initial release"
+
+tasks:
+  - key: TASK-1
+    summary: "Example task — replace with real work"
+    type: component
+    size: M
+    status: todo
+    milestone: v1.0
+    created_at: %s
+`, projectName, projectName, projectName, target, today)
+
+		if err := os.WriteFile(tasksPath, []byte(starter), 0644); err != nil {
+			return fmt.Errorf("write %s: %w", tasksPath, err)
+		}
+		terminal.PrintSuccess("Created %s (starter)", tasksPath)
+	}
+
+	fmt.Println("\nNext steps:")
+	fmt.Println("  1. Edit tasks.yaml — add your real tasks and milestones")
+	fmt.Println("  2. forecast sync          # load items from tasks.yaml")
+	fmt.Println("  3. forecast run           # once you have done tasks with cycle time")
 	return nil
 }
 

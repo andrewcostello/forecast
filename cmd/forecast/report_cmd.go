@@ -140,11 +140,11 @@ func runReport(reportType string, projectFilter string, jsonOutput bool) error {
 		items, err = store.Load()
 	}
 	if err != nil {
-		return apperrors.NoDataError(projectKey)
+		return apperrors.NoDataError(projectKey, cfg.Source.Type)
 	}
 
 	if len(items) == 0 {
-		return apperrors.NoDataError(projectKey)
+		return apperrors.NoDataError(projectKey, cfg.Source.Type)
 	}
 
 	// Estimate project start from earliest item

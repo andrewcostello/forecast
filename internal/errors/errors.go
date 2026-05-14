@@ -73,19 +73,31 @@ func ProjectNotFoundError(projectKey string, available []string) error {
 	}
 }
 
-// NoDataError is returned when there's no data to process
-func NoDataError(projectKey string) error {
+// NoDataError is returned when there's no data to process. The suggestion is
+// tailored to the configured source type ("yaml" or anything else, defaulting
+// to the JIRA flow).
+func NoDataError(projectKey, sourceType string) error {
+	sugg := "Run 'forecast sync' to pull data from JIRA first"
+	if strings.EqualFold(sourceType, "yaml") {
+		sugg = "Run 'forecast sync' to load items from your authoritative yaml file"
+	}
 	return &UserError{
 		Message:    fmt.Sprintf("No data found for project '%s'", projectKey),
-		Suggestion: "Run 'forecast sync' to pull data from JIRA first",
+		Suggestion: sugg,
 	}
 }
 
-// NoCycleTimeError is returned when there's no cycle time data for forecasting
-func NoCycleTimeError() error {
+// NoCycleTimeError is returned when there's no cycle time data for forecasting.
+// The suggestion is tailored to the configured source type ("yaml" or anything
+// else, defaulting to the JIRA flow).
+func NoCycleTimeError(sourceType string) error {
+	sugg := "Complete some items in JIRA and sync again, or log time on completed issues"
+	if strings.EqualFold(sourceType, "yaml") {
+		sugg = "Set started_at and completed_at (YYYY-MM-DD) on done tasks in your yaml file, then run 'forecast sync'"
+	}
 	return &UserError{
 		Message:    "No completed items with cycle time data",
-		Suggestion: "Complete some items in JIRA and sync again, or log time on completed issues",
+		Suggestion: sugg,
 	}
 }
 

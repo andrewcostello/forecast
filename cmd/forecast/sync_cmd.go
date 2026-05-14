@@ -107,6 +107,11 @@ func runSync(projectFilter string, jsonOutput bool) error {
 		return err
 	}
 
+	// Authoritative-yaml source: tasks.yaml is the system of record, no JIRA.
+	if strings.EqualFold(cfg.Source.Type, "yaml") {
+		return runSyncFromAuthoritativeYAML(cfg, jsonOutput)
+	}
+
 	// Resolve project from context if not specified
 	if projectFilter == "" {
 		projectFilter = appcontext.GetProject()
@@ -245,6 +250,74 @@ func runSync(projectFilter string, jsonOutput bool) error {
 	// Record last sync time
 	appcontext.SetLastSync(time.Now())
 
+	return nil
+}
+
+// runSyncFromAuthoritativeYAML loads forecast items directly from the yaml
+// file pointed to by cfg.Source.Path. The file is the system of record:
+// status and timestamps come from yaml, cycle time is computed locally, and
+// no JIRA call is made. The resulting items are written to .forecast/data.json
+// so the existing run/report/dashboard commands work unchanged.
+func runSyncFromAuthoritativeYAML(cfg *config.Config, jsonOutput bool) error {
+	if cfg.Source.Path == "" {
+		return fmt.Errorf("source.type=yaml but source.path is empty in .forecast/config.yaml")
+	}
+	path := config.ResolvePath(cfg.Source.Path)
+
+	tf, err := yamlparser.ParseTaskFile(path)
+	if err != nil {
+		return apperrors.WrapWithSuggestion(err,
+			fmt.Sprintf("Failed to parse authoritative yaml: %s", path),
+			"Check that the file exists and is valid YAML",
+		)
+	}
+
+	items, err := tf.ToItems()
+	if err != nil {
+		return fmt.Errorf("convert yaml tasks to forecast items: %w", err)
+	}
+
+	store := storage.New(".forecast")
+	if err := store.Save(items); err != nil {
+		return fmt.Errorf("save items: %w", err)
+	}
+
+	var done, inProg, todo, blocked, other int
+	for _, it := range items {
+		switch it.Status {
+		case "Done":
+			done++
+		case "In Progress":
+			inProg++
+		case "To Do":
+			todo++
+		case "Blocked":
+			blocked++
+		default:
+			other++
+		}
+	}
+
+	if jsonOutput {
+		result := SyncResult{
+			Projects: []ProjectSyncResult{{
+				Key:       tf.Project,
+				Name:      tf.Project,
+				Epic:      tf.Epic,
+				ItemCount: len(items),
+			}},
+			TotalItems: len(items),
+			SyncedAt:   time.Now(),
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("Loaded %d items from authoritative yaml: %s\n", len(items), path)
+		fmt.Printf("  Done: %d  In Progress: %d  To Do: %d  Blocked: %d  Other: %d\n",
+			done, inProg, todo, blocked, other)
+	}
+
+	appcontext.SetLastSync(time.Now())
 	return nil
 }
 

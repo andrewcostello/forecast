@@ -15,12 +15,26 @@ type Config struct {
 	ProjectType    string                 `mapstructure:"project_type"`
 	TeamSize       int                    `mapstructure:"team_size"`
 	TeamCapacity   float64                `mapstructure:"team_capacity"` // Hours per day
+	Source         SourceConfig           `mapstructure:"source"`         // Item source: jira (default) or authoritative yaml
 	JIRA           JIRAConfig             `mapstructure:"jira"`
 	JIRAInstances  map[string]JIRAConfig  `mapstructure:"jira_instances"` // Named JIRA instances for multi-JIRA support
 	Projects       []ProjectConfig        `mapstructure:"projects"`       // Multiple project/epic tracking
 	ItemTypes      []ItemTypeConfig       `mapstructure:"item_types"`
 	ReferenceClass ReferenceClassConfig   `mapstructure:"reference_class"`
 	JIRAMapping    JIRAMappingConfig      `mapstructure:"jira_mapping"`
+}
+
+// SourceConfig selects where forecast items come from.
+//
+//   - type: "jira" (or unset) — current behavior; sync pulls from JIRA.
+//   - type: "yaml"            — yaml file at Path is authoritative; sync
+//     reads it directly and does not talk to JIRA.
+//
+// Paths are resolved relative to the directory containing the config file when
+// relative, or used as-is when absolute.
+type SourceConfig struct {
+	Type string `mapstructure:"type"` // "jira" | "yaml"
+	Path string `mapstructure:"path"` // for type=yaml: path to authoritative task file
 }
 
 // ProjectConfig defines a trackable project/initiative
@@ -158,9 +172,20 @@ func Load(configFile string) error {
 	return nil
 }
 
-// IsLoaded returns true if a config has been loaded
+// IsLoaded returns true if a config has been loaded with usable contents.
+// JIRA configs need a URL or at least one project; authoritative-yaml configs
+// need source.type=yaml and a non-empty path.
 func IsLoaded() bool {
-	return current != nil && (current.JIRA.URL != "" || len(current.Projects) > 0)
+	if current == nil {
+		return false
+	}
+	if current.JIRA.URL != "" || len(current.Projects) > 0 {
+		return true
+	}
+	if strings.EqualFold(current.Source.Type, "yaml") && current.Source.Path != "" {
+		return true
+	}
+	return false
 }
 
 // Get returns the current configuration
@@ -199,6 +224,21 @@ func (c *Config) GetJIRAInstance(name string) *JIRAConfig {
 	}
 	// Fall back to default
 	return &c.JIRA
+}
+
+// ResolvePath resolves a config-relative path against the directory of the
+// loaded config file. Absolute paths are returned unchanged. Returns p as-is
+// when no config file is known (which happens in tests that construct Config
+// values directly).
+func ResolvePath(p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	cfgFile := viper.ConfigFileUsed()
+	if cfgFile == "" {
+		return p
+	}
+	return filepath.Join(filepath.Dir(cfgFile), p)
 }
 
 // GetJIRAInstanceForProject returns the JIRA instance that owns the given

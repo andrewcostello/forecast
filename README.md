@@ -195,7 +195,7 @@ forecast jira create --summary "Add UI toggle" --type Sub-task --parent PROJ-100
 # Update fields (omit to leave unchanged; --clear-due-date to wipe)
 forecast jira update PROJ-123 --priority Highest --story-points 8
 
-# Comments: write supports markdown subset (## headings, - bullets, *bold*)
+# Comments: write supports CommonMark + GFM (headings, lists, tables, fenced code, **bold**)
 forecast jira comment PROJ-123 --body "Verified in staging."
 
 # Attachments
@@ -256,8 +256,10 @@ forecast jira missing-times          # audit Done tickets without cycle time
 
 > **Rich-text rendering.** Descriptions, comments, and worklog comments
 > are stored in JIRA as Atlassian Document Format (ADF). The CLI renders
-> them as Markdown for reading, and accepts a small markdown subset
-> (`## headings`, `- bullets`, `*bold*`) for writing.
+> them as Markdown for reading, and accepts CommonMark + GFM for writing —
+> headings, bullet/ordered lists, tables, fenced code blocks (with language
+> hint, e.g. ```` ```mermaid ````), inline code, links, **bold**, *italic*,
+> ~~strikethrough~~.
 
 ## Configuration
 

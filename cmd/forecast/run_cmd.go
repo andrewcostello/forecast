@@ -143,11 +143,11 @@ func runMonteCarlo(confidence []int, iterations int, projectFilter string, jsonO
 		items, err = store.Load()
 	}
 	if err != nil {
-		return apperrors.NoDataError(projectKey)
+		return apperrors.NoDataError(projectKey, cfg.Source.Type)
 	}
 
 	if len(items) == 0 {
-		return apperrors.NoDataError(projectKey)
+		return apperrors.NoDataError(projectKey, cfg.Source.Type)
 	}
 
 	// Count completed items with cycle time data
@@ -166,7 +166,7 @@ func runMonteCarlo(confidence []int, iterations int, projectFilter string, jsonO
 	}
 
 	if cycleTimeCount == 0 {
-		return apperrors.NoCycleTimeError()
+		return apperrors.NoCycleTimeError(cfg.Source.Type)
 	}
 
 	// Create and run Monte Carlo simulator

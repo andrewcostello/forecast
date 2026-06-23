@@ -197,7 +197,7 @@ forecast jira attachments {KEY}                      # List attachments
 forecast jira create --summary "Task" --type Task --labels "size:M" --story-points 5
 forecast jira create --summary "Sub-task" --type Sub-task --parent {PARENT-KEY}
 forecast jira update {KEY} --labels "size:M" --story-points 8 --due-date 2026-06-30
-forecast jira comment {KEY} --body "..."             # ## headings, - bullets, *bold*
+forecast jira comment {KEY} --body "..."             # CommonMark + GFM (tables, fenced code, **bold**)
 forecast jira attach {KEY} ./file.png                # Upload attachment
 
 # Workflow & collaboration
@@ -230,8 +230,10 @@ forecast run --confidence 50,70,85,95                # Monte Carlo
 
 Descriptions, comments, and worklog comments live in JIRA as Atlassian
 Document Format (ADF). The CLI renders them as Markdown, so `get`,
-`comments`, and `worklogs` output is human-readable. When writing, use
-the same lightweight subset: `## headings`, `- bullets`, `*bold*`.
+`comments`, and `worklogs` output is human-readable. Writing accepts
+CommonMark + GFM: headings, bullet/ordered lists, tables, fenced code
+blocks (with language hint — e.g. ```` ```mermaid ````), inline code,
+links, **bold**, *italic*, ~~strikethrough~~.
 
 ### Critical Don'ts
 

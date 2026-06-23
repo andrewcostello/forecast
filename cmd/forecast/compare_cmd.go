@@ -99,7 +99,7 @@ func runCompare(projectKeys []string, jsonOutput bool) error {
 		// Load items
 		items, err := store.LoadProject(projectKey)
 		if err != nil || len(items) == 0 {
-			return apperrors.NoDataError(projectKey)
+			return apperrors.NoDataError(projectKey, cfg.Source.Type)
 		}
 
 		// Calculate metrics

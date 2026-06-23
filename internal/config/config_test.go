@@ -128,6 +128,64 @@ jira:
 	}
 }
 
+func TestLoadYAMLSourceMultiProject(t *testing.T) {
+	tempDir := t.TempDir()
+	configContent := `
+project_name: "Yaml Multi"
+
+source:
+  type: yaml
+  projects:
+    - key: alpha
+      name: "Project Alpha"
+      path: alpha-tasks.yaml
+    - key: beta
+      path: ./sub/beta-tasks.yaml
+`
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	current = nil
+	if err := Load(configPath); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg := Get()
+	if cfg.Source.Type != "yaml" {
+		t.Errorf("Source.Type: %q", cfg.Source.Type)
+	}
+	if len(cfg.Source.Projects) != 2 {
+		t.Fatalf("Source.Projects: got %d, want 2", len(cfg.Source.Projects))
+	}
+	if cfg.Source.Projects[0].Key != "alpha" || cfg.Source.Projects[0].Name != "Project Alpha" {
+		t.Errorf("alpha: %+v", cfg.Source.Projects[0])
+	}
+	if cfg.Source.Projects[1].Key != "beta" || cfg.Source.Projects[1].Path != "./sub/beta-tasks.yaml" {
+		t.Errorf("beta: %+v", cfg.Source.Projects[1])
+	}
+
+	// GetAllProjects surfaces yaml projects as synthetic ProjectConfigs.
+	all := cfg.GetAllProjects()
+	if len(all) != 2 {
+		t.Fatalf("GetAllProjects: got %d, want 2", len(all))
+	}
+	if all[0].Key != "alpha" || all[0].Name != "Project Alpha" {
+		t.Errorf("synth alpha: %+v", all[0])
+	}
+	if all[1].Key != "beta" || all[1].Name != "beta" {
+		t.Errorf("synth beta: %+v (name should default to key)", all[1])
+	}
+
+	// GetProject finds yaml-source projects too.
+	if p := cfg.GetProject("alpha"); p == nil || p.Name != "Project Alpha" {
+		t.Errorf("GetProject(alpha): %+v", p)
+	}
+	if p := cfg.GetProject("nonexistent"); p != nil {
+		t.Errorf("GetProject(nonexistent): expected nil, got %+v", p)
+	}
+}
+
 func TestGetReturnsDefaultWhenNil(t *testing.T) {
 	current = nil
 	cfg := Get()
@@ -310,6 +368,119 @@ jira:
 	got := Get().JIRA.EffectiveDoneStatuses()
 	if len(got) != 2 || got[0] != "Done" || got[1] != "Awaiting Dev Deployment" {
 		t.Errorf("expected [Done, Awaiting Dev Deployment], got %v", got)
+	}
+}
+
+func TestGetJIRAInstanceForKey(t *testing.T) {
+	cfg := &Config{
+		JIRA: JIRAConfig{
+			URL:        "https://smgames.atlassian.net",
+			ProjectKey: "SMG",
+		},
+		JIRAInstances: map[string]JIRAConfig{
+			"fsg": {
+				URL:        "https://fullswing.atlassian.net",
+				ProjectKey: "FSG",
+			},
+			"multi": {
+				URL:         "https://multi.atlassian.net",
+				ProjectKey:  "MAIN",
+				ProjectKeys: []string{"ALT", "OTHER"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		key     string
+		wantURL string
+	}{
+		{"default instance for SMG key", "SMG-1689", "https://smgames.atlassian.net"},
+		{"named instance via ProjectKey", "FSG-8348", "https://fullswing.atlassian.net"},
+		{"named instance via ProjectKeys", "ALT-42", "https://multi.atlassian.net"},
+		{"named instance via ProjectKeys (second)", "OTHER-7", "https://multi.atlassian.net"},
+		{"named instance primary key", "MAIN-1", "https://multi.atlassian.net"},
+		{"unknown prefix falls back to default", "ZZZ-1", "https://smgames.atlassian.net"},
+		{"lowercase key still matches", "fsg-8348", "https://fullswing.atlassian.net"},
+		{"malformed key falls back to default", "no-dash-no-issue", "https://smgames.atlassian.net"},
+		{"empty key falls back to default", "", "https://smgames.atlassian.net"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cfg.GetJIRAInstanceForKey(tc.key)
+			if got == nil {
+				t.Fatalf("got nil instance for key %q", tc.key)
+			}
+			if got.URL != tc.wantURL {
+				t.Errorf("key %q: got URL %q, want %q", tc.key, got.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+func TestGetJIRAInstanceForProject(t *testing.T) {
+	cfg := &Config{
+		JIRA: JIRAConfig{
+			URL:        "https://smgames.atlassian.net",
+			ProjectKey: "SMG",
+		},
+		JIRAInstances: map[string]JIRAConfig{
+			"fsg": {URL: "https://fullswing.atlassian.net", ProjectKey: "FSG"},
+			"alt": {URL: "https://alt.atlassian.net", ProjectKey: "ALT"},
+		},
+	}
+
+	tests := []struct {
+		name    string
+		proj    *ProjectConfig
+		wantURL string
+	}{
+		{
+			name:    "explicit jira_instance wins",
+			proj:    &ProjectConfig{Epic: "SMG-1", JIRAInstance: "fsg"},
+			wantURL: "https://fullswing.atlassian.net",
+		},
+		{
+			name:    "explicit unknown instance falls back to default",
+			proj:    &ProjectConfig{Epic: "SMG-1", JIRAInstance: "ghost"},
+			wantURL: "https://smgames.atlassian.net",
+		},
+		{
+			name:    "infers from epic prefix when instance unset",
+			proj:    &ProjectConfig{Epic: "FSG-8348"},
+			wantURL: "https://fullswing.atlassian.net",
+		},
+		{
+			name:    "infers default for SMG epic",
+			proj:    &ProjectConfig{Epic: "SMG-1688"},
+			wantURL: "https://smgames.atlassian.net",
+		},
+		{
+			name:    "unknown prefix without instance falls back to default",
+			proj:    &ProjectConfig{Epic: "ZZZ-1"},
+			wantURL: "https://smgames.atlassian.net",
+		},
+		{
+			name:    "nil project returns default",
+			proj:    nil,
+			wantURL: "https://smgames.atlassian.net",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := cfg.GetJIRAInstanceForProject(tc.proj)
+			if got.URL != tc.wantURL {
+				t.Errorf("got URL %q, want %q", got.URL, tc.wantURL)
+			}
+		})
+	}
+}
+
+func TestGetJIRAInstanceForKey_MalformedDashAtStart(t *testing.T) {
+	cfg := &Config{JIRA: JIRAConfig{URL: "https://default", ProjectKey: "DEF"}}
+	if got := cfg.GetJIRAInstanceForKey("-123"); got.URL != "https://default" {
+		t.Errorf("leading-dash key should fall back to default, got %q", got.URL)
 	}
 }
 

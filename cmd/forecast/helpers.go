@@ -48,13 +48,27 @@ func splitAndTrim(s, sep string) []string {
 	return parts
 }
 
-// getJiraClient creates a JIRA client from the loaded config
+// getJiraClient creates a JIRA client from the default JIRA instance.
+// Use getJiraClientForKey when operating on a specific ticket so that the
+// right instance is picked based on the issue key prefix.
 func getJiraClient() (*jira.Client, error) {
 	cfg := config.Get()
 	if cfg == nil {
 		return nil, fmt.Errorf("failed to load config - run 'forecast init' first")
 	}
 	return jira.NewClient(&cfg.JIRA), nil
+}
+
+// getJiraClientForKey returns the JIRA client whose instance owns the given
+// issue key (e.g. "FSG-8348" → fullswing). Falls back to the default JIRA
+// instance when no instance claims the prefix.
+func getJiraClientForKey(issueKey string) (*jira.Client, *config.JIRAConfig, error) {
+	cfg := config.Get()
+	if cfg == nil {
+		return nil, nil, fmt.Errorf("failed to load config - run 'forecast init' first")
+	}
+	inst := cfg.GetJIRAInstanceForKey(issueKey)
+	return jira.NewClient(inst), inst, nil
 }
 
 // printBanner prints a formatted section header

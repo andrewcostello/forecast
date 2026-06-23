@@ -39,6 +39,7 @@ func init() {
 	rootCmd.AddCommand(referenceClassCmd)
 	rootCmd.AddCommand(jiraCmd)
 	rootCmd.AddCommand(dashboardCmd)
+	rootCmd.AddCommand(ingestCmd)
 }
 
 func initConfig() {

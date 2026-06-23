@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -14,6 +15,7 @@ type Config struct {
 	ProjectType    string                 `mapstructure:"project_type"`
 	TeamSize       int                    `mapstructure:"team_size"`
 	TeamCapacity   float64                `mapstructure:"team_capacity"` // Hours per day
+	Source         SourceConfig           `mapstructure:"source"`         // Item source: jira (default) or authoritative yaml
 	JIRA           JIRAConfig             `mapstructure:"jira"`
 	JIRAInstances  map[string]JIRAConfig  `mapstructure:"jira_instances"` // Named JIRA instances for multi-JIRA support
 	Projects       []ProjectConfig        `mapstructure:"projects"`       // Multiple project/epic tracking
@@ -22,19 +24,54 @@ type Config struct {
 	JIRAMapping    JIRAMappingConfig      `mapstructure:"jira_mapping"`
 }
 
+// SourceConfig selects where forecast items come from.
+//
+//   - type: "jira" (or unset) — current behavior; sync pulls from JIRA.
+//   - type: "yaml"            — yaml file is authoritative; sync reads it
+//     directly and does not talk to JIRA. Use Path for a single-file project
+//     (written to data.json), or Projects for multi-project layouts (each
+//     entry written to data-{key}.json).
+//
+// Paths are resolved relative to the directory containing the config file when
+// relative, or used as-is when absolute. Path and Projects are mutually
+// exclusive; if both are set, Projects wins.
+type SourceConfig struct {
+	Type     string              `mapstructure:"type"`     // "jira" | "yaml"
+	Path     string              `mapstructure:"path"`     // single-file yaml mode
+	Projects []YAMLProjectConfig `mapstructure:"projects"` // multi-file yaml mode
+}
+
+// YAMLProjectConfig is one project in a yaml-authoritative multi-project setup.
+type YAMLProjectConfig struct {
+	Key  string `mapstructure:"key"`            // short key for CLI; drives data-{key}.json
+	Name string `mapstructure:"name,omitempty"` // display name; defaults to Key
+	Path string `mapstructure:"path"`           // path to this project's tasks yaml
+}
+
 // ProjectConfig defines a trackable project/initiative
 type ProjectConfig struct {
-	Name     string `mapstructure:"name"`      // Display name
-	Epic     string `mapstructure:"epic"`      // Epic key (e.g., SMG-1688)
-	Key      string `mapstructure:"key"`       // Short key for CLI (e.g., "monorepo")
+	Name     string  `mapstructure:"name"`     // Display name
+	Epic     string  `mapstructure:"epic"`     // Epic key (e.g., SMG-1688)
+	Key      string  `mapstructure:"key"`      // Short key for CLI (e.g., "monorepo")
 	Capacity float64 `mapstructure:"capacity"` // Optional: team capacity for this project
+	// JIRAInstance is the name of a jira_instances entry that owns this
+	// project's tickets. Empty = use the default jira: block. Used so a
+	// forecast can mix projects from multiple JIRA instances (e.g. SMG on
+	// smgames + an FSG epic on fullswing).
+	JIRAInstance string `mapstructure:"jira_instance"`
 }
 
 type JIRAConfig struct {
-	URL              string   `mapstructure:"url"`
-	Email            string   `mapstructure:"email"`
-	APIToken         string   `mapstructure:"api_token"`
-	ProjectKey       string   `mapstructure:"project_key"`
+	URL         string   `mapstructure:"url"`
+	Email       string   `mapstructure:"email"`
+	APIToken    string   `mapstructure:"api_token"`
+	ProjectKey  string   `mapstructure:"project_key"`
+	// ProjectKeys lists additional issue-key prefixes (e.g. "FSG", "SMG")
+	// owned by this JIRA instance. Used by GetJIRAInstanceForKey to route
+	// per-ticket commands to the right instance. ProjectKey is always
+	// considered first; ProjectKeys is for instances that span multiple
+	// project prefixes.
+	ProjectKeys      []string `mapstructure:"project_keys"`
 	Epic             string   `mapstructure:"epic"`
 	Labels           []string `mapstructure:"labels"`
 	CycleTimeField   string   `mapstructure:"cycle_time_field"`   // Custom field ID for manual cycle time override (e.g., "customfield_10001")
@@ -131,9 +168,14 @@ func Load(configFile string) error {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Expand environment variables in API tokens (supports ${VAR} syntax in YAML)
+	// Expand environment variables in JIRA URL/email/token (supports ${VAR} syntax in YAML).
+	// Email + URL are expanded so a single set of env vars can drive multiple instances.
+	current.JIRA.URL = os.ExpandEnv(current.JIRA.URL)
+	current.JIRA.Email = os.ExpandEnv(current.JIRA.Email)
 	current.JIRA.APIToken = os.ExpandEnv(current.JIRA.APIToken)
 	for name, inst := range current.JIRAInstances {
+		inst.URL = os.ExpandEnv(inst.URL)
+		inst.Email = os.ExpandEnv(inst.Email)
 		inst.APIToken = os.ExpandEnv(inst.APIToken)
 		current.JIRAInstances[name] = inst
 	}
@@ -141,9 +183,21 @@ func Load(configFile string) error {
 	return nil
 }
 
-// IsLoaded returns true if a config has been loaded
+// IsLoaded returns true if a config has been loaded with usable contents.
+// JIRA configs need a URL or at least one project; authoritative-yaml configs
+// need source.type=yaml and a non-empty path.
 func IsLoaded() bool {
-	return current != nil && (current.JIRA.URL != "" || len(current.Projects) > 0)
+	if current == nil {
+		return false
+	}
+	if current.JIRA.URL != "" || len(current.Projects) > 0 {
+		return true
+	}
+	if strings.EqualFold(current.Source.Type, "yaml") &&
+		(current.Source.Path != "" || len(current.Source.Projects) > 0) {
+		return true
+	}
+	return false
 }
 
 // Get returns the current configuration
@@ -161,12 +215,39 @@ func (c *Config) GetProject(keyOrEpic string) *ProjectConfig {
 			return &c.Projects[i]
 		}
 	}
+	if strings.EqualFold(c.Source.Type, "yaml") {
+		for _, yp := range c.Source.Projects {
+			if yp.Key == keyOrEpic {
+				p := yamlProjectToProjectConfig(yp)
+				return &p
+			}
+		}
+	}
 	return nil
 }
 
-// GetAllProjects returns all configured projects
+// GetAllProjects returns all configured projects. In yaml-authoritative mode
+// with Source.Projects, the yaml projects are surfaced as synthetic
+// ProjectConfigs so the existing multi-project run/report/dashboard flows
+// work uniformly across JIRA and yaml sources.
 func (c *Config) GetAllProjects() []ProjectConfig {
-	return c.Projects
+	if !strings.EqualFold(c.Source.Type, "yaml") || len(c.Source.Projects) == 0 {
+		return c.Projects
+	}
+	out := make([]ProjectConfig, 0, len(c.Projects)+len(c.Source.Projects))
+	out = append(out, c.Projects...)
+	for _, yp := range c.Source.Projects {
+		out = append(out, yamlProjectToProjectConfig(yp))
+	}
+	return out
+}
+
+func yamlProjectToProjectConfig(yp YAMLProjectConfig) ProjectConfig {
+	name := yp.Name
+	if name == "" {
+		name = yp.Key
+	}
+	return ProjectConfig{Key: yp.Key, Name: name}
 }
 
 // GetJIRAInstance returns a JIRA instance config by name
@@ -182,6 +263,79 @@ func (c *Config) GetJIRAInstance(name string) *JIRAConfig {
 	}
 	// Fall back to default
 	return &c.JIRA
+}
+
+// ResolvePath resolves a config-relative path against the directory of the
+// loaded config file. Absolute paths are returned unchanged. Returns p as-is
+// when no config file is known (which happens in tests that construct Config
+// values directly).
+func ResolvePath(p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	cfgFile := viper.ConfigFileUsed()
+	if cfgFile == "" {
+		return p
+	}
+	return filepath.Join(filepath.Dir(cfgFile), p)
+}
+
+// GetJIRAInstanceForProject returns the JIRA instance that owns the given
+// project. Resolution order:
+//  1. Explicit project.JIRAInstance if set.
+//  2. Prefix-match the project's Epic key against instance ProjectKey/ProjectKeys.
+//  3. Default JIRA.
+func (c *Config) GetJIRAInstanceForProject(p *ProjectConfig) *JIRAConfig {
+	if p == nil {
+		return &c.JIRA
+	}
+	if p.JIRAInstance != "" {
+		return c.GetJIRAInstance(p.JIRAInstance)
+	}
+	return c.GetJIRAInstanceForKey(p.Epic)
+}
+
+// GetJIRAInstanceForKey returns the JIRA instance that owns the given issue
+// key (e.g. "FSG-8348" → fullswing instance) by matching the key's project
+// prefix against each instance's ProjectKey + ProjectKeys. Falls back to the
+// default JIRA when no instance claims the prefix.
+func (c *Config) GetJIRAInstanceForKey(issueKey string) *JIRAConfig {
+	prefix := projectPrefix(issueKey)
+	if prefix == "" {
+		return &c.JIRA
+	}
+	if instanceClaimsPrefix(&c.JIRA, prefix) {
+		return &c.JIRA
+	}
+	for name, inst := range c.JIRAInstances {
+		if instanceClaimsPrefix(&inst, prefix) {
+			out := c.JIRAInstances[name]
+			return &out
+		}
+	}
+	return &c.JIRA
+}
+
+// projectPrefix extracts the project key prefix (uppercased) from an issue
+// key like "FSG-8348" → "FSG". Returns "" if the key is malformed.
+func projectPrefix(issueKey string) string {
+	idx := strings.IndexByte(issueKey, '-')
+	if idx <= 0 {
+		return ""
+	}
+	return strings.ToUpper(issueKey[:idx])
+}
+
+func instanceClaimsPrefix(j *JIRAConfig, prefix string) bool {
+	if strings.EqualFold(j.ProjectKey, prefix) {
+		return true
+	}
+	for _, k := range j.ProjectKeys {
+		if strings.EqualFold(k, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // InitProject creates a new .forecast directory with default config

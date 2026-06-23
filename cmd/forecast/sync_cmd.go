@@ -59,6 +59,20 @@ func init() {
 	syncCmd.Flags().Bool("json", false, "Output results as JSON")
 }
 
+// projectKeyFromEpic extracts the JIRA project key from an epic key
+// (e.g. "FSG-8348" → "FSG"). Falls back to fallback when epic is malformed.
+func projectKeyFromEpic(epic, fallback string) string {
+	for i := 0; i < len(epic); i++ {
+		if epic[i] == '-' {
+			if i == 0 {
+				return fallback
+			}
+			return epic[:i]
+		}
+	}
+	return fallback
+}
+
 // SyncResult holds sync operation results for JSON output
 type SyncResult struct {
 	Projects    []ProjectSyncResult `json:"projects"`
@@ -93,13 +107,16 @@ func runSync(projectFilter string, jsonOutput bool) error {
 		return err
 	}
 
+	// Authoritative-yaml source: tasks.yaml is the system of record, no JIRA.
+	if strings.EqualFold(cfg.Source.Type, "yaml") {
+		return runSyncFromAuthoritativeYAML(cfg, jsonOutput)
+	}
+
 	// Resolve project from context if not specified
 	if projectFilter == "" {
 		projectFilter = appcontext.GetProject()
 	}
 
-	// Create JIRA client
-	jiraClient := jira.NewClient(&cfg.JIRA)
 	store := storage.New(".forecast")
 
 	// Get projects to sync
@@ -113,6 +130,7 @@ func runSync(projectFilter string, jsonOutput bool) error {
 
 	// If no projects configured, use legacy single-epic mode
 	if len(projects) == 0 {
+		jiraClient := jira.NewClient(&cfg.JIRA)
 		if !jsonOutput {
 			fmt.Println("Syncing from JIRA (legacy mode)...")
 		}
@@ -157,11 +175,18 @@ func runSync(projectFilter string, jsonOutput bool) error {
 		projects = []config.ProjectConfig{*proj}
 	}
 
-	// Sync each project
+	// Sync each project against its own JIRA instance.
 	totalItems := 0
 	for _, proj := range projects {
+		inst := cfg.GetJIRAInstanceForProject(&proj)
+		jiraClient := jira.NewClient(inst)
+
 		if !jsonOutput {
-			fmt.Printf("Syncing %s (%s)...\n", proj.Name, proj.Epic)
+			label := proj.Epic
+			if proj.JIRAInstance != "" {
+				label = fmt.Sprintf("%s @ %s", proj.Epic, proj.JIRAInstance)
+			}
+			fmt.Printf("Syncing %s (%s)...\n", proj.Name, label)
 		}
 
 		projResult := ProjectSyncResult{
@@ -170,12 +195,14 @@ func runSync(projectFilter string, jsonOutput bool) error {
 			Epic: proj.Epic,
 		}
 
-		// Build JQL for this project's epic
-		jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+		// JQL is anchored on the project key the epic actually belongs to,
+		// which lives on the resolved instance — not on cfg.JIRA.
+		projectKeyForJQL := projectKeyFromEpic(proj.Epic, inst.ProjectKey)
+		jql := fmt.Sprintf(`project = %s AND "Epic Link" = %s`, projectKeyForJQL, proj.Epic)
 		issues, err := jiraClient.SearchJQL(jql)
 		if err != nil {
 			// Try parent field for next-gen projects
-			jql = fmt.Sprintf(`project = %s AND parent = %s`, cfg.JIRA.ProjectKey, proj.Epic)
+			jql = fmt.Sprintf(`project = %s AND parent = %s`, projectKeyForJQL, proj.Epic)
 			issues, err = jiraClient.SearchJQL(jql)
 			if err != nil {
 				if !jsonOutput {
@@ -187,8 +214,11 @@ func runSync(projectFilter string, jsonOutput bool) error {
 			}
 		}
 
-		// Convert JIRA issues to forecast items with cycle time
-		items := jiraClient.ConvertIssuesToItems(issues, cfg)
+		// Convert JIRA issues to forecast items with cycle time, using the
+		// project's instance config (story-points field, done statuses, etc.).
+		instCfg := *cfg
+		instCfg.JIRA = *inst
+		items := jiraClient.ConvertIssuesToItems(issues, &instCfg)
 
 		// Save to project-specific file
 		projectKey := proj.Key
@@ -221,6 +251,143 @@ func runSync(projectFilter string, jsonOutput bool) error {
 	appcontext.SetLastSync(time.Now())
 
 	return nil
+}
+
+// runSyncFromAuthoritativeYAML loads forecast items from yaml files. yaml is
+// the system of record: status and timestamps come from yaml, cycle time is
+// computed locally, and no JIRA call is made. Two layouts are supported:
+//
+//   - Single-file (cfg.Source.Path): one tasks file → .forecast/data.json
+//   - Multi-project (cfg.Source.Projects): each entry → .forecast/data-{key}.json
+//
+// Projects wins if both are set.
+func runSyncFromAuthoritativeYAML(cfg *config.Config, jsonOutput bool) error {
+	if len(cfg.Source.Projects) > 0 {
+		return runSyncFromMultiYAML(cfg, jsonOutput)
+	}
+	if cfg.Source.Path == "" {
+		return fmt.Errorf("source.type=yaml requires source.path (single file) or source.projects (multi-file)")
+	}
+	path := config.ResolvePath(cfg.Source.Path)
+
+	items, breakdown, err := loadYAMLItems(path)
+	if err != nil {
+		return err
+	}
+
+	store := storage.New(".forecast")
+	if err := store.Save(items); err != nil {
+		return fmt.Errorf("save items: %w", err)
+	}
+
+	if jsonOutput {
+		result := SyncResult{
+			Projects: []ProjectSyncResult{{
+				ItemCount: len(items),
+			}},
+			TotalItems: len(items),
+			SyncedAt:   time.Now(),
+		}
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("Loaded %d items from authoritative yaml: %s\n", len(items), path)
+		printBreakdown(breakdown)
+	}
+
+	appcontext.SetLastSync(time.Now())
+	return nil
+}
+
+// runSyncFromMultiYAML loads each yaml file in cfg.Source.Projects into its
+// own data-{key}.json so the existing multi-project run/report flows can
+// forecast each independently.
+func runSyncFromMultiYAML(cfg *config.Config, jsonOutput bool) error {
+	store := storage.New(".forecast")
+	now := time.Now()
+	result := SyncResult{SyncedAt: now}
+
+	for _, proj := range cfg.Source.Projects {
+		if proj.Key == "" {
+			return fmt.Errorf("source.projects: key is required for every entry")
+		}
+		if proj.Path == "" {
+			return fmt.Errorf("source.projects[%s]: path is required", proj.Key)
+		}
+		path := config.ResolvePath(proj.Path)
+
+		items, breakdown, err := loadYAMLItems(path)
+		if err != nil {
+			return fmt.Errorf("project %s: %w", proj.Key, err)
+		}
+
+		if err := store.SaveProject(items, proj.Key); err != nil {
+			return fmt.Errorf("save %s: %w", proj.Key, err)
+		}
+
+		name := proj.Name
+		if name == "" {
+			name = proj.Key
+		}
+		result.Projects = append(result.Projects, ProjectSyncResult{
+			Key: proj.Key, Name: name, ItemCount: len(items),
+		})
+		result.TotalItems += len(items)
+
+		if !jsonOutput {
+			fmt.Printf("Loaded %d items from %s → data-%s.json\n", len(items), path, proj.Key)
+			printBreakdown(breakdown)
+		}
+	}
+
+	if jsonOutput {
+		data, _ := json.MarshalIndent(result, "", "  ")
+		fmt.Println(string(data))
+	} else {
+		fmt.Printf("\nSync complete: %d items across %d projects\n", result.TotalItems, len(result.Projects))
+	}
+
+	appcontext.SetLastSync(now)
+	return nil
+}
+
+type statusBreakdown struct {
+	Done, InProgress, ToDo, Blocked, Other int
+}
+
+func loadYAMLItems(path string) ([]forecast.Item, statusBreakdown, error) {
+	tf, err := yamlparser.ParseTaskFile(path)
+	if err != nil {
+		return nil, statusBreakdown{}, apperrors.WrapWithSuggestion(err,
+			fmt.Sprintf("Failed to parse authoritative yaml: %s", path),
+			"Check that the file exists and is valid YAML",
+		)
+	}
+	items, err := tf.ToItems()
+	if err != nil {
+		return nil, statusBreakdown{}, fmt.Errorf("convert yaml tasks to forecast items: %w", err)
+	}
+	var b statusBreakdown
+	for _, it := range items {
+		switch it.Status {
+		case "Done":
+			b.Done++
+		case "In Progress":
+			b.InProgress++
+		case "To Do":
+			b.ToDo++
+		case "Blocked":
+			b.Blocked++
+		default:
+			b.Other++
+		}
+	}
+	return items, b, nil
+}
+
+func printBreakdown(b statusBreakdown) {
+	fmt.Printf("  Done: %d  In Progress: %d  To Do: %d  Blocked: %d  Other: %d\n",
+		b.Done, b.InProgress, b.ToDo, b.Blocked, b.Other)
 }
 
 func runSyncFromFile(filePath string, dryRun bool, jsonOutput bool) error {

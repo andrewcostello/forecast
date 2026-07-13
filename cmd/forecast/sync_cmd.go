@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -223,6 +224,39 @@ func runSync(projectFilter string, jsonOutput bool) error {
 	return nil
 }
 
+var jiraKeyRe = regexp.MustCompile(`^[A-Z][A-Z0-9]+-\d+$`)
+
+func isJiraKey(s string) bool { return jiraKeyRe.MatchString(s) }
+
+// resolveEpicKey picks the Jira issue key to parent created issues under.
+// Prefers the YAML epic when it is a real Jira key, else the configured
+// default-parent epic, else "" (create without a parent).
+func resolveEpicKey(yamlEpic, configEpic string) string {
+	if isJiraKey(yamlEpic) {
+		return yamlEpic
+	}
+	if isJiraKey(configEpic) {
+		return configEpic
+	}
+	return ""
+}
+
+// blockedByKeys returns the set of issue keys that already block issueKey via a
+// "Blocks" link (best-effort; empty on error), for idempotent linking.
+func blockedByKeys(client *jira.Client, issueKey string) map[string]bool {
+	out := map[string]bool{}
+	issue, err := client.GetIssue(issueKey)
+	if err != nil {
+		return out
+	}
+	for _, l := range issue.Fields.IssueLinks {
+		if l.Type.Name == "Blocks" && l.OutwardIssue != nil {
+			out[l.OutwardIssue.Key] = true
+		}
+	}
+	return out
+}
+
 func runSyncFromFile(filePath string, dryRun bool, jsonOutput bool) error {
 	cfg, err := requireConfig()
 	if err != nil {
@@ -254,8 +288,18 @@ func runSyncFromFile(filePath string, dryRun bool, jsonOutput bool) error {
 		projectKey = jiraCfg.ProjectKey
 	}
 
+	// Resolve the epic to a real Jira issue key for parenting. The YAML's `epic:`
+	// is often a dispatcher slug (e.g. "rc1"), NOT a Jira key — parenting under
+	// that fails with 400 "select valid parent issue". Prefer the YAML value if
+	// it looks like a Jira key, else the configured default-parent epic, else
+	// skip parenting.
+	epicKey := resolveEpicKey(tf.Epic, jiraCfg.Epic)
 	if !jsonOutput {
-		fmt.Printf("Project: %s, Epic: %s\n\n", projectKey, tf.Epic)
+		if epicKey == "" && tf.Epic != "" {
+			fmt.Printf("Project: %s, Epic: %s (not a Jira key and no configured epic — issues created WITHOUT a parent)\n\n", projectKey, tf.Epic)
+		} else {
+			fmt.Printf("Project: %s, Epic: %s (parent: %s)\n\n", projectKey, tf.Epic, epicKey)
+		}
 	}
 
 	// Create JIRA client with the selected instance
@@ -343,6 +387,53 @@ func runSyncFromFile(filePath string, dryRun bool, jsonOutput bool) error {
 		}
 		if !jsonOutput {
 			fmt.Printf("\nUpdated %s with JIRA keys\n", filePath)
+		}
+	}
+
+	// Mirror blockedBy dependencies as Jira "is blocked by" issue links.
+	// Idempotent: existing links are read via GetIssue and skipped so repeated
+	// syncs don't create duplicates.
+	if !dryRun {
+		keyToJira := make(map[string]string, len(tf.Tasks))
+		for i := range tf.Tasks {
+			if tf.Tasks[i].JiraKey != "" {
+				keyToJira[tf.Tasks[i].Key] = tf.Tasks[i].JiraKey
+			}
+		}
+		var linked, linkSkipped, linkErr int
+		for i := range tf.Tasks {
+			task := &tf.Tasks[i]
+			if task.JiraKey == "" || len(task.BlockedBy) == 0 {
+				continue
+			}
+			existing := blockedByKeys(jiraClient, task.JiraKey)
+			for _, dep := range task.BlockedBy {
+				depJira, ok := keyToJira[dep]
+				if !ok {
+					// Dependency not in this file (already merged to base, or a
+					// cross-file key) — nothing to link to.
+					continue
+				}
+				if existing[depJira] {
+					linkSkipped++
+					continue
+				}
+				// "task is blocked by dep" => dep blocks task => outward=dep, inward=task.
+				if err := jiraClient.LinkIssues(depJira, task.JiraKey, "Blocks"); err != nil {
+					if !jsonOutput {
+						fmt.Printf("    link %s ⟵ %s failed: %v\n", task.JiraKey, depJira, err)
+					}
+					linkErr++
+					continue
+				}
+				if !jsonOutput {
+					fmt.Printf("  linked %s is blocked by %s (%s ⟵ %s)\n", task.Key, dep, task.JiraKey, depJira)
+				}
+				linked++
+			}
+		}
+		if !jsonOutput && (linked > 0 || linkErr > 0 || linkSkipped > 0) {
+			fmt.Printf("\nblockedBy links: %d created, %d already present, %d errors\n", linked, linkSkipped, linkErr)
 		}
 	}
 

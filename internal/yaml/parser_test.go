@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParseTaskFile(t *testing.T) {
@@ -159,5 +160,191 @@ tasks:
 	}
 	if len(tf2.Tasks) != 2 || tf2.GetTask("FI-336").JiraKey != "FI-14" {
 		t.Errorf("round-trip lost data: %d tasks", len(tf2.Tasks))
+	}
+}
+
+func TestToItems_Authoritative(t *testing.T) {
+	content := `project: protodocs
+reference_class: "Go CLI / docs platform"
+
+milestones:
+  - name: v0.1
+    target: 2026-08-01
+    scope: "Local folder rendering"
+
+tasks:
+  - key: PROTO-1
+    summary: "Wire buf generate"
+    type: component
+    size: s
+    status: done
+    created_at: 2026-05-14
+    started_at: 2026-05-14
+    completed_at: 2026-05-14
+    assignee: andrew
+
+  - key: PROTO-2
+    summary: "Parser: proto graph"
+    type: component
+    size: M
+    status: in_progress
+    created_at: 2026-05-14
+    started_at: 2026-05-15
+    dependencies: [PROTO-1]
+
+  - key: PROTO-3
+    summary: "Renderer"
+    type: component
+    size: XL
+    status: todo
+    created_at: 2026-05-14
+
+  - key: PROTO-4
+    summary: "Blocked task"
+    type: fix
+    size: L
+    status: blocked
+`
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "tasks.yaml")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	tf, err := ParseTaskFile(tmpFile)
+	if err != nil {
+		t.Fatalf("ParseTaskFile: %v", err)
+	}
+	if tf.ReferenceClass != "Go CLI / docs platform" {
+		t.Errorf("reference_class: %q", tf.ReferenceClass)
+	}
+	if len(tf.Milestones) != 1 || tf.Milestones[0].Name != "v0.1" {
+		t.Errorf("milestones: %+v", tf.Milestones)
+	}
+
+	items, err := tf.ToItems()
+	if err != nil {
+		t.Fatalf("ToItems: %v", err)
+	}
+	if len(items) != 4 {
+		t.Fatalf("got %d items, want 4", len(items))
+	}
+
+	p1 := items[0]
+	if p1.ID != "PROTO-1" || p1.Status != "Done" || p1.Size != "S" || p1.Assignee != "andrew" {
+		t.Errorf("PROTO-1 unexpected: %+v", p1)
+	}
+	if p1.InProgress == nil || p1.Done == nil {
+		t.Fatalf("PROTO-1 timestamps missing")
+	}
+	if p1.CycleTime != 0 {
+		t.Errorf("PROTO-1 cycle time: got %v, want 0", p1.CycleTime)
+	}
+
+	p2 := items[1]
+	if p2.Status != "In Progress" || p2.Size != "M" || p2.InProgress == nil || p2.Done != nil {
+		t.Errorf("PROTO-2 unexpected: %+v", p2)
+	}
+
+	p3 := items[2]
+	if p3.Status != "To Do" || p3.Size != "XL" || p3.InProgress != nil || p3.Done != nil {
+		t.Errorf("PROTO-3 unexpected: %+v", p3)
+	}
+
+	if items[3].Status != "Blocked" {
+		t.Errorf("PROTO-4 status: %q", items[3].Status)
+	}
+}
+
+func TestToItems_CycleTime(t *testing.T) {
+	content := `tasks:
+  - key: X
+    summary: t
+    type: component
+    size: M
+    status: done
+    started_at: 2026-05-01
+    completed_at: 2026-05-04
+`
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "tasks.yaml")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tf, err := ParseTaskFile(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := tf.ToItems()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := (3 * 24 * time.Hour).Hours()
+	if items[0].CycleTime != want {
+		t.Errorf("cycle time: got %v, want %v", items[0].CycleTime, want)
+	}
+}
+
+func TestToItems_MissingKey(t *testing.T) {
+	content := `tasks:
+  - summary: no key
+    type: component
+    size: M
+    status: todo
+`
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "tasks.yaml")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tf, err := ParseTaskFile(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tf.ToItems(); err == nil {
+		t.Error("expected error for missing key, got nil")
+	}
+}
+
+func TestToItems_BadDate(t *testing.T) {
+	content := `tasks:
+  - key: X
+    summary: t
+    type: component
+    size: M
+    status: done
+    started_at: not-a-date
+`
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "tasks.yaml")
+	if err := os.WriteFile(tmpFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	tf, err := ParseTaskFile(tmpFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tf.ToItems(); err == nil {
+		t.Error("expected error for bad date, got nil")
+	}
+}
+
+func TestNormalizeStatus(t *testing.T) {
+	cases := map[string]string{
+		"todo":        "To Do",
+		"To Do":       "To Do",
+		"to_do":       "To Do",
+		"in_progress": "In Progress",
+		"In Progress": "In Progress",
+		"done":        "Done",
+		"completed":   "Done",
+		"blocked":     "Blocked",
+		"":            "To Do",
+		"Custom":      "Custom",
+	}
+	for in, want := range cases {
+		if got := NormalizeStatus(in); got != want {
+			t.Errorf("NormalizeStatus(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

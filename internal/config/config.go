@@ -15,12 +15,37 @@ type Config struct {
 	ProjectType    string                 `mapstructure:"project_type"`
 	TeamSize       int                    `mapstructure:"team_size"`
 	TeamCapacity   float64                `mapstructure:"team_capacity"` // Hours per day
+	Source         SourceConfig           `mapstructure:"source"`         // Item source: jira (default) or authoritative yaml
 	JIRA           JIRAConfig             `mapstructure:"jira"`
 	JIRAInstances  map[string]JIRAConfig  `mapstructure:"jira_instances"` // Named JIRA instances for multi-JIRA support
 	Projects       []ProjectConfig        `mapstructure:"projects"`       // Multiple project/epic tracking
 	ItemTypes      []ItemTypeConfig       `mapstructure:"item_types"`
 	ReferenceClass ReferenceClassConfig   `mapstructure:"reference_class"`
 	JIRAMapping    JIRAMappingConfig      `mapstructure:"jira_mapping"`
+}
+
+// SourceConfig selects where forecast items come from.
+//
+//   - type: "jira" (or unset) — current behavior; sync pulls from JIRA.
+//   - type: "yaml"            — yaml file is authoritative; sync reads it
+//     directly and does not talk to JIRA. Use Path for a single-file project
+//     (written to data.json), or Projects for multi-project layouts (each
+//     entry written to data-{key}.json).
+//
+// Paths are resolved relative to the directory containing the config file when
+// relative, or used as-is when absolute. Path and Projects are mutually
+// exclusive; if both are set, Projects wins.
+type SourceConfig struct {
+	Type     string              `mapstructure:"type"`     // "jira" | "yaml"
+	Path     string              `mapstructure:"path"`     // single-file yaml mode
+	Projects []YAMLProjectConfig `mapstructure:"projects"` // multi-file yaml mode
+}
+
+// YAMLProjectConfig is one project in a yaml-authoritative multi-project setup.
+type YAMLProjectConfig struct {
+	Key  string `mapstructure:"key"`            // short key for CLI; drives data-{key}.json
+	Name string `mapstructure:"name,omitempty"` // display name; defaults to Key
+	Path string `mapstructure:"path"`           // path to this project's tasks yaml
 }
 
 // ProjectConfig defines a trackable project/initiative
@@ -151,9 +176,21 @@ func Load(configFile string) error {
 	return nil
 }
 
-// IsLoaded returns true if a config has been loaded
+// IsLoaded returns true if a config has been loaded with usable contents.
+// JIRA configs need a URL or at least one project; authoritative-yaml configs
+// need source.type=yaml and a non-empty path.
 func IsLoaded() bool {
-	return current != nil && (current.JIRA.URL != "" || len(current.Projects) > 0)
+	if current == nil {
+		return false
+	}
+	if current.JIRA.URL != "" || len(current.Projects) > 0 {
+		return true
+	}
+	if strings.EqualFold(current.Source.Type, "yaml") &&
+		(current.Source.Path != "" || len(current.Source.Projects) > 0) {
+		return true
+	}
+	return false
 }
 
 // Get returns the current configuration
@@ -171,12 +208,54 @@ func (c *Config) GetProject(keyOrEpic string) *ProjectConfig {
 			return &c.Projects[i]
 		}
 	}
+	if strings.EqualFold(c.Source.Type, "yaml") {
+		for _, yp := range c.Source.Projects {
+			if yp.Key == keyOrEpic {
+				p := yamlProjectToProjectConfig(yp)
+				return &p
+			}
+		}
+	}
 	return nil
 }
 
-// GetAllProjects returns all configured projects
+// GetAllProjects returns all configured projects. In yaml-authoritative mode
+// with Source.Projects, the yaml projects are surfaced as synthetic
+// ProjectConfigs so the existing multi-project run/report/dashboard flows
+// work uniformly across JIRA and yaml sources.
 func (c *Config) GetAllProjects() []ProjectConfig {
-	return c.Projects
+	if !strings.EqualFold(c.Source.Type, "yaml") || len(c.Source.Projects) == 0 {
+		return c.Projects
+	}
+	out := make([]ProjectConfig, 0, len(c.Projects)+len(c.Source.Projects))
+	out = append(out, c.Projects...)
+	for _, yp := range c.Source.Projects {
+		out = append(out, yamlProjectToProjectConfig(yp))
+	}
+	return out
+}
+
+func yamlProjectToProjectConfig(yp YAMLProjectConfig) ProjectConfig {
+	name := yp.Name
+	if name == "" {
+		name = yp.Key
+	}
+	return ProjectConfig{Key: yp.Key, Name: name}
+}
+
+// ResolvePath resolves a config-relative path against the directory of the
+// loaded config file. Absolute paths are returned unchanged. Returns p as-is
+// when no config file is known (which happens in tests that construct Config
+// values directly).
+func ResolvePath(p string) string {
+	if p == "" || filepath.IsAbs(p) {
+		return p
+	}
+	cfgFile := viper.ConfigFileUsed()
+	if cfgFile == "" {
+		return p
+	}
+	return filepath.Join(filepath.Dir(cfgFile), p)
 }
 
 // GetJIRAInstance returns a JIRA instance config by name

@@ -37,3 +37,6 @@ Thumbs.db
 
 # Output folder (generated reports/spreadsheets)
 /output/
+
+# Claude Code local session/workflow state
+.claude/

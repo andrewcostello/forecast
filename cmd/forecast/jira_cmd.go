@@ -721,7 +721,7 @@ func runJiraCreate(opts jiraCreateOpts) error {
 }
 
 func runJiraUpdate(opts jiraUpdateOpts) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(opts.Key)
 	if err != nil {
 		return err
 	}
@@ -780,7 +780,7 @@ func runJiraUpdate(opts jiraUpdateOpts) error {
 }
 
 func runJiraGet(issueKey string, showHistory bool) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -876,7 +876,7 @@ func printChangelog(cl *jira.Changelog) {
 }
 
 func runJiraComment(issueKey, body string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -888,7 +888,7 @@ func runJiraComment(issueKey, body string) error {
 }
 
 func runJiraComments(issueKey string, limit int) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -932,7 +932,7 @@ func runJiraComments(issueKey string, limit int) error {
 }
 
 func runJiraLink(fromKey, toKey, linkType string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(fromKey)
 	if err != nil {
 		return err
 	}
@@ -974,7 +974,7 @@ func runJiraLinkTypes() error {
 }
 
 func runJiraWatch(issueKey, userEmail string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -995,7 +995,7 @@ func runJiraWatch(issueKey, userEmail string) error {
 }
 
 func runJiraUnwatch(issueKey, userEmail string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1019,7 +1019,7 @@ func runJiraUnwatch(issueKey, userEmail string) error {
 }
 
 func runJiraWatchers(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1046,7 +1046,7 @@ func runJiraLog(issueKey, timeStr, comment string) error {
 	if dur <= 0 {
 		return fmt.Errorf("time must be positive")
 	}
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1059,7 +1059,7 @@ func runJiraLog(issueKey, timeStr, comment string) error {
 }
 
 func runJiraWorklogs(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1097,7 +1097,7 @@ func runJiraWorklogs(issueKey string) error {
 }
 
 func runJiraTransition(issueKey, to, comment, resolution string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1118,7 +1118,7 @@ func runJiraTransition(issueKey, to, comment, resolution string) error {
 }
 
 func runJiraAttachments(issueKey string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1148,7 +1148,7 @@ func runJiraAttachments(issueKey string) error {
 }
 
 func runJiraAttach(issueKey, filePath string) error {
-	client, err := getJiraClient()
+	client, _, err := getJiraClientForKey(issueKey)
 	if err != nil {
 		return err
 	}
@@ -1541,7 +1541,7 @@ func runJiraFields(issueKey string) error {
 		return fmt.Errorf("failed to load config - run 'forecast init' first")
 	}
 
-	client := jira.NewClient(&cfg.JIRA)
+	client := jira.NewClient(cfg.GetJIRAInstanceForKey(issueKey))
 
 	// Get field definitions to show names
 	fieldDefs, err := client.GetFields()

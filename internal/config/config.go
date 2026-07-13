@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/spf13/viper"
 )
@@ -28,6 +29,9 @@ type ProjectConfig struct {
 	Epic     string `mapstructure:"epic"`      // Epic key (e.g., SMG-1688)
 	Key      string `mapstructure:"key"`       // Short key for CLI (e.g., "monorepo")
 	Capacity float64 `mapstructure:"capacity"` // Optional: team capacity for this project
+	// JIRAInstance names a jira_instances entry that owns this project's
+	// tickets. Empty = use the default jira: block.
+	JIRAInstance string `mapstructure:"jira_instance"`
 }
 
 type JIRAConfig struct {
@@ -35,6 +39,12 @@ type JIRAConfig struct {
 	Email            string   `mapstructure:"email"`
 	APIToken         string   `mapstructure:"api_token"`
 	ProjectKey       string   `mapstructure:"project_key"`
+	// ProjectKeys lists additional issue-key prefixes (e.g. "FSG", "SMG")
+	// owned by this JIRA instance. Used by GetJIRAInstanceForKey to route
+	// per-ticket commands to the right instance. ProjectKey is always
+	// considered first; ProjectKeys is for instances that span multiple
+	// project prefixes.
+	ProjectKeys      []string `mapstructure:"project_keys"`
 	Epic             string   `mapstructure:"epic"`
 	Labels           []string `mapstructure:"labels"`
 	CycleTimeField   string   `mapstructure:"cycle_time_field"`   // Custom field ID for manual cycle time override (e.g., "customfield_10001")
@@ -273,4 +283,56 @@ jira_mapping:
 	fmt.Println("3. Run 'forecast sync' to pull data from JIRA")
 
 	return nil
+}
+
+// GetJIRAInstanceForProject returns the JIRA instance that owns the given project.
+func (c *Config) GetJIRAInstanceForProject(p *ProjectConfig) *JIRAConfig {
+	if p == nil {
+		return &c.JIRA
+	}
+	if p.JIRAInstance != "" {
+		return c.GetJIRAInstance(p.JIRAInstance)
+	}
+	return c.GetJIRAInstanceForKey(p.Epic)
+}
+
+// GetJIRAInstanceForKey returns the JIRA instance that owns the given issue key,
+// routed by its project-key prefix. Falls back to the default jira: block.
+func (c *Config) GetJIRAInstanceForKey(issueKey string) *JIRAConfig {
+	prefix := projectPrefix(issueKey)
+	if prefix == "" {
+		return &c.JIRA
+	}
+	if instanceClaimsPrefix(&c.JIRA, prefix) {
+		return &c.JIRA
+	}
+	for name, inst := range c.JIRAInstances {
+		if instanceClaimsPrefix(&inst, prefix) {
+			out := c.JIRAInstances[name]
+			return &out
+		}
+	}
+	return &c.JIRA
+}
+
+// projectPrefix extracts the uppercased project-key prefix from an issue key
+// (e.g. "SMG-1688" -> "SMG"). Returns "" for malformed keys.
+func projectPrefix(issueKey string) string {
+	idx := strings.IndexByte(issueKey, '-')
+	if idx <= 0 {
+		return ""
+	}
+	return strings.ToUpper(issueKey[:idx])
+}
+
+func instanceClaimsPrefix(j *JIRAConfig, prefix string) bool {
+	if strings.EqualFold(j.ProjectKey, prefix) {
+		return true
+	}
+	for _, k := range j.ProjectKeys {
+		if strings.EqualFold(k, prefix) {
+			return true
+		}
+	}
+	return false
 }

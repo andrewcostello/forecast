@@ -57,6 +57,19 @@ func getJiraClient() (*jira.Client, error) {
 	return jira.NewClient(&cfg.JIRA), nil
 }
 
+// getJiraClientForKey returns the JIRA client whose instance owns the given
+// issue key (routed by project-key prefix). Use it for per-ticket commands so
+// that, with multiple jira_instances configured, each ticket op hits the right
+// instance. Falls back to the default jira: block when nothing claims the key.
+func getJiraClientForKey(issueKey string) (*jira.Client, *config.JIRAConfig, error) {
+	cfg := config.Get()
+	if cfg == nil {
+		return nil, nil, fmt.Errorf("failed to load config - run 'forecast init' first")
+	}
+	inst := cfg.GetJIRAInstanceForKey(issueKey)
+	return jira.NewClient(inst), inst, nil
+}
+
 // printBanner prints a formatted section header
 func printBanner(title string) {
 	fmt.Println("\n" + strings.Repeat("━", 60))

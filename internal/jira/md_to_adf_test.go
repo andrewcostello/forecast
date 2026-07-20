@@ -316,3 +316,105 @@ func TestMarkdownToADF_FullTicketShape(t *testing.T) {
 		t.Errorf("expected mermaid language, got %v", attrs["language"])
 	}
 }
+
+// markTypesOf returns the mark type names on the inline segment of `para`
+// whose text equals `text`, or nil if no such segment exists.
+func markTypesOf(t *testing.T, adf map[string]interface{}, text string) []string {
+	t.Helper()
+	for _, block := range adf["content"].([]map[string]interface{}) {
+		inline, ok := block["content"].([]map[string]interface{})
+		if !ok {
+			continue
+		}
+		for _, seg := range inline {
+			if seg["text"] != text {
+				continue
+			}
+			marks, ok := seg["marks"].([]map[string]interface{})
+			if !ok {
+				return nil
+			}
+			types := make([]string, 0, len(marks))
+			for _, m := range marks {
+				types = append(types, m["type"].(string))
+			}
+			return types
+		}
+	}
+	t.Fatalf("no inline segment with text %q in %+v", text, adf)
+	return nil
+}
+
+// TestMarkdownToADF_CodeMarkIsExclusive pins the ADF rule that the `code` mark
+// cannot be combined with formatting marks. Markdown nests them freely
+// ("**bold with `code`**" is a CodeSpan inside an Emphasis), but emitting
+// marks:[strong, code] makes the Jira REST API reject the entire document
+// with a bare 400 INVALID_INPUT — no field, no offset. `link` is the one
+// permitted companion and must survive.
+func TestMarkdownToADF_CodeMarkIsExclusive(t *testing.T) {
+	tests := []struct {
+		name      string
+		src       string
+		codedText string
+		want      []string
+	}{
+		{
+			name:      "code inside bold drops strong",
+			src:       "x **bold with `code` inside** y",
+			codedText: "code",
+			want:      []string{"code"},
+		},
+		{
+			name:      "code inside italic drops em",
+			src:       "x *italic with `code` inside* y",
+			codedText: "code",
+			want:      []string{"code"},
+		},
+		{
+			name:      "code inside strikethrough drops strike",
+			src:       "x ~~struck with `code` inside~~ y",
+			codedText: "code",
+			want:      []string{"code"},
+		},
+		{
+			name:      "link survives alongside code",
+			src:       "[`code` link](https://example.com)",
+			codedText: "code",
+			want:      []string{"link", "code"},
+		},
+		{
+			name:      "bold link with code keeps only link and code",
+			src:       "[**bold `code` link**](https://example.com)",
+			codedText: "code",
+			want:      []string{"link", "code"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := markTypesOf(t, MarkdownToADF(tc.src), tc.codedText)
+			if len(got) != len(tc.want) {
+				t.Fatalf("marks on %q: expected %v, got %v", tc.codedText, tc.want, got)
+			}
+			for i, want := range tc.want {
+				if got[i] != want {
+					t.Errorf("mark %d on %q: expected %q, got %q", i, tc.codedText, want, got[i])
+				}
+			}
+		})
+	}
+}
+
+// TestMarkdownToADF_CodeMarkExclusivityIsScoped guards against an
+// over-broad fix: stripping formatting marks must affect only the code
+// segment itself, never its neighbours in the same emphasis span.
+func TestMarkdownToADF_CodeMarkExclusivityIsScoped(t *testing.T) {
+	adf := MarkdownToADF("x **bold with `code` inside** y")
+
+	if got := markTypesOf(t, adf, "bold with "); len(got) != 1 || got[0] != "strong" {
+		t.Errorf("text before the code span should keep strong, got %v", got)
+	}
+	if got := markTypesOf(t, adf, " inside"); len(got) != 1 || got[0] != "strong" {
+		t.Errorf("text after the code span should keep strong, got %v", got)
+	}
+}

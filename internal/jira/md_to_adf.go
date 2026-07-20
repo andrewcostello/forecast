@@ -295,11 +295,39 @@ func appendMark(marks []adfMark, m adfMark) []adfMark {
 	return append(out, m)
 }
 
+// reconcileCodeMark enforces the ADF rule that the `code` mark is exclusive:
+// on a text node it may only be combined with `link`. Markdown happily nests
+// the two — "**bold with `code`**" yields a CodeSpan inside an Emphasis — and
+// emitting marks:[strong, code] makes the Jira REST API reject the whole
+// document with a bare 400 INVALID_INPUT that names no location. Formatting
+// marks lose to code (the backticks are the more specific intent); link is
+// kept because a linked code span is a valid and useful combination.
+func reconcileCodeMark(marks []adfMark) []adfMark {
+	hasCode := false
+	for _, m := range marks {
+		if m.typ == "code" {
+			hasCode = true
+			break
+		}
+	}
+	if !hasCode {
+		return marks
+	}
+	out := make([]adfMark, 0, len(marks))
+	for _, m := range marks {
+		if m.typ == "code" || m.typ == "link" {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 func makeTextNode(text string, marks []adfMark) map[string]interface{} {
 	node := map[string]interface{}{
 		"type": "text",
 		"text": text,
 	}
+	marks = reconcileCodeMark(marks)
 	if len(marks) > 0 {
 		mks := make([]map[string]interface{}, 0, len(marks))
 		for _, m := range marks {

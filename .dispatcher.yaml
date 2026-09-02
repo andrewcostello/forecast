@@ -1,0 +1,20 @@
+# Per-repo dispatcher config. `test:` is the mechanical gate: exit 0 = green.
+#
+# One Go module at the repo root, so a single `./...` pattern covers everything.
+#
+# `go build` is safe here: the `forecast` binary is gitignored, not tracked, so
+# building leaves the worktree clean and the dispatcher will accept the
+# evidence. (This is the opposite of claude-workflow, where the binaries ARE
+# tracked and a building gate blocks every task.)
+#
+# `-race` because the web server and the simulator both hold shared state.
+test: |
+  set -e
+  go build ./...
+  go vet ./...
+  go test ./... -race
+
+# Outside the repo: a runs dir inside it is gitignored AND lives in a
+# disposable worktree, so the audit trail dies with the worktree. Shared with
+# claude-workflow so one reference class spans both.
+runs_dir: ../dispatcher-runs

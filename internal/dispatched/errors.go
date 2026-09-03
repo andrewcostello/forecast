@@ -14,6 +14,12 @@ var (
 	// ErrInvalidOutcome: an Outcome value outside the declared constants.
 	ErrInvalidOutcome = errors.New("dispatched: outcome is not a declared value")
 
+	// ErrNegativeValue: an Elapsed, Rounds or Node.Duration below zero.
+	ErrNegativeValue = errors.New("dispatched: value must not be negative")
+
+	// ErrStampConflict: one (Key, StartedAt) observed with two different cells.
+	ErrStampConflict = errors.New("dispatched: same row observed with different stamps")
+
 	// ErrCycle: the dependency graph is not acyclic.
 	ErrCycle = errors.New("dispatched: dependency graph has a cycle")
 

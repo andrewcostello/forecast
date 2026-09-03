@@ -32,6 +32,49 @@ func withRevision(r Revision) Observation {
 	return o
 }
 
+func withRounds(n int) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.Rounds = n
+	return o
+}
+
+func TestAddDedupesByKeyAndStart(t *testing.T) {
+	tab := NewTable()
+	first := obs("A", seenCell, OutcomeUnfinished, time.Minute)
+	again := first
+	again.Outcome = OutcomeDone
+	again.StartedAt = first.StartedAt.In(time.FixedZone("PDT", -7*3600))
+	again.Provenance.Revision = Revision{Source: SourceGit, Commit: "abc"}
+	for _, o := range []Observation{first, again} {
+		if err := tab.Add(o); err != nil {
+			t.Fatal(err)
+		}
+	}
+	n, _ := tab.Count(seenCell)
+	if n != (Count{Unfinished: 1}) {
+		t.Fatalf("Count = %+v, want first reading counted once", n)
+	}
+
+	rerun := first
+	rerun.StartedAt = first.StartedAt.Add(time.Hour)
+	if err := tab.Add(rerun); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ = tab.Count(seenCell); n.N() != 2 {
+		t.Fatalf("same key at a different start counted %d, want 2", n.N())
+	}
+
+	conflict := first
+	conflict.Cell = emptyCell
+	err := tab.Add(conflict)
+	if !errors.Is(err, ErrStampConflict) {
+		t.Fatalf("Add(conflicting stamp) = %v, want ErrStampConflict", err)
+	}
+	if _, present := tab.Count(emptyCell); present {
+		t.Fatal("rejected row made its cell present")
+	}
+}
+
 func TestEmptyCellIsPresentAndDistinctFromAbsent(t *testing.T) {
 	tab := NewTable(emptyCell)
 	if err := tab.Add(obs("A", seenCell, OutcomeDone, time.Hour)); err != nil {
@@ -112,6 +155,8 @@ func TestValidateWrapsSentinels(t *testing.T) {
 		{"no model", obs("A", Cell{Role: RoleBodies}, OutcomeDone, 0), ErrUnattributable},
 		{"zero outcome", obs("A", seenCell, 0, 0), ErrInvalidOutcome},
 		{"out of range outcome", obs("A", seenCell, OutcomeUnfinished+1, 0), ErrInvalidOutcome},
+		{"negative elapsed", obs("A", seenCell, OutcomeDone, -time.Second), ErrNegativeValue},
+		{"negative rounds", withRounds(-1), ErrNegativeValue},
 		{"zero revision", withRevision(Revision{}), ErrUnparseableRevision},
 		{"live with commit", withRevision(Revision{Source: SourceLive, Commit: "abc"}), ErrUnparseableRevision},
 		{"git without commit", withRevision(Revision{Source: SourceGit}), ErrUnparseableRevision},

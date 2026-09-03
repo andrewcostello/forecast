@@ -10,8 +10,9 @@ type Node struct {
 	BlockedBy []string
 }
 
-// Graph is a set of nodes in declaration order. Keys are unique and every
-// BlockedBy entry names a node in the graph; the graph is acyclic.
+// Graph is a set of nodes in declaration order. Keys are unique, every
+// BlockedBy entry names a node in the graph, no Duration is negative, and
+// the graph is acyclic.
 type Graph struct {
 	Nodes []Node
 }
@@ -42,8 +43,9 @@ type Schedule struct {
 //     more than the sum of all durations.
 //   - With maxParallel at least len(Nodes), Completion equals the longest
 //     dependency chain.
-//   - Errors wrap ErrCycle, ErrUnknownDependency, ErrDuplicateKey or
-//     ErrInvalidConcurrency (maxParallel < 1).
+//   - Errors wrap ErrCycle, ErrUnknownDependency, ErrDuplicateKey,
+//     ErrNegativeValue (a Duration below zero) or ErrInvalidConcurrency
+//     (maxParallel < 1).
 type Scheduler interface {
 	Schedule(g Graph, maxParallel int) (Schedule, error)
 }

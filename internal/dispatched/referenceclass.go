@@ -3,6 +3,7 @@ package dispatched
 import (
 	"fmt"
 	"sort"
+	"time"
 )
 
 // Count is the observation tally for one cell, split by outcome. N is the
@@ -39,11 +40,26 @@ type ReferenceClass interface {
 // with no observations; adding a row makes its cell present.
 type Table struct {
 	cells map[Cell][]Observation
+	seen  map[identity]Cell
+}
+
+// identity is what makes two readings of a row the same row. StartedAt is
+// held as a UTC instant so offsets do not split one row in two.
+type identity struct {
+	Key       string
+	StartedAt time.Time
+}
+
+func identityOf(o Observation) identity {
+	return identity{Key: o.Key, StartedAt: o.StartedAt.UTC()}
 }
 
 // NewTable returns a Table with the given cells declared and empty.
 func NewTable(declared ...Cell) *Table {
-	t := &Table{cells: make(map[Cell][]Observation, len(declared))}
+	t := &Table{
+		cells: make(map[Cell][]Observation, len(declared)),
+		seen:  make(map[identity]Cell),
+	}
 	for _, c := range declared {
 		t.Declare(c)
 	}
@@ -57,11 +73,23 @@ func (t *Table) Declare(cell Cell) {
 	}
 }
 
-// Add stores o after Validate; the error is returned unchanged.
+// Add stores o after Validate; the error is returned unchanged. A row is
+// identified by (Key, StartedAt). Adding an identity already stored in the
+// same cell is a no-op, so the first reading of a row wins; adding it with a
+// different cell wraps ErrStampConflict and stores nothing.
 func (t *Table) Add(o Observation) error {
 	if err := o.Validate(); err != nil {
 		return fmt.Errorf("add observation: %w", err)
 	}
+	id := identityOf(o)
+	if cell, ok := t.seen[id]; ok {
+		if cell != o.Cell {
+			return fmt.Errorf("add observation: %w: row %s at %s is %s and %s",
+				ErrStampConflict, o.Key, id.StartedAt.Format(time.RFC3339), cell, o.Cell)
+		}
+		return nil
+	}
+	t.seen[id] = o.Cell
 	t.cells[o.Cell] = append(t.cells[o.Cell], o)
 	return nil
 }

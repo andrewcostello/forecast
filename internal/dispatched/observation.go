@@ -159,8 +159,8 @@ func (o Observation) Duration() (d time.Duration, ok bool) {
 
 // Validate reports the first rule the row breaks. A missing key, an invalid
 // role or an empty model wrap ErrUnattributable; an undeclared outcome wraps
-// ErrInvalidOutcome; a revision that fails Revision.Valid wraps
-// ErrUnparseableRevision.
+// ErrInvalidOutcome; a negative Elapsed or Rounds wraps ErrNegativeValue; a
+// revision that fails Revision.Valid wraps ErrUnparseableRevision.
 func (o Observation) Validate() error {
 	switch {
 	case o.Key == "":
@@ -171,6 +171,10 @@ func (o Observation) Validate() error {
 		return fmt.Errorf("%w: row %s has no stamped model", ErrUnattributable, o.Key)
 	case !o.Outcome.Valid():
 		return fmt.Errorf("%w: row %s has %s", ErrInvalidOutcome, o.Key, o.Outcome)
+	case o.Elapsed < 0:
+		return fmt.Errorf("%w: row %s has elapsed %v", ErrNegativeValue, o.Key, o.Elapsed)
+	case o.Rounds < 0:
+		return fmt.Errorf("%w: row %s has rounds %d", ErrNegativeValue, o.Key, o.Rounds)
 	case !o.Provenance.Revision.Valid():
 		return fmt.Errorf("%w: row %s has revision %+v", ErrUnparseableRevision, o.Key, o.Provenance.Revision)
 	}

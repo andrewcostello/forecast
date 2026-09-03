@@ -8,6 +8,7 @@ package dispatched
 
 import (
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -163,9 +164,9 @@ func (o Observation) Duration() (d time.Duration, ok bool) {
 
 // Validate reports the first rule the row breaks. A missing key or start
 // time, an invalid role or an empty model wrap ErrUnattributable; an
-// undeclared outcome wraps ErrInvalidOutcome; a negative Elapsed or Rounds
-// wraps ErrNegativeValue; a revision that fails Revision.Valid wraps
-// ErrUnparseableRevision.
+// undeclared outcome wraps ErrInvalidOutcome; a negative Elapsed, Rounds or
+// CostUSD, or a NaN CostUSD, wraps ErrNegativeValue; a revision that fails
+// Revision.Valid wraps ErrUnparseableRevision.
 func (o Observation) Validate() error {
 	switch {
 	case o.Key == "":
@@ -182,6 +183,8 @@ func (o Observation) Validate() error {
 		return fmt.Errorf("%w: row %s has elapsed %v", ErrNegativeValue, o.Key, o.Elapsed)
 	case o.Rounds < 0:
 		return fmt.Errorf("%w: row %s has rounds %d", ErrNegativeValue, o.Key, o.Rounds)
+	case o.CostUSD < 0 || math.IsNaN(o.CostUSD):
+		return fmt.Errorf("%w: row %s has cost %v", ErrNegativeValue, o.Key, o.CostUSD)
 	case !o.Provenance.Revision.Valid():
 		return fmt.Errorf("%w: row %s has revision %+v", ErrUnparseableRevision, o.Key, o.Provenance.Revision)
 	}

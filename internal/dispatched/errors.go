@@ -14,7 +14,8 @@ var (
 	// ErrInvalidOutcome: an Outcome value outside the declared constants.
 	ErrInvalidOutcome = errors.New("dispatched: outcome is not a declared value")
 
-	// ErrNegativeValue: an Elapsed, Rounds or Node.Duration below zero.
+	// ErrNegativeValue: an Elapsed, Rounds, CostUSD or Node.Duration below
+	// zero, or a CostUSD that is NaN.
 	ErrNegativeValue = errors.New("dispatched: value must not be negative")
 
 	// ErrStampConflict: one (Key, StartedAt) observed with two different cells.

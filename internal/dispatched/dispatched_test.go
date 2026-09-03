@@ -2,6 +2,7 @@ package dispatched
 
 import (
 	"errors"
+	"math"
 	"testing"
 	"time"
 )
@@ -35,6 +36,12 @@ func withRevision(r Revision) Observation {
 func withRounds(n int) Observation {
 	o := obs("A", seenCell, OutcomeDone, 0)
 	o.Rounds = n
+	return o
+}
+
+func withCost(c float64) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.CostUSD = c
 	return o
 }
 
@@ -83,60 +90,109 @@ func TestAddDedupesByKeyAndStart(t *testing.T) {
 	}
 }
 
-func TestAddMergesByPrecedenceNotArrival(t *testing.T) {
-	unfinished := obs("A", seenCell, OutcomeUnfinished, time.Minute)
-	unfinishedLate := obs("A", seenCell, OutcomeUnfinished, 5*time.Hour)
-	done := obs("A", seenCell, OutcomeDone, 3*time.Hour)
-	done.Rounds = 1
-	doneShorter := obs("A", seenCell, OutcomeDone, 2*time.Hour)
-	doneShorter.Rounds = 4
-	doneShorter.Provenance = gitReading
-	doneMerged := done
-	doneMerged.Rounds = 4
-	blocked := obs("A", seenCell, OutcomeBlocked, time.Hour)
-	doneFromGit := done
-	doneFromGit.Provenance = gitReading
+// permutations returns every ordering of rows.
+func permutations(rows []Observation) [][]Observation {
+	if len(rows) <= 1 {
+		return [][]Observation{append([]Observation{}, rows...)}
+	}
+	var out [][]Observation
+	for i, head := range rows {
+		rest := append(append([]Observation{}, rows[:i]...), rows[i+1:]...)
+		for _, tail := range permutations(rest) {
+			out = append(out, append([]Observation{head}, tail...))
+		}
+	}
+	return out
+}
+
+func TestAddJoinsReadingsInAnyOrder(t *testing.T) {
+	reading := func(outcome Outcome, elapsed time.Duration, rounds int, cost float64, p Provenance) Observation {
+		o := obs("A", seenCell, outcome, elapsed)
+		o.Rounds, o.CostUSD, o.Provenance = rounds, cost, p
+		return o
+	}
+	live := func(run string) Provenance { return Provenance{RunID: run, Revision: Revision{Source: SourceLive}} }
+	git := func(commit, run string) Provenance {
+		return Provenance{RunID: run, Revision: Revision{Source: SourceGit, Commit: commit}}
+	}
+
+	unfinished := reading(OutcomeUnfinished, time.Minute, 0, 0.5, live("run-1"))
+	unfinishedLate := reading(OutcomeUnfinished, 5*time.Hour, 2, 1.0, git("abc", "run-1"))
+	done := reading(OutcomeDone, 3*time.Hour, 1, 2.0, git("zzz", "run-2"))
+	doneShorter := reading(OutcomeDone, 2*time.Hour, 4, 0.25, live("run-0"))
+	doneShorter.StartedAt = doneShorter.StartedAt.In(time.FixedZone("PDT", -7*3600))
+	blocked := reading(OutcomeBlocked, time.Hour, 1, 0.75, git("abc", "run-1"))
 
 	cases := []struct {
 		name string
-		a, b Observation
+		set  []Observation
 		want Observation
 		err  error
 	}{
-		{"terminal supersedes unfinished", unfinished, done, done, nil},
-		{"unfinished lower bound never outranks a completion", unfinishedLate, done, done, nil},
-		{"blocked supersedes unfinished", unfinished, blocked, blocked, nil},
-		{"same outcome keeps greater elapsed and rounds", done, doneShorter, doneMerged, nil},
-		{"same outcome keeps greater lower bound", unfinished, unfinishedLate, unfinishedLate, nil},
-		{"identical readings differ only in provenance", done, doneFromGit, done, nil},
-		{"two terminal outcomes conflict", done, blocked, Observation{}, ErrStampConflict},
+		{
+			name: "join of four readings",
+			set:  []Observation{unfinished, unfinishedLate, done, doneShorter},
+			want: reading(OutcomeDone, 3*time.Hour, 4, 2.0, live("run-0")),
+		},
+		{
+			name: "unfinished lower bound never outranks a completion",
+			set:  []Observation{unfinished, unfinishedLate, done},
+			want: reading(OutcomeDone, 3*time.Hour, 2, 2.0, live("run-1")),
+		},
+		{
+			name: "blocked supersedes unfinished and keeps accumulators",
+			set:  []Observation{unfinished, unfinishedLate, blocked},
+			want: reading(OutcomeBlocked, time.Hour, 2, 1.0, live("run-1")),
+		},
+		{
+			name: "same outcome keeps greater lower bound",
+			set:  []Observation{unfinished, unfinishedLate, reading(OutcomeUnfinished, time.Hour, 1, 0, git("abc", "run-0"))},
+			want: reading(OutcomeUnfinished, 5*time.Hour, 2, 1.0, live("run-1")),
+		},
+		{
+			name: "two terminal outcomes conflict",
+			set:  []Observation{unfinished, done, blocked},
+			err:  ErrStampConflict,
+		},
 	}
 	for _, tc := range cases {
-		for _, order := range [][2]Observation{{tc.a, tc.b}, {tc.b, tc.a}} {
+		for _, order := range permutations(tc.set) {
 			tab := NewTable()
-			if err := tab.Add(order[0]); err != nil {
-				t.Fatalf("%s: %v", tc.name, err)
-			}
-			err := tab.Add(order[1])
-			if tc.err != nil {
-				if !errors.Is(err, tc.err) {
-					t.Errorf("%s: Add = %v, want %v", tc.name, err, tc.err)
+			var conflict error
+			for _, o := range order {
+				if err := tab.Add(o); err != nil {
+					if !errors.Is(err, ErrStampConflict) {
+						t.Fatalf("%s: %v", tc.name, err)
+					}
+					conflict = err
 				}
-				if got := tab.Observations(seenCell); len(got) != 1 || got[0] != order[0] {
-					t.Errorf("%s: rejected reading altered the stored row: %+v", tc.name, got)
+			}
+			got := tab.Observations(seenCell)
+			if tc.err != nil {
+				if !errors.Is(conflict, tc.err) {
+					t.Errorf("%s: order %v produced no %v", tc.name, outcomes(order), tc.err)
+				}
+				if len(got) != 1 {
+					t.Errorf("%s: order %v stored %d rows, want 1", tc.name, outcomes(order), len(got))
 				}
 				continue
 			}
-			if err != nil {
-				t.Fatalf("%s: %v", tc.name, err)
+			if conflict != nil {
+				t.Fatalf("%s: order %v: %v", tc.name, outcomes(order), conflict)
 			}
-			got := tab.Observations(seenCell)
 			if len(got) != 1 || got[0] != tc.want {
-				t.Errorf("%s: adding %s then %s stored %+v, want %+v",
-					tc.name, order[0].Outcome, order[1].Outcome, got, tc.want)
+				t.Errorf("%s: order %v stored %+v, want %+v", tc.name, outcomes(order), got, tc.want)
 			}
 		}
 	}
+}
+
+func outcomes(rows []Observation) []Outcome {
+	out := make([]Outcome, len(rows))
+	for i, o := range rows {
+		out[i] = o.Outcome
+	}
+	return out
 }
 
 func TestEmptyCellIsPresentAndDistinctFromAbsent(t *testing.T) {
@@ -222,6 +278,8 @@ func TestValidateWrapsSentinels(t *testing.T) {
 		{"out of range outcome", obs("A", seenCell, OutcomeUnfinished+1, 0), ErrInvalidOutcome},
 		{"negative elapsed", obs("A", seenCell, OutcomeDone, -time.Second), ErrNegativeValue},
 		{"negative rounds", withRounds(-1), ErrNegativeValue},
+		{"negative cost", withCost(-0.01), ErrNegativeValue},
+		{"NaN cost", withCost(math.NaN()), ErrNegativeValue},
 		{"zero revision", withRevision(Revision{}), ErrUnparseableRevision},
 		{"live with commit", withRevision(Revision{Source: SourceLive, Commit: "abc"}), ErrUnparseableRevision},
 		{"git without commit", withRevision(Revision{Source: SourceGit}), ErrUnparseableRevision},

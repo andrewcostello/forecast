@@ -81,16 +81,16 @@ func (t *Table) Declare(cell Cell) {
 }
 
 // Add stores o after Validate, wrapping any error it returns. A row is
-// identified by (Key, StartedAt); a second reading of a stored identity is
-// merged into it by precedence, not by arrival order, so the stored row is
-// the same whichever reading arrives first:
+// identified by (Key, StartedAt) and stored with StartedAt in UTC. A second
+// reading of a stored identity is joined into it field by field, so any set
+// of readings stores one row whatever order they arrive in:
 //
-//   - A terminal outcome supersedes OutcomeUnfinished and brings its own
-//     Elapsed, Rounds and Provenance with it. Two different terminal
-//     outcomes wrap ErrStampConflict.
-//   - Between readings with the same outcome, Elapsed and Rounds keep the
-//     greater value and the remaining fields come from the reading with the
-//     greater Elapsed.
+//   - Outcome and Elapsed join as one pair: a terminal outcome outranks
+//     OutcomeUnfinished and brings its own Elapsed; equal rank keeps the
+//     greater Elapsed. Two different terminal outcomes wrap ErrStampConflict.
+//   - Rounds and CostUSD each keep the greater value.
+//   - Provenance keeps the least under: SourceLive before SourceGit, then
+//     Commit, then RunID.
 //   - A different Cell wraps ErrStampConflict: one row has one stamp.
 //
 // A rejected reading changes nothing.
@@ -98,6 +98,7 @@ func (t *Table) Add(o Observation) error {
 	if err := o.Validate(); err != nil {
 		return fmt.Errorf("add observation: %w", err)
 	}
+	o.StartedAt = o.StartedAt.UTC()
 	id := identityOf(o)
 	if at, ok := t.seen[id]; ok {
 		stored := &t.cells[at.cell][at.idx]
@@ -113,46 +114,50 @@ func (t *Table) Add(o Observation) error {
 	return nil
 }
 
-// merge reconciles two readings of one row. It is commutative.
+// rank orders outcomes for merging. The two terminal outcomes tie so that
+// they conflict rather than one silently winning.
+func (o Outcome) rank() int {
+	if o.terminal() {
+		return 1
+	}
+	return 0
+}
+
+// merge joins two readings of one row. Each field is combined by a
+// commutative, associative operation on a totally ordered value, so a fold
+// over any permutation of readings yields the same row.
 func merge(a, b Observation) (Observation, error) {
-	when := a.StartedAt.UTC().Format(time.RFC3339)
+	when := a.StartedAt.Format(time.RFC3339)
 	if a.Cell != b.Cell {
 		return Observation{}, fmt.Errorf("%w: row %s at %s is %s and %s",
 			ErrStampConflict, a.Key, when, a.Cell, b.Cell)
 	}
-	switch {
-	case a.Outcome == b.Outcome:
-	case a.Outcome.terminal() && b.Outcome.terminal():
+	if a.Outcome != b.Outcome && a.Outcome.terminal() && b.Outcome.terminal() {
 		return Observation{}, fmt.Errorf("%w: row %s at %s is %s and %s",
 			ErrStampConflict, a.Key, when, a.Outcome, b.Outcome)
-	case b.Outcome.terminal():
-		return b, nil
-	default:
-		return a, nil
 	}
-	if precedes(a, b) {
-		a, b = b, a
+	out := a
+	if ra, rb := a.Outcome.rank(), b.Outcome.rank(); rb > ra || (rb == ra && b.Elapsed > a.Elapsed) {
+		out.Outcome, out.Elapsed = b.Outcome, b.Elapsed
 	}
-	if b.Rounds > a.Rounds {
-		a.Rounds = b.Rounds
+	out.Rounds = max(a.Rounds, b.Rounds)
+	out.CostUSD = max(a.CostUSD, b.CostUSD)
+	if provenanceLess(b.Provenance, a.Provenance) {
+		out.Provenance = b.Provenance
 	}
-	return a, nil
+	return out, nil
 }
 
-// precedes is a strict total order over readings of one row with one
-// outcome; the later reading in this order is the one whose fields win.
-func precedes(a, b Observation) bool {
+// provenanceLess is a strict total order over Provenance alone: SourceLive
+// before SourceGit, then Commit, then RunID.
+func provenanceLess(a, b Provenance) bool {
 	switch {
-	case a.Elapsed != b.Elapsed:
-		return a.Elapsed < b.Elapsed
-	case a.Rounds != b.Rounds:
-		return a.Rounds < b.Rounds
-	case a.CostUSD != b.CostUSD:
-		return a.CostUSD < b.CostUSD
-	case a.Provenance.Revision != b.Provenance.Revision:
-		return a.Provenance.Revision.String() < b.Provenance.Revision.String()
+	case a.Revision.Source != b.Revision.Source:
+		return a.Revision.Source == SourceLive
+	case a.Revision.Commit != b.Revision.Commit:
+		return a.Revision.Commit < b.Revision.Commit
 	}
-	return a.Provenance.RunID < b.Provenance.RunID
+	return a.RunID < b.RunID
 }
 
 func (t *Table) Count(cell Cell) (Count, bool) {

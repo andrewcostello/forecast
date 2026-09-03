@@ -52,6 +52,10 @@ func (o Outcome) Valid() bool {
 	return o >= OutcomeDone && o <= OutcomeUnfinished
 }
 
+// terminal reports whether o records how the row ended rather than that it
+// was still running when read.
+func (o Outcome) terminal() bool { return o == OutcomeDone || o == OutcomeBlocked }
+
 func (o Outcome) String() string {
 	switch o {
 	case OutcomeDone:
@@ -157,14 +161,17 @@ func (o Observation) Duration() (d time.Duration, ok bool) {
 	return o.Elapsed, true
 }
 
-// Validate reports the first rule the row breaks. A missing key, an invalid
-// role or an empty model wrap ErrUnattributable; an undeclared outcome wraps
-// ErrInvalidOutcome; a negative Elapsed or Rounds wraps ErrNegativeValue; a
-// revision that fails Revision.Valid wraps ErrUnparseableRevision.
+// Validate reports the first rule the row breaks. A missing key or start
+// time, an invalid role or an empty model wrap ErrUnattributable; an
+// undeclared outcome wraps ErrInvalidOutcome; a negative Elapsed or Rounds
+// wraps ErrNegativeValue; a revision that fails Revision.Valid wraps
+// ErrUnparseableRevision.
 func (o Observation) Validate() error {
 	switch {
 	case o.Key == "":
 		return fmt.Errorf("%w: empty key", ErrUnattributable)
+	case o.StartedAt.IsZero():
+		return fmt.Errorf("%w: row %s has no start time", ErrUnattributable, o.Key)
 	case !o.Cell.Role.Valid():
 		return fmt.Errorf("%w: row %s has role %q", ErrUnattributable, o.Key, o.Cell.Role)
 	case o.Cell.Model == "":

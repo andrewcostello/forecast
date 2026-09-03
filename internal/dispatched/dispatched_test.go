@@ -38,21 +38,29 @@ func withRounds(n int) Observation {
 	return o
 }
 
+func withStart(at time.Time) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.StartedAt = at
+	return o
+}
+
+var gitReading = Provenance{RunID: "run-1", Revision: Revision{Source: SourceGit, Commit: "abc"}}
+
 func TestAddDedupesByKeyAndStart(t *testing.T) {
 	tab := NewTable()
 	first := obs("A", seenCell, OutcomeUnfinished, time.Minute)
 	again := first
 	again.Outcome = OutcomeDone
 	again.StartedAt = first.StartedAt.In(time.FixedZone("PDT", -7*3600))
-	again.Provenance.Revision = Revision{Source: SourceGit, Commit: "abc"}
+	again.Provenance = gitReading
 	for _, o := range []Observation{first, again} {
 		if err := tab.Add(o); err != nil {
 			t.Fatal(err)
 		}
 	}
 	n, _ := tab.Count(seenCell)
-	if n != (Count{Unfinished: 1}) {
-		t.Fatalf("Count = %+v, want first reading counted once", n)
+	if n != (Count{Done: 1}) {
+		t.Fatalf("Count = %+v, want the two readings merged into one done row", n)
 	}
 
 	rerun := first
@@ -72,6 +80,62 @@ func TestAddDedupesByKeyAndStart(t *testing.T) {
 	}
 	if _, present := tab.Count(emptyCell); present {
 		t.Fatal("rejected row made its cell present")
+	}
+}
+
+func TestAddMergesByPrecedenceNotArrival(t *testing.T) {
+	unfinished := obs("A", seenCell, OutcomeUnfinished, time.Minute)
+	unfinishedLate := obs("A", seenCell, OutcomeUnfinished, 5*time.Hour)
+	done := obs("A", seenCell, OutcomeDone, 3*time.Hour)
+	done.Rounds = 1
+	doneShorter := obs("A", seenCell, OutcomeDone, 2*time.Hour)
+	doneShorter.Rounds = 4
+	doneShorter.Provenance = gitReading
+	doneMerged := done
+	doneMerged.Rounds = 4
+	blocked := obs("A", seenCell, OutcomeBlocked, time.Hour)
+	doneFromGit := done
+	doneFromGit.Provenance = gitReading
+
+	cases := []struct {
+		name string
+		a, b Observation
+		want Observation
+		err  error
+	}{
+		{"terminal supersedes unfinished", unfinished, done, done, nil},
+		{"unfinished lower bound never outranks a completion", unfinishedLate, done, done, nil},
+		{"blocked supersedes unfinished", unfinished, blocked, blocked, nil},
+		{"same outcome keeps greater elapsed and rounds", done, doneShorter, doneMerged, nil},
+		{"same outcome keeps greater lower bound", unfinished, unfinishedLate, unfinishedLate, nil},
+		{"identical readings differ only in provenance", done, doneFromGit, done, nil},
+		{"two terminal outcomes conflict", done, blocked, Observation{}, ErrStampConflict},
+	}
+	for _, tc := range cases {
+		for _, order := range [][2]Observation{{tc.a, tc.b}, {tc.b, tc.a}} {
+			tab := NewTable()
+			if err := tab.Add(order[0]); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			err := tab.Add(order[1])
+			if tc.err != nil {
+				if !errors.Is(err, tc.err) {
+					t.Errorf("%s: Add = %v, want %v", tc.name, err, tc.err)
+				}
+				if got := tab.Observations(seenCell); len(got) != 1 || got[0] != order[0] {
+					t.Errorf("%s: rejected reading altered the stored row: %+v", tc.name, got)
+				}
+				continue
+			}
+			if err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			got := tab.Observations(seenCell)
+			if len(got) != 1 || got[0] != tc.want {
+				t.Errorf("%s: adding %s then %s stored %+v, want %+v",
+					tc.name, order[0].Outcome, order[1].Outcome, got, tc.want)
+			}
+		}
 	}
 }
 
@@ -151,6 +215,7 @@ func TestValidateWrapsSentinels(t *testing.T) {
 		want error
 	}{
 		{"no key", obs("", seenCell, OutcomeDone, 0), ErrUnattributable},
+		{"zero start", withStart(time.Time{}), ErrUnattributable},
 		{"bad role", obs("A", Cell{Role: "reviewer", Model: "opus"}, OutcomeDone, 0), ErrUnattributable},
 		{"no model", obs("A", Cell{Role: RoleBodies}, OutcomeDone, 0), ErrUnattributable},
 		{"zero outcome", obs("A", seenCell, 0, 0), ErrInvalidOutcome},

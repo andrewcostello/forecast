@@ -19,9 +19,11 @@ type Graph struct {
 // Schedule is the result of running a Graph under a concurrency cap.
 //
 // Completion is the wall clock at which the last node finishes.
-// CriticalPath is a dependency chain, in execution order, ending at the node
-// that finishes last. The sum of its durations never exceeds Completion, and
-// equals it when the cap is not binding.
+// CriticalPath is built from the node that finishes last by stepping to the
+// BlockedBy node that finished last until a node with no BlockedBy is
+// reached, and is listed in execution order. Ties in finishing time go to
+// the earlier node in Graph.Nodes. The sum of its durations never exceeds
+// Completion, and equals it when the cap is not binding.
 type Schedule struct {
 	Completion   time.Duration
 	CriticalPath []string

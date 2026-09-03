@@ -26,6 +26,12 @@ func obs(key string, cell Cell, outcome Outcome, elapsed time.Duration) Observat
 	}
 }
 
+func withRevision(r Revision) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.Provenance.Revision = r
+	return o
+}
+
 func TestEmptyCellIsPresentAndDistinctFromAbsent(t *testing.T) {
 	tab := NewTable(emptyCell)
 	if err := tab.Add(obs("A", seenCell, OutcomeDone, time.Hour)); err != nil {
@@ -106,6 +112,10 @@ func TestValidateWrapsSentinels(t *testing.T) {
 		{"no model", obs("A", Cell{Role: RoleBodies}, OutcomeDone, 0), ErrUnattributable},
 		{"zero outcome", obs("A", seenCell, 0, 0), ErrInvalidOutcome},
 		{"out of range outcome", obs("A", seenCell, OutcomeUnfinished+1, 0), ErrInvalidOutcome},
+		{"zero revision", withRevision(Revision{}), ErrUnparseableRevision},
+		{"live with commit", withRevision(Revision{Source: SourceLive, Commit: "abc"}), ErrUnparseableRevision},
+		{"git without commit", withRevision(Revision{Source: SourceGit}), ErrUnparseableRevision},
+		{"unknown source", withRevision(Revision{Source: "svn", Commit: "1"}), ErrUnparseableRevision},
 	}
 	for _, tc := range cases {
 		err := tc.row.Validate()

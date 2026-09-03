@@ -8,7 +8,7 @@ var (
 	// ErrUnattributable: the row cannot be placed in a (role, model) cell.
 	ErrUnattributable = errors.New("dispatched: row cannot be attributed to a cell")
 
-	// ErrUnparseableRevision: a source revision string is not in a recognised form.
+	// ErrUnparseableRevision: a source revision is not in a recognised form.
 	ErrUnparseableRevision = errors.New("dispatched: source revision cannot be parsed")
 
 	// ErrInvalidOutcome: an Outcome value outside the declared constants.

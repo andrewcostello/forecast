@@ -85,10 +85,22 @@ const (
 )
 
 // Revision identifies one reading of a tasks YAML. Commit is required for
-// SourceGit and must be empty for SourceLive.
+// SourceGit and must be empty for SourceLive; Valid checks this and
+// Observation.Validate applies it.
 type Revision struct {
 	Source Source
 	Commit string
+}
+
+// Valid reports whether r obeys the Source/Commit rule.
+func (r Revision) Valid() bool {
+	switch r.Source {
+	case SourceLive:
+		return r.Commit == ""
+	case SourceGit:
+		return r.Commit != ""
+	}
+	return false
 }
 
 // ParseRevision reads the form produced by Revision.String: "live" or
@@ -147,7 +159,8 @@ func (o Observation) Duration() (d time.Duration, ok bool) {
 
 // Validate reports the first rule the row breaks. A missing key, an invalid
 // role or an empty model wrap ErrUnattributable; an undeclared outcome wraps
-// ErrInvalidOutcome.
+// ErrInvalidOutcome; a revision that fails Revision.Valid wraps
+// ErrUnparseableRevision.
 func (o Observation) Validate() error {
 	switch {
 	case o.Key == "":
@@ -158,6 +171,8 @@ func (o Observation) Validate() error {
 		return fmt.Errorf("%w: row %s has no stamped model", ErrUnattributable, o.Key)
 	case !o.Outcome.Valid():
 		return fmt.Errorf("%w: row %s has %s", ErrInvalidOutcome, o.Key, o.Outcome)
+	case !o.Provenance.Revision.Valid():
+		return fmt.Errorf("%w: row %s has revision %+v", ErrUnparseableRevision, o.Key, o.Provenance.Revision)
 	}
 	return nil
 }

@@ -14,11 +14,13 @@ var (
 	// ErrInvalidOutcome: an Outcome value outside the declared constants.
 	ErrInvalidOutcome = errors.New("dispatched: outcome is not a declared value")
 
-	// ErrNegativeValue: an Elapsed, Rounds, CostUSD or Node.Duration below
-	// zero, or a CostUSD that is NaN.
+	// ErrNegativeValue: a duration, count or token total below zero, or a
+	// cost that is not finite (negative, NaN or infinite).
 	ErrNegativeValue = errors.New("dispatched: value must not be negative")
 
-	// ErrStampConflict: one (Key, StartedAt) observed with two different cells.
+	// ErrStampConflict: one (Key, StartedAt) observed with two different
+	// cells, or with two different terminal outcomes. Both mean a re-run
+	// reused a key; neither may be resolved by last-write-wins.
 	ErrStampConflict = errors.New("dispatched: same row observed with different stamps")
 
 	// ErrCycle: the dependency graph is not acyclic.
@@ -32,4 +34,16 @@ var (
 
 	// ErrInvalidConcurrency: a concurrency cap below one.
 	ErrInvalidConcurrency = errors.New("dispatched: concurrency cap must be at least one")
+
+	// ErrJournalSource: a dispatcher journal cannot be discovered or read.
+	ErrJournalSource = errors.New("dispatched: journal source cannot be read")
+
+	// ErrYAMLSource: a tasks YAML source cannot be discovered or parsed.
+	ErrYAMLSource = errors.New("dispatched: tasks YAML source cannot be read")
+
+	// ErrGitHistory: historical tasks YAML cannot be enumerated or read.
+	ErrGitHistory = errors.New("dispatched: git history cannot be read")
+
+	// ErrReferenceOutput: a reference-class artifact cannot be written.
+	ErrReferenceOutput = errors.New("dispatched: reference output cannot be written")
 )

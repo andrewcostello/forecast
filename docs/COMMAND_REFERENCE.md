@@ -22,7 +22,39 @@ forecast report --type full       # Complete report
 # Multi-project dashboard
 forecast dashboard                      # Summary of all projects
 forecast dashboard --project monorepo   # Detailed view of specific project
+
+# Build a dispatched-agent reference class and print coverage
+forecast dispatched-reference build \
+  --runs-dir ~/Project/dispatcher-runs \
+  --tasks features/dispatched-forecasting/tasks.yaml \
+  --out .forecast/dispatched-reference.json
 ```
+
+`dispatched-reference build` joins dispatcher journals to the union of the live
+task YAML and every revision of it in git history, on `dispatcher_run_id` plus
+task key. It defaults `--features-repo` to `~/Project/claude-workflow`; `git`
+must be on `PATH` (2.36 or newer, for `git ls-tree --format`) and the path must
+be a git repository.
+
+It reports rather than predicts:
+
+* A `(role, model)` cell with no observations appears with `n=0`. It is never
+  filled with a default, pooled into another cell, or omitted.
+* A blocked or unfinished row is right-censored. Its elapsed time is a lower
+  bound: counted in `n`, `n_blocked` and `n_censored` and in the rounds
+  summary, and never in a duration statistic.
+* The model is the one the dispatcher **stamped** on an implementing spawn, not
+  the one authored in the YAML and not the one planned on `task_started`. A row
+  no spawn stamped is unattributable and is counted, not guessed at.
+* Every shortfall is a printed number: rows recovered versus rows started,
+  restarts, starts with no model, journal lines that would not parse, and rows
+  with no recoverable YAML.
+
+| flag | effect |
+|---|---|
+| `--min-observations` | completed rows a required cell needs before it counts as covered (default 2 — one row is a sample) |
+| `--fail-on-empty-required` | exit non-zero when a required cell has no observations, so CI can refuse rather than forecast |
+| `--max-history-commits` | cap the history walk; the report says whether the cap bit |
 
 ## JIRA Commands
 

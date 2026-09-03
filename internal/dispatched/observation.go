@@ -35,11 +35,18 @@ func (r Role) Valid() bool {
 
 // Outcome is how an observed row ended. Zero is deliberately not a declared
 // value, so an unset Outcome fails Validate rather than passing as a result.
+//
+// Adding a value means updating every site that decodes the set together:
+// Valid, terminal, String, rank (referenceclass.go) and Table.Count's switch.
+// Valid is a range check, so a new constant appended below Unfinished passes
+// it silently while the others still treat it as unknown.
 type Outcome int
 
 const (
-	// OutcomeDone: the dispatcher recorded task_done. The only outcome whose
-	// elapsed time is a completed duration.
+	// OutcomeDone: the row finished. The only outcome whose elapsed time is a
+	// completed duration. The evidence may be a journal task_done or a
+	// terminal status in the tasks YAML; Observation.TerminalEvidence says
+	// which, because a YAML status is a mutable file a human may have edited.
 	OutcomeDone Outcome = iota + 1
 	// OutcomeBlocked: the dispatcher recorded task_blocked.
 	OutcomeBlocked
@@ -73,8 +80,8 @@ func (o Outcome) String() string {
 // row after any cascade, never the one authored in the tasks YAML. A row
 // whose stamp is unknown has no Cell.
 type Cell struct {
-	Role  Role
-	Model string
+	Role  Role   `json:"role"`
+	Model string `json:"model"`
 }
 
 func (c Cell) String() string { return string(c.Role) + "/" + c.Model }
@@ -127,8 +134,16 @@ func (r Revision) String() string {
 	return string(r.Source)
 }
 
-// Provenance says which dispatcher run produced the row and which reading
-// of the tasks YAML supplied its role and timestamps.
+// Provenance says which dispatcher run produced the row and names ONE
+// reading of the tasks YAML it was recovered from.
+//
+// When several readings are joined into one row, Provenance is the least of
+// them under provenanceLess (live before git, then commit, then run) so the
+// join is order-independent. It therefore identifies a reading the row was
+// seen in, NOT the reading that supplied any particular other field: Outcome,
+// Elapsed, Rounds and CostUSD are each taken from whichever reading ranked
+// highest for that field. Per-field attribution would need a set of
+// contributing provenances and is deliberately not carried.
 type Provenance struct {
 	RunID    string
 	Revision Revision
@@ -141,13 +156,27 @@ type Provenance struct {
 // Outcome is OutcomeDone; otherwise it is a lower bound and must never enter
 // a duration statistic. Use Duration rather than reading Elapsed directly.
 type Observation struct {
-	Key        string
-	Cell       Cell
-	Outcome    Outcome
-	StartedAt  time.Time
-	Elapsed    time.Duration
-	Rounds     int
-	CostUSD    float64
+	Key     string
+	Cell    Cell
+	Outcome Outcome
+	// TerminalEvidence records what the Outcome rests on: a journal terminal
+	// event, a tasks-YAML status, or nothing. A consumer that will not average
+	// a hand-editable timestamp needs to be able to tell them apart.
+	TerminalEvidence string
+	StartedAt        time.Time
+	Elapsed          time.Duration
+	DevElapsed       time.Duration
+	ReviewElapsed    time.Duration
+	Rounds           int
+	// Cascades is the number of agent_fallback events on the row: the signal
+	// that the authored model is stale for it.
+	Cascades     int
+	InputTokens  int64
+	OutputTokens int64
+	CostUSD      float64
+	// CostKnown separates a measured zero from an unmeasured one. A row with
+	// CostKnown false has no cost, and CostUSD must not be read as one.
+	CostKnown  bool
 	Provenance Provenance
 }
 
@@ -164,9 +193,9 @@ func (o Observation) Duration() (d time.Duration, ok bool) {
 
 // Validate reports the first rule the row breaks. A missing key or start
 // time, an invalid role or an empty model wrap ErrUnattributable; an
-// undeclared outcome wraps ErrInvalidOutcome; a negative Elapsed, Rounds or
-// CostUSD, or a NaN CostUSD, wraps ErrNegativeValue; a revision that fails
-// Revision.Valid wraps ErrUnparseableRevision.
+// undeclared outcome wraps ErrInvalidOutcome; a negative duration, count or
+// token total, or a cost that is not finite, wraps ErrNegativeValue; a
+// revision that fails Revision.Valid wraps ErrUnparseableRevision.
 func (o Observation) Validate() error {
 	switch {
 	case o.Key == "":
@@ -181,9 +210,20 @@ func (o Observation) Validate() error {
 		return fmt.Errorf("%w: row %s has %s", ErrInvalidOutcome, o.Key, o.Outcome)
 	case o.Elapsed < 0:
 		return fmt.Errorf("%w: row %s has elapsed %v", ErrNegativeValue, o.Key, o.Elapsed)
+	case o.DevElapsed < 0:
+		return fmt.Errorf("%w: row %s has development elapsed %v", ErrNegativeValue, o.Key, o.DevElapsed)
+	case o.ReviewElapsed < 0:
+		return fmt.Errorf("%w: row %s has review elapsed %v", ErrNegativeValue, o.Key, o.ReviewElapsed)
 	case o.Rounds < 0:
 		return fmt.Errorf("%w: row %s has rounds %d", ErrNegativeValue, o.Key, o.Rounds)
-	case o.CostUSD < 0 || math.IsNaN(o.CostUSD):
+	case o.InputTokens < 0:
+		return fmt.Errorf("%w: row %s has input tokens %d", ErrNegativeValue, o.Key, o.InputTokens)
+	case o.OutputTokens < 0:
+		return fmt.Errorf("%w: row %s has output tokens %d", ErrNegativeValue, o.Key, o.OutputTokens)
+	case o.CostUSD < 0 || math.IsNaN(o.CostUSD) || math.IsInf(o.CostUSD, 0):
+		// -Inf is already caught by < 0; the explicit form documents that a
+		// cost must be finite. merge combines cost with max, so one +Inf
+		// reading would poison the row and every aggregate over it.
 		return fmt.Errorf("%w: row %s has cost %v", ErrNegativeValue, o.Key, o.CostUSD)
 	case !o.Provenance.Revision.Valid():
 		return fmt.Errorf("%w: row %s has revision %+v", ErrUnparseableRevision, o.Key, o.Provenance.Revision)

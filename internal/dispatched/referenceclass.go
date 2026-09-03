@@ -38,6 +38,9 @@ type ReferenceClass interface {
 
 // Table is an in-memory ReferenceClass. Declaring a cell makes it present
 // with no observations; adding a row makes its cell present.
+//
+// A Table is not safe for concurrent use: Add both reads and writes its maps.
+// Serialise calls or guard it externally.
 type Table struct {
 	cells map[Cell][]Observation
 	seen  map[identity]position
@@ -61,23 +64,39 @@ type position struct {
 	idx  int
 }
 
-// NewTable returns a Table with the given cells declared and empty.
+// NewTable returns a Table with the given cells declared and empty. A cell
+// Declare rejects is skipped, so NewTable never produces a present cell that
+// no row could ever join.
 func NewTable(declared ...Cell) *Table {
 	t := &Table{
 		cells: make(map[Cell][]Observation, len(declared)),
 		seen:  make(map[identity]position),
 	}
 	for _, c := range declared {
-		t.Declare(c)
+		_ = t.Declare(c)
 	}
 	return t
 }
 
-// Declare makes cell present. It does not alter an already-present cell.
-func (t *Table) Declare(cell Cell) {
+// Declare makes cell present with no observations. It does not alter an
+// already-present cell.
+//
+// A cell with an undeclared role or an empty model wraps ErrUnattributable
+// and is NOT made present: Add rejects rows for such a cell by the same rule,
+// so declaring one would show a typo as an empty coverage bucket that looks
+// exactly like a real one — the distinction the refuse-to-predict ruling
+// rests on.
+func (t *Table) Declare(cell Cell) error {
+	switch {
+	case !cell.Role.Valid():
+		return fmt.Errorf("%w: cell has role %q", ErrUnattributable, cell.Role)
+	case cell.Model == "":
+		return fmt.Errorf("%w: cell %s has no model", ErrUnattributable, cell.Role)
+	}
 	if _, ok := t.cells[cell]; !ok {
 		t.cells[cell] = []Observation{}
 	}
+	return nil
 }
 
 // Add stores o after Validate, wrapping any error it returns. A row is
@@ -88,7 +107,8 @@ func (t *Table) Declare(cell Cell) {
 //   - Outcome and Elapsed join as one pair: a terminal outcome outranks
 //     OutcomeUnfinished and brings its own Elapsed; equal rank keeps the
 //     greater Elapsed. Two different terminal outcomes wrap ErrStampConflict.
-//   - Rounds and CostUSD each keep the greater value.
+//   - Rounds, Cascades, DevElapsed, ReviewElapsed, the token totals and
+//     CostUSD each keep the greater value; CostKnown is the disjunction.
 //   - Provenance keeps the least under: SourceLive before SourceGit, then
 //     Commit, then RunID.
 //   - A different Cell wraps ErrStampConflict: one row has one stamp.
@@ -129,23 +149,35 @@ func (o Outcome) rank() int {
 func merge(a, b Observation) (Observation, error) {
 	when := a.StartedAt.Format(time.RFC3339)
 	if a.Cell != b.Cell {
-		return Observation{}, fmt.Errorf("%w: row %s at %s is %s and %s",
-			ErrStampConflict, a.Key, when, a.Cell, b.Cell)
+		return Observation{}, fmt.Errorf("%w: row %s at %s is %s from %s and %s from %s",
+			ErrStampConflict, a.Key, when, a.Cell, describe(a.Provenance), b.Cell, describe(b.Provenance))
 	}
 	if a.Outcome != b.Outcome && a.Outcome.terminal() && b.Outcome.terminal() {
-		return Observation{}, fmt.Errorf("%w: row %s at %s is %s and %s",
-			ErrStampConflict, a.Key, when, a.Outcome, b.Outcome)
+		return Observation{}, fmt.Errorf("%w: row %s at %s is %s from %s and %s from %s",
+			ErrStampConflict, a.Key, when, a.Outcome, describe(a.Provenance), b.Outcome, describe(b.Provenance))
 	}
 	out := a
 	if ra, rb := a.Outcome.rank(), b.Outcome.rank(); rb > ra || (rb == ra && b.Elapsed > a.Elapsed) {
-		out.Outcome, out.Elapsed = b.Outcome, b.Elapsed
+		out.Outcome, out.Elapsed, out.TerminalEvidence = b.Outcome, b.Elapsed, b.TerminalEvidence
 	}
 	out.Rounds = max(a.Rounds, b.Rounds)
+	out.Cascades = max(a.Cascades, b.Cascades)
+	out.DevElapsed = max(a.DevElapsed, b.DevElapsed)
+	out.ReviewElapsed = max(a.ReviewElapsed, b.ReviewElapsed)
+	out.InputTokens = max(a.InputTokens, b.InputTokens)
+	out.OutputTokens = max(a.OutputTokens, b.OutputTokens)
 	out.CostUSD = max(a.CostUSD, b.CostUSD)
+	out.CostKnown = a.CostKnown || b.CostKnown
 	if provenanceLess(b.Provenance, a.Provenance) {
 		out.Provenance = b.Provenance
 	}
 	return out, nil
+}
+
+// describe names a provenance in an error a human has to act on: which run
+// and which reading of the tasks YAML the disagreeing value came from.
+func describe(p Provenance) string {
+	return "run " + p.RunID + " at " + p.Revision.String()
 }
 
 // provenanceLess is a strict total order over Provenance alone: SourceLive
@@ -165,14 +197,17 @@ func (t *Table) Count(cell Cell) (Count, bool) {
 	if !ok {
 		return Count{}, false
 	}
+	// Every row lands in exactly one bucket, so Count.N() always equals
+	// len(Observations(cell)) — including for an Outcome added later that
+	// none of the switches above knows about.
 	var n Count
 	for _, o := range obs {
-		switch o.Outcome {
-		case OutcomeDone:
+		switch {
+		case o.Outcome == OutcomeDone:
 			n.Done++
-		case OutcomeBlocked:
+		case o.Outcome == OutcomeBlocked:
 			n.Blocked++
-		case OutcomeUnfinished:
+		default:
 			n.Unfinished++
 		}
 	}

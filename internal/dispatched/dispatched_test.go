@@ -3,6 +3,7 @@ package dispatched
 import (
 	"errors"
 	"math"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -42,6 +43,30 @@ func withRounds(n int) Observation {
 func withCost(c float64) Observation {
 	o := obs("A", seenCell, OutcomeDone, 0)
 	o.CostUSD = c
+	return o
+}
+
+func withDevElapsed(d time.Duration) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.DevElapsed = d
+	return o
+}
+
+func withReviewElapsed(d time.Duration) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.ReviewElapsed = d
+	return o
+}
+
+func withInputTokens(n int64) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.InputTokens = n
+	return o
+}
+
+func withOutputTokens(n int64) Observation {
+	o := obs("A", seenCell, OutcomeDone, 0)
+	o.OutputTokens = n
 	return o
 }
 
@@ -160,11 +185,19 @@ func TestAddJoinsReadingsInAnyOrder(t *testing.T) {
 			tab := NewTable()
 			var conflict error
 			for _, o := range order {
-				if err := tab.Add(o); err != nil {
+				// A rejected reading changes nothing: snapshot the stored
+				// rows and require them byte-identical afterwards, so a
+				// partial join before the conflict is detected cannot pass.
+				before := tab.Observations(seenCell)
+				err := tab.Add(o)
+				if err != nil {
 					if !errors.Is(err, ErrStampConflict) {
 						t.Fatalf("%s: %v", tc.name, err)
 					}
 					conflict = err
+					if after := tab.Observations(seenCell); !reflect.DeepEqual(before, after) {
+						t.Fatalf("%s: rejected reading mutated the table:\n before %+v\n after  %+v", tc.name, before, after)
+					}
 				}
 			}
 			got := tab.Observations(seenCell)
@@ -184,6 +217,32 @@ func TestAddJoinsReadingsInAnyOrder(t *testing.T) {
 				t.Errorf("%s: order %v stored %+v, want %+v", tc.name, outcomes(order), got, tc.want)
 			}
 		}
+	}
+}
+
+func TestAddJoinsExtractedMetricsWithoutDoubleCountingRevisions(t *testing.T) {
+	first := obs("A", seenCell, OutcomeDone, time.Hour)
+	first.DevElapsed = 10 * time.Minute
+	first.ReviewElapsed = 20 * time.Minute
+	first.InputTokens = 100
+	first.OutputTokens = 10
+	second := first
+	second.Provenance = gitReading
+	second.DevElapsed = 30 * time.Minute
+	second.ReviewElapsed = 5 * time.Minute
+	second.InputTokens = 50
+	second.OutputTokens = 20
+
+	table := NewTable()
+	if err := table.Add(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := table.Add(second); err != nil {
+		t.Fatal(err)
+	}
+	got := table.Observations(seenCell)[0]
+	if got.DevElapsed != 30*time.Minute || got.ReviewElapsed != 20*time.Minute || got.InputTokens != 100 || got.OutputTokens != 20 {
+		t.Fatalf("merged metrics = %+v", got)
 	}
 }
 
@@ -277,9 +336,15 @@ func TestValidateWrapsSentinels(t *testing.T) {
 		{"zero outcome", obs("A", seenCell, 0, 0), ErrInvalidOutcome},
 		{"out of range outcome", obs("A", seenCell, OutcomeUnfinished+1, 0), ErrInvalidOutcome},
 		{"negative elapsed", obs("A", seenCell, OutcomeDone, -time.Second), ErrNegativeValue},
+		{"negative development elapsed", withDevElapsed(-time.Second), ErrNegativeValue},
+		{"negative review elapsed", withReviewElapsed(-time.Second), ErrNegativeValue},
 		{"negative rounds", withRounds(-1), ErrNegativeValue},
+		{"negative input tokens", withInputTokens(-1), ErrNegativeValue},
+		{"negative output tokens", withOutputTokens(-1), ErrNegativeValue},
 		{"negative cost", withCost(-0.01), ErrNegativeValue},
 		{"NaN cost", withCost(math.NaN()), ErrNegativeValue},
+		{"positive infinite cost", withCost(math.Inf(1)), ErrNegativeValue},
+		{"negative infinite cost", withCost(math.Inf(-1)), ErrNegativeValue},
 		{"zero revision", withRevision(Revision{}), ErrUnparseableRevision},
 		{"live with commit", withRevision(Revision{Source: SourceLive, Commit: "abc"}), ErrUnparseableRevision},
 		{"git without commit", withRevision(Revision{Source: SourceGit}), ErrUnparseableRevision},
@@ -313,5 +378,36 @@ func TestParseRevision(t *testing.T) {
 		if _, err := ParseRevision(in); !errors.Is(err, ErrUnparseableRevision) {
 			t.Errorf("%q: err = %v, want ErrUnparseableRevision", in, err)
 		}
+	}
+}
+
+// A present cell with n=0 means "asked, nothing observed", which is what the
+// refuse-to-predict ruling reads. A typo'd role or an empty model must not be
+// able to look like one: Add rejects such a row by the same rule, so a
+// declared one would be an empty bucket no observation could ever fill.
+func TestDeclareRefusesACellNoRowCouldJoin(t *testing.T) {
+	cases := []Cell{
+		{Role: "reviewer", Model: "opus"},
+		{Role: "", Model: "opus"},
+		{Role: RoleBodies, Model: ""},
+	}
+	for _, cell := range cases {
+		tab := NewTable()
+		if err := tab.Declare(cell); !errors.Is(err, ErrUnattributable) {
+			t.Errorf("Declare(%+v) = %v, want ErrUnattributable", cell, err)
+		}
+		if _, present := tab.Count(cell); present {
+			t.Errorf("Declare(%+v) made an unjoinable cell present", cell)
+		}
+		if cells := NewTable(cell).Cells(); len(cells) != 0 {
+			t.Errorf("NewTable(%+v) declared %v", cell, cells)
+		}
+	}
+	tab := NewTable()
+	if err := tab.Declare(emptyCell); err != nil {
+		t.Fatalf("Declare(%+v) = %v", emptyCell, err)
+	}
+	if _, present := tab.Count(emptyCell); !present {
+		t.Fatalf("Declare(%+v) did not make the cell present", emptyCell)
 	}
 }

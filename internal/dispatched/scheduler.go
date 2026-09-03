@@ -43,9 +43,13 @@ type Schedule struct {
 //     more than the sum of all durations.
 //   - With maxParallel at least len(Nodes), Completion equals the longest
 //     dependency chain.
+//   - An empty Graph yields Completion == 0 and a nil CriticalPath.
 //   - Errors wrap ErrCycle, ErrUnknownDependency, ErrDuplicateKey,
 //     ErrNegativeValue (a Duration below zero) or ErrInvalidConcurrency
-//     (maxParallel < 1).
+//     (maxParallel < 1). An input that breaks several rules reports the first
+//     in THIS order, so two implementations of this interface agree:
+//     ErrInvalidConcurrency, ErrDuplicateKey, ErrUnknownDependency,
+//     ErrNegativeValue, ErrCycle.
 type Scheduler interface {
 	Schedule(g Graph, maxParallel int) (Schedule, error)
 }

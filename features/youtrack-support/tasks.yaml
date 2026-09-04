@@ -1,0 +1,393 @@
+project: forecast
+epic: youtrack-support
+target_repo: forecast
+base_branch: main
+
+# WHY: one project uses YouTrack, not Jira. Measured in claude-dispatcher and
+# here on 2026-09-04, the coupling is narrower than it looks in one place and
+# wider in another:
+#
+#   * The DISPATCHER barely knows about Jira. It treats the tracker key as an
+#     OPAQUE STRING — no regex, no parsing, no format assumption in any code
+#     path, only in docstrings — and threads it into branch names, PR titles
+#     and commit trailers, all format-agnostic. Its one tracker-specific act
+#     is shelling out to `forecast jira create`.
+#   * FORECAST is where the work is: 22 Go files mention jira, none mention
+#     youtrack, and `jira.NewClient` is constructed at 14 sites across cmd/
+#     and internal/web with no interface between.
+#
+# So this epic is: put an interface where the concrete client is, add a second
+# implementation behind it, and keep the one argv the dispatcher depends on
+# working byte-for-byte.
+#
+# THE ARGV IS A CONTRACT. claude_dispatcher/forecast_bridge.build_create_argv
+# emits exactly:
+#     forecast [--config PATH] jira create --summary S --type T [--description ...]
+#              [--labels ...] [--epic ...] [--parent ...] [--priority ...]
+#              [--story-points ...] [--due-date ...] [--assignee ...]
+#              [--fix-versions ...] [--components ...]
+# Break it and every dispatcher run that mints tickets breaks with it.
+#
+# DO NOT PORT ADF. internal/jira/adf.go and md_to_adf.go convert Atlassian
+# Document Format to and from Markdown. YouTrack takes Markdown natively, so a
+# YouTrack path needs no document conversion at all. Building one would be a
+# few hundred lines of code with nothing to do.
+
+tasks:
+  - key: YT-SCAFFOLD
+    summary: 'scaffold — the Tracker interface: what forecast actually needs from an issue tracker'
+    description: |
+      LAW / contract first: internal/jira/client.go (the only implementation
+      today), cmd/forecast/helpers.go (the two factory functions), and
+      internal/config/config.go `JIRAConfig` + `GetJIRAInstanceForKey`.
+
+      Scope:
+        1. Define a `Tracker` interface in a new package (suggest
+           `internal/tracker`) covering ONLY what callers already use. Derive
+           it from the call sites, not from what a tracker could do:
+           `FetchIssues(*config.Config) ([]forecast.Item, error)`,
+           issue creation (see `CreateIssueRequest` / `CreateIssueResponse`),
+           and whatever `sync_cmd.go` and `status_cmd.go` need for statuses
+           and changelogs.
+        2. Make `*jira.Client` satisfy it, by adapter if the signatures do not
+           line up. Its query construction (`buildJQL`) stays PRIVATE to the
+           Jira implementation — a second tracker builds its own query in its
+           own language, and JQL must not leak into the interface.
+        3. Contract only. Bodies fill it.
+
+      Out of scope:
+        - Any YouTrack code, config change, or call-site change.
+        - Any behaviour change whatsoever.
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - `*jira.Client` satisfies `Tracker`, asserted at compile time
+          (`var _ tracker.Tracker = (*jira.Client)(nil)`).
+        - The interface mentions neither JQL nor ADF, and no method name
+          contains "jira".
+    type: Task
+    estimate: 4h
+    labels: [size:M, area:tracker, risk:high, phase:youtrack]
+    agent: claude
+    model: claude-fable-5-1
+    role: scaffold
+    owns:
+      - internal/tracker/**
+
+  - key: YT-SEALS
+    summary: 'seals — red-first tests for the Tracker contract, the argv contract, and tracker equivalence'
+    description: |
+      LAW / contract first: YT-SCAFFOLD's `Tracker` interface. Red first, and
+      mutation-verified: a seal that cannot fail is worse than no seal.
+
+      Scope:
+        1. THE ARGV SEAL, and it is the most important one here. Invoke the
+           exact argv `claude_dispatcher/forecast_bridge.build_create_argv`
+           emits — `forecast [--config P] jira create --summary S --type T`
+           plus every optional flag — and assert it parses and creates. COPY
+           the flag list from that Python function; do not retype it from
+           memory. Breaking this argv breaks every dispatcher run that mints
+           tickets, in another repo, silently until someone reads a run log.
+        2. TRACKER EQUIVALENCE: one table, two trackers, one expected
+           `forecast.Item`. A fixture Jira issue and the equivalent fixture
+           YouTrack issue must produce field-for-field identical Items,
+           including cycle time. The reference-class maths cannot tell the
+           trackers apart and must never have to.
+        3. FAIL-CLOSED seals: an auth failure is distinguishable from an empty
+           result set; an unsupported create field is a NAMED error, not a
+           silent drop; a malformed tracker `kind:` is an error, not a fallback
+           to jira.
+        4. Every seal runs with NO NETWORK and NO TOKEN, off recorded fixtures
+           in testdata/. A suite that needs credentials is a suite that gets
+           skipped.
+
+      Out of scope:
+        - Any implementation. These tests are RED until the bodies rows land,
+          and that is the deliverable.
+        - Anything requiring a live YouTrack instance — that is YT-ADJ's job.
+
+      Acceptance:
+        - Every seal is RED for the right reason, and each one's failure
+          message names what is missing rather than a nil dereference.
+        - Each seal is mutation-verified: record in the summary, per seal, the
+          mutation that made it fail. A seal with no recorded mutation does not
+          count as delivered.
+        - `go build ./... && go vet ./...` green (the suite is red by design;
+           register the red rows so dependent tasks are not failed by them).
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:tracker, risk:critical, phase:youtrack]
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: seals
+    blockedBy: [YT-SCAFFOLD]
+    owns:
+      - internal/tracker/**
+      - internal/config/**
+
+  - key: YT-CONFIG
+    summary: 'bodies — config selects a tracker per project, and key-prefix routing resolves to it'
+    description: |
+      LAW / contract first: YT-SCAFFOLD's interface; internal/config/config.go
+      (`JIRAConfig`, `GetJIRAInstanceForKey`, and its tests at
+      internal/config/config_test.go:374).
+
+      Scope:
+        1. A tracker KIND per configured instance (jira | youtrack), defaulting
+           to jira so every existing `.forecast/config.yaml` keeps working
+           untouched. That backward compatibility is the point, not a nicety —
+           several repos already carry one.
+        2. `YouTrackConfig`: base URL, token, project. NOTE the auth shape
+           differs — Jira here uses email + API token (basic), YouTrack uses a
+           permanent token as a bearer header. Do not model YouTrack as a
+           JIRAConfig with an unused Email field.
+        3. Extend the existing key-prefix routing so a prefix can resolve to a
+           YouTrack instance. `GetJIRAInstanceForKey` already routes per-ticket
+           commands across multiple Jira instances by key prefix; a second
+           tracker slots into that mechanism rather than beside it. Renaming it
+           is fine; leaving a second parallel router is not.
+
+      Out of scope:
+        - The YouTrack client (YT-READ / YT-WRITE).
+        - Command surface (YT-CMD).
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - A config with no `kind:` anywhere resolves every instance to jira,
+          proven against a fixture copied from a real `.forecast/config.yaml`.
+        - A mixed config routes key prefix A to a Jira instance and prefix B to
+          a YouTrack instance, and an unknown prefix still falls back the way
+          config_test.go:480 already requires.
+        - A malformed `kind:` is an ERROR, never a silent fallback to jira — a
+          typo that silently picks the wrong tracker writes tickets into the
+          wrong system.
+    type: Task
+    estimate: 5h
+    labels: [size:M, area:config, risk:high, phase:youtrack]
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    blockedBy: [YT-SEALS]
+    owns:
+      - internal/config/**
+
+  - key: YT-READ
+    summary: 'bodies — the YouTrack read path: query, fetch issues, and cycle-time history'
+    description: |
+      LAW / contract first: YT-SCAFFOLD's interface; internal/jira/client.go
+      `FetchIssues` / `buildJQL` / `SearchWithAllFields` / `ExtractClosedBy` as
+      the behaviour to match, NOT as code to copy.
+
+      Scope:
+        1. A YouTrack implementation of the read half: build a YouTrack query
+           (its own language — this is not JQL with different words), page
+           through results, and map them to `[]forecast.Item` so every
+           downstream consumer — montecarlo, referenceclass, report, history —
+           is untouched.
+        2. Cycle time and closed-by. Jira reads these from a changelog; the
+           YouTrack equivalent is its activities/issue-history API. Whatever it
+           is called there, the OUTPUT must be the same `forecast.Item` fields,
+           because the reference-class maths cannot tell the trackers apart and
+           must not have to.
+        3. Custom fields: `CycleTimeField` and `StoryPointsField` are Jira
+           `customfield_NNNNN` ids. YouTrack names custom fields. Map by NAME
+           and say so in the config docs.
+
+      Out of scope:
+        - Creating or updating issues (YT-WRITE).
+        - Any ADF/document conversion — YouTrack is Markdown-native.
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - Table-driven tests against RECORDED YouTrack API responses (fixture
+          JSON in testdata/), not a live instance: the suite must pass with no
+          network and no token.
+        - A fixture issue produces a `forecast.Item` field-for-field equal to
+          what the Jira path produces for the equivalent issue, including
+          cycle time — one seal, both trackers, same expected struct.
+        - An empty result set is distinguishable from an auth failure. Fail
+          closed and say which; a silent empty set reads as "this project has
+          no history" and quietly ruins a forecast.
+    type: Task
+    estimate: 8h
+    labels: [size:L, area:tracker, risk:critical, phase:youtrack]
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    blockedBy: [YT-SEALS, YT-CONFIG]
+    owns:
+      - internal/tracker/youtrack/**
+
+  - key: YT-WRITE
+    summary: 'bodies — the YouTrack write path: create an issue, and sync status back'
+    description: |
+      LAW / contract first: YT-SCAFFOLD's interface;
+      internal/jira/client.go `CreateIssueRequest` / `CreateIssueResponse`;
+      cmd/forecast/jira_cmd.go:1636 and cmd/forecast/sync_cmd.go for what
+      creation and sync currently accept and return.
+
+      Scope:
+        1. Create an issue on YouTrack and return its key, because the caller
+           writes that key back into a dispatcher worklist and the whole
+           release-notes chain depends on it. The dispatcher's bridge treats
+           the returned key as an opaque string, so any well-formed YouTrack id
+           is acceptable — but it MUST come back, and it must be the id that
+           appears in the tracker UI.
+        2. The optional fields the dispatcher's argv already passes: epic,
+           parent, labels, priority, story points, due date, assignee, fix
+           versions, components. Where YouTrack has no equivalent, REFUSE with
+           a named error rather than dropping the field silently — a dropped
+           parent is a ticket that never appears under its epic.
+        3. Status sync: the mapping is already overrideable per-worklist via
+           top-level `forecast.status_mapping` on the dispatcher side. Honour
+           it; do not hardcode a second mapping here.
+
+      Out of scope:
+        - Reading/forecasting (YT-READ).
+        - Command surface (YT-CMD).
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - Tests against recorded responses in testdata/; no network, no token.
+        - Creating an issue returns a non-empty key, and a seal asserts an
+          unsupported field produces a NAMED error rather than a successful
+          create with the field missing.
+        - Idempotence matches the Jira path's existing behaviour: the bridge
+          calls create only for rows with no key, and re-running must not
+          produce duplicates.
+    type: Task
+    estimate: 8h
+    labels: [size:L, area:tracker, risk:critical, phase:youtrack]
+    agent: grok
+    model: grok-4.6
+    effort: xhigh
+    role: bodies
+    blockedBy: [YT-SEALS, YT-CONFIG]
+    owns:
+      - internal/tracker/youtrack/**
+
+  - key: YT-WIRE
+    summary: 'bodies — the 14 client construction sites go through a tracker-aware factory'
+    description: |
+      LAW / contract first: YT-SCAFFOLD's interface; cmd/forecast/helpers.go
+      lines 59 and 71 (the two existing factories).
+
+      Scope:
+        1. `jira.NewClient` is constructed at 14 sites: cmd/forecast/init_cmd
+           (1), status_cmd (1), dashboard_cmd (4), helpers (2), sync_cmd (3),
+           jira_cmd (1), internal/web/handlers (2). Route every one through a
+           factory that returns the `Tracker` interface, selected by the
+           instance's kind from YT-CONFIG.
+        2. `helpers.go`'s two functions are the natural factory; the other 12
+           sites should end up calling them rather than constructing directly.
+        3. internal/web/handlers.go counts. A web dashboard that only ever
+           speaks Jira is the same bug in a place nobody greps.
+
+      Out of scope:
+        - Renaming any command (YT-CMD).
+        - Behaviour changes to any command's output.
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - `grep -rn "jira.NewClient" --include=*.go .` returns matches ONLY
+          inside the Jira implementation package and its tests. That count is
+          14 today; the seal asserts the number outside that package is zero.
+        - Every command that works against Jira today produces byte-identical
+          output afterwards for a Jira-configured fixture.
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:tracker, risk:high, phase:youtrack]
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    blockedBy: [YT-SEALS, YT-READ, YT-WRITE]
+    owns:
+      - cmd/forecast/**
+      - internal/web/**
+
+  - key: YT-CMD
+    summary: 'bodies — tracker-neutral commands, with `forecast jira create` preserved byte-for-byte'
+    description: |
+      LAW / contract first: the argv contract in this file's header, and
+      claude_dispatcher/src/claude_dispatcher/forecast_bridge.py
+      `build_create_argv` — read it before touching any flag name.
+
+      Scope:
+        1. Add a tracker-neutral surface (suggest `forecast issue create`,
+           `forecast issue sync`) that works against whichever tracker the
+           config selects.
+        2. KEEP `forecast jira create` WORKING, with the same flags and the
+           same output. It is not deprecated cosmetics — the dispatcher's
+           bridge builds that exact argv, so breaking it breaks every
+           dispatcher run that mints tickets, in a different repo, silently
+           until someone reads a run log.
+        3. `forecast jira ...` against a YouTrack-configured instance: decide
+           and state the behaviour. Refusing with a clear error is defensible;
+           silently creating a YouTrack issue under a command named `jira` is
+           not. Write the decision into the command's help text.
+
+      Out of scope:
+        - Removing anything. This epic adds a tracker; it retires nothing.
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - A seal that invokes the EXACT argv `build_create_argv` produces —
+          including `--config`, `--summary`, `--type`, and each optional flag
+          — against a fixture config, and asserts it still parses and still
+          creates. Copy the argv from the Python function; do not retype it.
+        - `forecast issue create` and `forecast jira create` produce the same
+          result against a Jira-configured instance.
+        - The YouTrack-under-`jira` behaviour from scope item 3 is asserted,
+          whichever way it was ruled.
+    type: Task
+    estimate: 6h
+    labels: [size:M, area:cli, risk:critical, phase:youtrack]
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    blockedBy: [YT-SEALS, YT-WIRE]
+    owns:
+      - cmd/forecast/**
+
+  - key: YT-ADJ
+    summary: 'adjudicate — rule the disputes, and prove one real YouTrack project end to end'
+    description: |
+      LAW / contract first: every acceptance block above.
+
+      Scope:
+        1. Rule any deviation the bodies rows recorded, in particular: the
+           `GetJIRAInstanceForKey` rename, custom-field mapping by name, and
+           the YouTrack-under-`jira` behaviour.
+        2. Prove it once against a REAL YouTrack project, by hand, off the
+           suite: create a ticket, read it back, forecast from its history.
+           Recorded fixtures cannot catch an auth-shape or pagination mistake,
+           which is exactly the class that survives a green unit suite.
+        3. Confirm the dispatcher side needs no change beyond selecting the
+           subcommand — and if it does, say precisely what, because that lands
+           in the other repo under its own review.
+
+      Out of scope:
+        - New features. This row rules and verifies.
+
+      Acceptance:
+        - `go build ./... && go vet ./... && go test ./... -race` green.
+        - A real YouTrack ticket created via `forecast`, its key recorded in
+          the summary, and a forecast produced from that project's history.
+        - Every deviation recorded by a bodies row is ruled explicitly:
+          accepted with a reason, or reverted.
+    type: Task
+    estimate: 3h
+    labels: [size:S, area:tracker, risk:high, phase:youtrack]
+    agent: claude
+    model: claude-fable-5-1
+    role: adjudicate
+    blockedBy: [YT-CMD]
+    disputed_paths:
+      - internal/tracker/**
+      - internal/config/**
+      - cmd/forecast/**

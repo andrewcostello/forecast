@@ -1,19 +1,17 @@
+# Revised plan: docs/plans/remaining-work.md is the entry point.
+# Exact previous worklist and runtime evidence: archive/tasks-before-redesign.yaml.
+# Budget/model pins and red-first protocol remain in force; see execution.md.
 project: forecast
-epic: Forecast dispatched agent work, not human tickets
+epic: dispatched-forecasting
 target_repo: forecast
-
+base_branch: feature/dispatched-forecasting-v2
+design: docs/plans/remaining-work.md
 tasks:
   - key: FC-GATE
     summary: gate — .dispatcher.yaml and .agent/risk-paths.json for forecast
     description: |
-      ALREADY DONE, HAND-EDITED. Exists so every other row can name it in
-      blockedBy, and so the run has a mechanical gate at all.
-
-      forecast is ONE Go module at the repo root, and unlike claude-workflow
-      the compiled binary is gitignored rather than tracked. Both of
-      claude-workflow's deliberate gate omissions are therefore unnecessary
-      here: `go build` does not dirty the worktree, and `go vet` was measured
-      green on a clean baseline. The gate runs build, vet and `test -race`.
+      Shared Go build/vet/race gate with go-skip known-red support is committed
+      on main at 1c6985f. Preserve it. This prerequisite is already Done.
     type: Task
     estimate: 1h
     labels:
@@ -26,71 +24,32 @@ tasks:
     role: scaffold
     status: Done
     blockedBy: []
-
   - key: FC-SCAFFOLD
-    summary: scaffold — the dispatched-observation contract and its two interfaces
+    summary: scaffold — amend the observation and source contracts
     description: |
-      CONTRACT ONLY. Write the skeleton that FC-1 through FC-4 fill. Do not
-      implement extraction, sampling or simulation in this row.
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      Read `docs/TASK-ASSIGNMENT-dispatched-forecasting.md` first — it carries
-      the operator's rulings, the measured facts, and the full breakdown. Read
-      `docs/BRIEF-dispatched-work-forecasting.md` for why the current model is
-      wrong.
+      F1-F4. Reuse the reviewed FC-1 baseline; do not restart extraction from scratch.
+      Define AttemptID(run,key,start), evidence provenance/precedence, classified
+      wall intervals, unknown measurements, and COMPLETE/PARTIAL/EMPTY source states.
+      Move journal parsing/state into journal.go, filesystem/Git reads into sources.go,
+      and evidence joining into evidence.go, preserving baseline behavior until bodies.
+      Keep referenceclass.go and build.go as the FC-1 join/coverage boundary. Freeze
+      explicit source roots/refs, cutoff/holdout selection, and bounded-byte controls.
+      Publish a named behavior/example table for every F1-F4 refusal and reconciliation.
+      The old cross-run dedupe and faithful-copy timing rules are explicitly superseded.
 
-      Create `internal/dispatched/` holding:
-
-      1. The record type for one observed dispatched row. It MUST be able to
-         distinguish a completed duration from a lower bound, carry a terminal
-         outcome as a closed set, carry the bucket key (role, model) using the
-         STAMPED model rather than the authored one, carry round count, and
-         carry provenance (which run, which source revision).
-
-      2. A reference-class interface that can answer "how many observations in
-         this cell" for a cell it has NONE of. A cell absent from a map is NOT
-         the same as a cell with n=0; the operator has ruled that empty cells
-         are reported rather than predicted, and that ruling is unimplementable
-         if the two are indistinguishable. This is the single most important
-         property of this contract.
-
-      3. A scheduler interface taking a dependency graph and a concurrency cap
-         and returning a completion time plus the critical path. Signature
-         only — FC-2 implements it, under differential testing.
-
-      4. Sentinel errors, wrapped with %w. At minimum: a row that cannot be
-         attributed to a cell, and a source revision that cannot be parsed. An
-         error a caller cannot match on with errors.Is is an error the coverage
-         report cannot classify.
-
-      THE RULE THIS ROW MOST LIKELY BREAKS — read claude-workflow's CLAUDE.md
-      section "A CONTRACT STATES RULES. IT DOES NOT REPORT MEASUREMENTS." That
-      repo spent 15 cross-family panel rounds and $73 learning it, on scaffolds
-      shaped exactly like this one.
-
-      It will be tempting to write into this contract that `bodies` and
-      `adjudicate` have no observations, that the reference class holds about
-      40 rows, or that 47% of the wallet run is uncovered. Every one of those
-      is TRUE TODAY AND FALSE after the next dispatcher run. They are
-      measurements. They belong in the assignment doc, where they already are,
-      and in tests, where they fail loudly. Not here.
-
-      The test: if someone fixed the defect this contract describes, would any
-      sentence in it become false? If yes, that sentence is a measurement.
-
-      Comments state purpose and non-obvious constraints. Rationale goes in the
-      commit message. The settled modules in these repos run about 0.5:1
-      prose-to-code; agent-written ones have hit 4.3:1 and it is paid by every
-      later agent.
-
-      DONE MEANS: the package compiles, the gate is green, the interfaces have
-      godoc stating rules only, and there is at least one test asserting that a
-      zero-observation cell is representable and distinguishable from an absent
-      one.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
     type: Task
-    estimate: 3h
+    estimate: 4h
     labels:
       - size:M
       - area:forecasting
+      - risk:high
+      - phase:dispatched
     agent: claude
     model: claude-fable-5-1
     effort: high
@@ -98,226 +57,681 @@ tasks:
     status: To Do
     blockedBy:
       - FC-GATE
-
-  - key: FC-1
-    summary: bodies — extraction, union reference class, coverage report
+    owns:
+      - internal/dispatched/observation.go
+      - internal/dispatched/referenceclass.go
+      - internal/dispatched/extract.go
+      - internal/dispatched/journal.go
+      - internal/dispatched/sources.go
+      - internal/dispatched/evidence.go
+      - internal/dispatched/errors.go
+      - internal/dispatched/build.go
+      - features/dispatched-forecasting/notes/FC-SCAFFOLD.md
+    prior_evidence:
+      implementation_head: 2604bb5
+      baseline_head: d529265
+      previous_worklist: archive/tasks-before-redesign.yaml
+      reopened_for: contract amendments, not a claim that old review passed
+  - key: FC-SEALS
+    summary: seals — seal evidence, real event order, and source completeness
     description: |
-      Build the reference class from every recoverable dispatched row, and
-      report what it does and does NOT cover. A prediction is NOT in scope for
-      this row.
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      Fill the contract from FC-SCAFFOLD. Read
-      `docs/TASK-ASSIGNMENT-dispatched-forecasting.md` section "FC-1" — it
-      lists nine edge cases, each of which needs explicit handling AND a test.
-      They are not optional and they are not a suggestion; several encode
-      operator rulings.
+      F1-F4. Test exact/offset-equivalent starts; same key/time across DIFFERENT runs;
+      ambiguous identical starts; stale starts; missing run/key; conflicting authoritative
+      readings; deterministic evidence ties; hand-finished limitation through Build.
+      Use the actual convergence journal ordering, including panel-iterate emitted AFTER
+      spawn completion. Assert no silent overlapping wall-time parts and preserve usable
+      elapsed when a breakdown is unknown. Exercise missing/empty/unreadable sources,
+      explicit multiple roots, superseded merge history, shallow/replaced history,
+      Git environment poisoning, byte/commit bounds, cancellation during reads,
+      per-source counters, and holdout exclusion before both live/history joins.
+      CLI cases cover missing explicit repos, empty/malformed targets, missing flags,
+      partial/empty corpus refusal and data errors without usage spam.
+      Amend legacy tests only for explicit F1/F2 contract changes. Put temporarily
+      red amended cases under the registered owner group (e.g. TestFCEvidenceContract
+      subtests), so unrelated bodies do not inherit unnamed known-red failures.
+      Preserve all unaffected regression assertions.
 
-      SOURCES, and each holds something the others do not:
-        - ~/Project/dispatcher-runs/*/journal.jsonl — per-event timestamps,
-          stamped model, labels, rounds, cost, tokens. Carries NO role field.
-        - ~/Project/claude-workflow/features/**/*.yaml at HEAD — role,
-          started_at, completed_at, iteration_count, dispatcher_run_id.
-        - the same files at every revision in that repo's git history —
-          recovers rows since overwritten by a re-run.
-      Join on dispatcher_run_id + task key. Take the UNION of the two YAML
-      sources; neither is a superset of the other.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 5h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: grok
+    model: grok-4.6
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - FC-SCAFFOLD
+    owns:
+      - internal/dispatched/*_test.go
+      - internal/dispatched/testdata/**
+      - cmd/forecast/dispatched_reference_cmd_test.go
+      - cmd/forecast/testdata/dispatched/**
+      - features/dispatched-forecasting/notes/FC-SEALS.md
+    seal_groups:
+      - TestFCJournalContract
+      - TestFCSourcesContract
+      - TestFCEvidenceContract
+      - TestFCReferenceCLIContract
+  - key: FC-JOURNAL
+    summary: bodies — normalize journal attempts and non-overlapping time evidence
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      REUSE, DO NOT REWRITE: port
-      ~/Project/claude-workflow/features/model-matrix/report.py, function
-      journal_facts(). It already computes the dev/review split, round count
-      and token totals per row, and is known to work.
+      F1-F2. Implement the frozen attempt/event reducer. Respect producer ordering,
+      separate correction counts from review counts, and retain event provenance.
+      Known elapsed must survive unknown finer phases. Distinguish null cost from
+      measured zero and exclude censored elapsed from completed-duration samples.
+      Prove TestFCJournalContract against recorded production-order fixtures.
 
-      THE TWO OPERATOR RULINGS THIS ROW IMPLEMENTS:
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-JOURNAL.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-SEALS
+    owns:
+      - internal/dispatched/journal.go
+      - features/dispatched-forecasting/notes/FC-JOURNAL.md
+  - key: FC-SOURCES
+    summary: bodies — read explicit bounded sources and report completeness
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      1. EMPTY CELLS ARE REPORTED, NOT PREDICTED. A (role, model) cell with no
-         observations must appear in the output with n=0. Never substitute a
-         default distribution, never back off to a pooled bucket, never omit
-         it. `estimateDistribution` in internal/montecarlo/simulator.go is the
-         anti-pattern — it invents a number when data is missing, and that is
-         precisely the failure being removed.
+      F3. Implement explicit repositories/roots and resolved refs, full reachable
+      history, strict discovery errors, partial/empty diagnostics, byte/commit bounds
+      and in-flight cancellation. Isolate Git directory overrides. Stream blobs.
+      Exclude holdout/cutoff evidence at the source boundary; identify every requested
+      source and every examined record's disposition. Prove TestFCSourcesContract.
 
-      2. BLOCKED ROWS ARE RIGHT-CENSORED. A blocked row's elapsed time is a
-         LOWER BOUND. It is recorded, it is counted, and it NEVER enters a
-         duration mean. A row that burned eight rounds and produced nothing
-         must never surface as a fast row. Write a test that FAILS if a
-         censored row's elapsed time reaches a mean — this rule is easy to
-         write, easy to drop in a later refactor, and its failure is silent.
-
-      OUTPUT: `forecast dispatched-reference build --runs-dir … --out …`, plus
-      a coverage report that is this row's actual deliverable. Per (role,
-      model): n_done, n_blocked, n_censored, duration summary, rounds. Then:
-      which cells a named tasks YAML requires and which of those are empty; the
-      share of target rows in a covered cell; and rows recovered vs rows
-      started, with the shortfall named rather than dropped.
-
-      Expect the honest headline to be that a large share of the target run
-      cannot be predicted from data that exists. That is the answer, not a
-      failure of the row — do not tune, pool or default your way to a fuller
-      table.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SOURCES.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
     type: Task
     estimate: 4h
     labels:
       - size:M
       - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-SEALS
+    owns:
+      - internal/dispatched/sources.go
+      - features/dispatched-forecasting/notes/FC-SOURCES.md
+  - key: FC-1
+    summary: bodies — reconcile corrected extraction and coverage
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F1-F4. Integrate the corrected journal and source readers into the existing CLI.
+      Join by AttemptID, keep field evidence, and reconcile rows, attempts and readings
+      without merging different runs or hiding unmatched siblings. Deterministic
+      source/terminal precedence; no independent-max fabricated observation.
+      Require explicit repos, validate targets, retain coverage-only output, and deny
+      prediction gates on partial/empty evidence or insufficient completed cells.
+      Remove stale unreachable report claims. Prove TestFCEvidenceContract and
+      TestFCReferenceCLIContract. Rebuild the real manifest-based coverage report.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-1.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
     agent: codex
     model: gpt-5.6-sol
     effort: high
     role: bodies
     status: To Do
     blockedBy:
-      - FC-SCAFFOLD
+      - FC-SEALS
+      - FC-JOURNAL
+      - FC-SOURCES
+    owns:
+      - internal/dispatched/evidence.go
+      - internal/dispatched/referenceclass.go
+      - internal/dispatched/build.go
+      - cmd/forecast/dispatched_reference_cmd.go
+      - docs/COMMAND_REFERENCE.md
+      - features/dispatched-forecasting/notes/FC-1.md
+    prior_evidence:
+      reviewed_head: d529265
+      verdict: Blocked
+      panel_path: ../dispatcher-runs/2026-09-04T22-34-59Z-FC-1-panel/panel.json
+      previous_worklist: archive/tasks-before-redesign.yaml
+      reopened_for: bounded integration after the new journal/source bodies; previous failures remain archived
+  - key: FC-OBS-ADJ
+    summary: adjudicate — rule observation corrections and read the actual coverage report
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
+      F1-F4. Rule all FC-1 panel findings via docs/plans/traceability.md and all new
+      deviations. Run all observation seal groups without exclusions, the full Go gate,
+      and a pinned-head cross-family panel. Retain >=80% observation/extraction
+      statement coverage and typed errors; measure on this corrected head. Reproduce the manifest-based real-data
+      report and record which target cells remain uncovered. Reading this report
+      releases synthetic scheduler work; it does not declare prediction data sufficient.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-OBS-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: adjudicate
+    status: To Do
+    blockedBy:
+      - FC-1
+    owns:
+      - docs/plans/forecasting-contracts.md
+      - internal/dispatched/observation.go
+      - features/dispatched-forecasting/notes/FC-OBS-ADJ.md
+    disputed_paths:
+      - docs/plans/forecasting-contracts.md
+      - internal/dispatched/observation.go
+      - features/dispatched-forecasting/notes/FC-OBS-ADJ.md
+  - key: FC-SCHED-SCAFFOLD
+    summary: scaffold — freeze deterministic scheduling and causal resource waits
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F5. Define sampled-duration input, start/finish trace, dependency path, and execution
+      chain with resource edges. Fix ready ordering, simultaneous completions, zero-time
+      work, duplicate dependency normalization, validation precedence and overflow.
+      Name one canonical fixture format and an independent small-graph oracle.
+      Both arms expose the same interface in separate packages; no shared algorithm.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SCHED-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: scaffold
+    status: To Do
+    blockedBy:
+      - FC-OBS-ADJ
+    owns:
+      - internal/dispatched/scheduler.go
+      - internal/dispatched/scheduler_errors.go
+      - internal/dispatched/schedulea/scheduler.go
+      - internal/dispatched/scheduleb/scheduler.go
+      - features/dispatched-forecasting/notes/FC-SCHED-SCAFFOLD.md
+  - key: FC-SCHED-SEALS
+    summary: seals — seal the frozen schedule with independent oracles
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F5. The same external vectors exercise each arm independently. Include cap=1
+      independent A=2/B=3 yielding makespan 5 and a resource-containing execution chain;
+      forks/joins, zero durations, same-time completions, reordered declarations,
+      invalid graphs with multiple errors, cap>N and overflow. Assert full schedules
+      and both path kinds, not only makespan. Bound generated small-DAG oracle cases.
+      Freeze the differential corpus before either arm implements.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SCHED-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - FC-SCHED-SCAFFOLD
+    owns:
+      - internal/dispatched/scheduler_contract_test.go
+      - internal/dispatched/testdata/scheduler/**
+      - features/dispatched-forecasting/notes/FC-SCHED-SEALS.md
+    seal_groups:
+      - TestFCScheduleAContract
+      - TestFCScheduleBContract
   - key: FC-2A
-    summary: bodies — critical path under a concurrency cap (differential arm A)
+    summary: bodies — independent scheduler arm A
     description: |
-      HELD. Not dispatched until FC-1's coverage report is read.
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      Implement the scheduler interface from FC-SCAFFOLD: given a dependency
-      graph and a concurrency cap, sample a duration per row and return the
-      completion time plus the critical path.
+      F5. Implement deterministic scheduling from the frozen contract and external
+      fixtures. Input durations are already sampled; no RNG or reference-class access.
+      Use only arm A files. Do not inspect arm B's code, traces or reasoning.
+      Pass TestFCScheduleAContract. Do not tune to another implementation's output.
 
-      This row is one of two INDEPENDENT implementations of the same spec.
-      Longest-path-under-a-cap has no reference implementation in this repo,
-      and one agent writing both versions produces correlated code in which the
-      same off-by-one survives and the agreement property passes vacuously.
-
-      A DISAGREEMENT BETWEEN THE ARMS IS AN ESCALATION, NOT AN ITERATION. Two
-      independent implementations of one spec disagreeing means the spec is
-      ambiguous at that input. Record the divergent input and escalate for a
-      spec decision. Finding it here is this protocol's highest-value output.
-
-      Read blockedBy from the tasks YAML rather than re-deriving waves.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-2A.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
     type: Task
     estimate: 4h
     labels:
-      - size:L
+      - size:M
       - area:forecasting
-      - differential
+      - risk:high
+      - phase:dispatched
     agent: codex
     model: gpt-5.6-sol
     effort: high
     role: bodies
     status: To Do
     blockedBy:
-      - FC-SCAFFOLD
-
+      - FC-SCHED-SEALS
+    owns:
+      - internal/dispatched/schedulea/scheduler.go
+      - features/dispatched-forecasting/notes/FC-2A.md
   - key: FC-2B
-    summary: bodies — critical path under a concurrency cap (differential arm B)
+    summary: bodies — independent scheduler arm B
     description: |
-      HELD. Not dispatched until FC-1's coverage report is read.
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      Implement the scheduler interface from FC-SCAFFOLD: given a dependency
-      graph and a concurrency cap, sample a duration per row and return the
-      completion time plus the critical path.
+      F5. Implement deterministic scheduling from the frozen contract and external
+      fixtures. Input durations are already sampled; no RNG or reference-class access.
+      Use only arm B files. Do not inspect arm A's code, traces or reasoning.
+      Pass TestFCScheduleBContract. Do not tune to another implementation's output.
 
-      This row is one of two INDEPENDENT implementations of the same spec.
-      Longest-path-under-a-cap has no reference implementation in this repo,
-      and one agent writing both versions produces correlated code in which the
-      same off-by-one survives and the agreement property passes vacuously.
-
-      A DISAGREEMENT BETWEEN THE ARMS IS AN ESCALATION, NOT AN ITERATION. Two
-      independent implementations of one spec disagreeing means the spec is
-      ambiguous at that input. Record the divergent input and escalate for a
-      spec decision. Finding it here is this protocol's highest-value output.
-
-      Read blockedBy from the tasks YAML rather than re-deriving waves.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-2B.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
     type: Task
     estimate: 4h
     labels:
-      - size:L
+      - size:M
       - area:forecasting
-      - differential
+      - risk:high
+      - phase:dispatched
     agent: grok
     model: grok-4.6
     effort: high
     role: bodies
     status: To Do
     blockedBy:
-      - FC-SCAFFOLD
-
-  - key: FC-3
-    summary: bodies — round/review-time model and empirical bootstrap sampling
+      - FC-SCHED-SEALS
+    owns:
+      - internal/dispatched/scheduleb/scheduler.go
+      - features/dispatched-forecasting/notes/FC-2B.md
+  - key: FC-SCHED-ADJ
+    summary: adjudicate — compare both scheduler arms and rule disagreements
     description: |
-      HELD. Not dispatched until FC-1's coverage report is read.
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      Model row_wall_clock = dev + (rounds x review_per_round), sampling rounds
-      per (role, model) cell from history rather than treating them as
-      constant. Review was measured at 27-50% of wall clock and is charged per
-      round by three reviewer seats whichever model implements, so round count
-      is the dominant cost driver and it is a random variable.
+      F5. Run both full seal groups without exclusions, compare complete schedules on
+      the frozen/generated corpus, and minimize every divergent input. A disagreement
+      is an escalation, not permission to make one arm copy the other. Rule the spec
+      first and require new seals/corrective bodies if needed. Select and document
+      the production adapter only after agreement; retain the other as the oracle arm.
 
-      This is what makes "a cheaper model that needs more rounds" comparable to
-      "an expensive one that needs fewer" — a question the current model cannot
-      express.
-
-      Replace the normal-plus-clamp with an empirical bootstrap: resample
-      observed durations directly. The clamp at
-      internal/montecarlo/simulator.go:100 is the tell that the distribution is
-      wrong — durations are right-skewed and strictly positive, so a normal
-      puts mass below zero and the code truncates it. A resample makes the
-      clamp disappear. Fall back to log-normal only where a cell is too thin to
-      resample, and say so in the output.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SCHED-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
     type: Task
     estimate: 3h
     labels:
       - size:M
       - area:forecasting
-    agent: codex
-    model: gpt-5.6-sol
+      - risk:high
+      - phase:dispatched
+    agent: claude
+    model: claude-fable-5-1
     effort: high
-    role: bodies
-    status: To Do
-    blockedBy:
-      - FC-1
-
-  - key: FC-4
-    summary: bodies — dispatched-predict CLI, percentiles and critical path
-    description: |
-      HELD. Not dispatched until FC-1's coverage report is read.
-
-      `forecast dispatched-predict --tasks … --reference … --max-parallel N
-      --iterations N`, emitting p50/p80/p95 wall clock and cost.
-
-      Emit the CRITICAL PATH, naming the rows on it. A p95 nobody can shorten
-      is a number; a p95 plus the chain of rows that produce it is a plan, and
-      the plan is the deliverable.
-
-      State the honest limits in the output rather than burying them: which
-      cells were empty, that n per cell is small, that blocked rows are
-      censored lower bounds, and that rows finished by hand after blocking are
-      invisible to the data and are not agent throughput.
-    type: Task
-    estimate: 3h
-    labels:
-      - size:M
-      - area:forecasting
-    agent: codex
-    model: gpt-5.6-sol
-    effort: high
-    role: bodies
+    role: adjudicate
     status: To Do
     blockedBy:
       - FC-2A
       - FC-2B
-      - FC-3
-
-  - key: FC-ADJ
-    summary: adjudicate — validate against a held-out run, land or refuse
+    owns:
+      - internal/dispatched/scheduler.go
+      - internal/dispatched/testdata/scheduler/**
+      - features/dispatched-forecasting/notes/FC-SCHED-ADJ.md
+    disputed_paths:
+      - internal/dispatched/scheduler.go
+      - internal/dispatched/testdata/scheduler/**
+      - features/dispatched-forecasting/notes/FC-SCHED-ADJ.md
+  - key: FC-SAMPLE-SCAFFOLD
+    summary: scaffold — freeze joint resampling and prediction eligibility
     description: |
-      HELD. Terminal row.
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
 
-      Hold a run out. Build the reference class from the dogfood-go and
-      model-matrix runs, predict the wallet run, and compare when it lands.
+      F4/F6. Define seeded joint draws from completed attempts, evidence eligibility,
+      separate cost availability, and conditional-completion semantics. Preserve
+      elapsed/rounds/available phases/cost associations. No log-normal fallback,
+      pooled alias, independent rounds multiplier or censored-duration sample.
+      Define insufficient/partial evidence errors and reproducibility conventions.
 
-      IF THE p80 DOES NOT CONTAIN THE OUTCOME, SAY SO. Do not tune until it
-      does. A forecaster that was fitted to the run it predicts has measured
-      nothing, and the whole point of holding a run out is to be able to be
-      wrong in public.
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SAMPLE-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
     type: Task
-    estimate: 2h
+    estimate: 3h
     labels:
       - size:M
       - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: scaffold
+    status: To Do
+    blockedBy:
+      - FC-OBS-ADJ
+    owns:
+      - internal/dispatched/sampling.go
+      - internal/dispatched/sampling_errors.go
+      - features/dispatched-forecasting/notes/FC-SAMPLE-SCAFFOLD.md
+  - key: FC-SAMPLE-SEALS
+    summary: seals — seal joint samples, sparse cells and missing cost
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F4/F6. Use paired extreme observations so independent time/round draws invent
+      impossible tuples and fail. Seal seeded reproducibility, empty/one-sample cells,
+      blocked-only cells, exact model names, partial source evidence, zero vs unknown
+      cost, and known elapsed with unavailable phase breakdown. Reported conditional
+      semantics and blocked/completed counts must survive serialization.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SAMPLE-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: grok
+    model: grok-4.6
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - FC-SAMPLE-SCAFFOLD
+    owns:
+      - internal/dispatched/sampling_contract_test.go
+      - internal/dispatched/testdata/sampling/**
+      - features/dispatched-forecasting/notes/FC-SAMPLE-SEALS.md
+    seal_groups:
+      - TestFCSamplingContract
+  - key: FC-3
+    summary: bodies — joint empirical sampling with explicit unavailable results
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F4/F6. Implement the frozen joint bootstrap. Derive no duration distribution
+      for an ineligible cell. Preserve per-draw dependencies and explicit cost
+      unavailability. Rounds are observed attributes, not an independently multiplied
+      time term. Pass TestFCSamplingContract; the original log-normal fallback is removed.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-3.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-SAMPLE-SEALS
+    owns:
+      - internal/dispatched/sampling.go
+      - features/dispatched-forecasting/notes/FC-3.md
+  - key: FC-SAMPLE-ADJ
+    summary: adjudicate — rule sampling behavior and evidence limits
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F4/F6. Run sampling seals without exclusions and review synthetic counterexamples
+      plus real evidence coverage. Verify no implicit unconditional completion promise
+      and no hidden defaults. Record cost and phase limitations explicitly.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-SAMPLE-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: adjudicate
+    status: To Do
+    blockedBy:
+      - FC-3
+    owns:
+      - internal/dispatched/sampling.go
+      - features/dispatched-forecasting/notes/FC-SAMPLE-ADJ.md
+    disputed_paths:
+      - internal/dispatched/sampling.go
+      - features/dispatched-forecasting/notes/FC-SAMPLE-ADJ.md
+  - key: FC-PREDICT-SCAFFOLD
+    summary: scaffold — freeze CLI, quantile explanations and holdout protocol
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F6. Freeze artifact validation, seeded scheduler/sampler composition, units and
+      quantile convention, coverage-only errors, and a representative iteration for
+      each reported percentile's execution chain. Define training/holdout manifest,
+      excluded run IDs, pre-run target snapshot, cutoff and comparison record before
+      any evaluation. Do not let observed target outcomes determine training choices.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-PREDICT-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: scaffold
+    status: To Do
+    blockedBy:
+      - FC-SCHED-ADJ
+      - FC-SAMPLE-ADJ
+    owns:
+      - internal/dispatched/predict.go
+      - cmd/forecast/dispatched_predict_cmd.go
+      - features/dispatched-forecasting/notes/FC-PREDICT-SCAFFOLD.md
+  - key: FC-PREDICT-SEALS
+    summary: seals — seal end-to-end predictions and holdout isolation
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F6. Execute the CLI off local fixtures. Assert reproducible distributions, valid
+      representative chains, correct cap scheduling, explicit unsupported artifact
+      version, partial/empty evidence refusal, cost unavailability, and no usage spam
+      on data failures. Poison held-out live AND historical records with extreme values;
+      training samples and output must not change. Assert the target graph/pins are
+      pre-run evidence and a blocked holdout never becomes a completed sample.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-PREDICT-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - FC-PREDICT-SCAFFOLD
+    owns:
+      - internal/dispatched/predict_contract_test.go
+      - cmd/forecast/dispatched_predict_cmd_test.go
+      - internal/dispatched/testdata/predict/**
+      - cmd/forecast/testdata/predict/**
+      - features/dispatched-forecasting/notes/FC-PREDICT-SEALS.md
+    seal_groups:
+      - TestFCPredictContract
+      - TestFCHoldoutContract
+  - key: FC-4
+    summary: bodies — compose prediction CLI and honest percentile explanations
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F6. Wire validated reference artifacts, joint sampler and adjudicated scheduler.
+      Emit time percentiles, available cost results, conditional semantics, coverage,
+      manifest/seed/config and representative schedule explanations. Implement holdout
+      selection/comparison exactly as frozen. Pass TestFCPredictContract and
+      TestFCHoldoutContract; no new fitting or fallback rules in the CLI.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-4.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-PREDICT-SEALS
+    owns:
+      - internal/dispatched/predict.go
+      - cmd/forecast/dispatched_predict_cmd.go
+      - cmd/forecast/main.go
+      - features/dispatched-forecasting/notes/FC-4.md
+  - key: FC-ADJ
+    summary: adjudicate — validate the complete forecasting epic on held-out evidence
+    description: |
+      Read docs/plans/forecasting-contracts.md and docs/plans/execution.md first.
+
+      F1-F6. Run all FC seals without exclusions and the full build/vet/race gate.
+      Verify every earlier deviation has a disposition and the baseline ingest code
+      was not quietly modified. Run the predeclared holdout protocol; report actual
+      versus upper p80 without tuning, or keep live validation Blocked if trustworthy
+      held-out completion/evidence is unavailable. One run is not calibration proof.
+      Save the final integrated diff, manifest, reports and head-pinned panel verdict.
+
+      Record evidence and deviations in features/dispatched-forecasting/notes/FC-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+      - risk:high
+      - phase:dispatched
     agent: claude
     model: claude-fable-5-1
     effort: high
@@ -325,3 +739,13 @@ tasks:
     status: To Do
     blockedBy:
       - FC-4
+    owns:
+      - docs/plans/forecasting-contracts.md
+      - docs/plans/traceability.md
+      - internal/dispatched/predict.go
+      - features/dispatched-forecasting/notes/FC-ADJ.md
+    disputed_paths:
+      - docs/plans/forecasting-contracts.md
+      - docs/plans/traceability.md
+      - internal/dispatched/predict.go
+      - features/dispatched-forecasting/notes/FC-ADJ.md

@@ -1,0 +1,99 @@
+# Plan-author reservations for new, uniquely named contract test groups.
+# No existing tests match these names. Seal authors prove redness; bodies cannot
+# edit this file. Ordinary go test still runs everything. See execution.md.
+entries:
+  - rows:
+      - TestFCJournalContract
+    seals_task: FC-SEALS
+    body_task: FC-JOURNAL
+    reason: 'Plan-authored reservation for FC-SEALS: new contract group for FC-JOURNAL; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCSourcesContract
+    seals_task: FC-SEALS
+    body_task: FC-SOURCES
+    reason: 'Plan-authored reservation for FC-SEALS: new contract group for FC-SOURCES; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCEvidenceContract
+    seals_task: FC-SEALS
+    body_task: FC-1
+    reason: 'Plan-authored reservation for FC-SEALS: new contract group for FC-1; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCReferenceCLIContract
+    seals_task: FC-SEALS
+    body_task: FC-1
+    reason: 'Plan-authored reservation for FC-SEALS: new contract group for FC-1; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCScheduleAContract
+    seals_task: FC-SCHED-SEALS
+    body_task: FC-2A
+    reason: 'Plan-authored reservation for FC-SCHED-SEALS: new contract group for FC-2A; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCScheduleBContract
+    seals_task: FC-SCHED-SEALS
+    body_task: FC-2B
+    reason: 'Plan-authored reservation for FC-SCHED-SEALS: new contract group for FC-2B; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCSamplingContract
+    seals_task: FC-SAMPLE-SEALS
+    body_task: FC-3
+    reason: 'Plan-authored reservation for FC-SAMPLE-SEALS: new contract group for FC-3; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCPredictContract
+    seals_task: FC-PREDICT-SEALS
+    body_task: FC-4
+    reason: 'Plan-authored reservation for FC-PREDICT-SEALS: new contract group for FC-4; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestFCHoldoutContract
+    seals_task: FC-PREDICT-SEALS
+    body_task: FC-4
+    reason: 'Plan-authored reservation for FC-PREDICT-SEALS: new contract group for FC-4; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTJiraAdapterContract
+    seals_task: YT-SEALS
+    body_task: YT-JIRA
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-JIRA; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTConfigContract
+    seals_task: YT-SEALS
+    body_task: YT-CONFIG
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-CONFIG; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTTransportContract
+    seals_task: YT-SEALS
+    body_task: YT-TRANSPORT
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-TRANSPORT; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTHistoryContract
+    seals_task: YT-SEALS
+    body_task: YT-HISTORY
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-HISTORY; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTReadContract
+    seals_task: YT-SEALS
+    body_task: YT-READ
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-READ; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTCreateContract
+    seals_task: YT-SEALS
+    body_task: YT-WRITE
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-WRITE; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTTransitionContract
+    seals_task: YT-SEALS
+    body_task: YT-TRANSITION
+    reason: 'Plan-authored reservation for YT-SEALS: new contract group for YT-TRANSITION; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTCLIRoutingContract
+    seals_task: YT-WIRE-SEALS
+    body_task: YT-WIRE
+    reason: 'Plan-authored reservation for YT-WIRE-SEALS: new contract group for YT-WIRE; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTWebRoutingContract
+    seals_task: YT-WIRE-SEALS
+    body_task: YT-WIRE-WEB
+    reason: 'Plan-authored reservation for YT-WIRE-SEALS: new contract group for YT-WIRE-WEB; seal phase must prove red before implementation. No existing test names are suppressed.'
+  - rows:
+      - TestYTNeutralCLIContract
+    seals_task: YT-CMD-SEALS
+    body_task: YT-CMD
+    reason: 'Plan-authored reservation for YT-CMD-SEALS: new contract group for YT-CMD; seal phase must prove red before implementation. No existing test names are suppressed.'

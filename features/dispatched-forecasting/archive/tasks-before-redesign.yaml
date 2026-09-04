@@ -1,0 +1,337 @@
+project: forecast
+epic: Forecast dispatched agent work, not human tickets
+target_repo: forecast
+
+tasks:
+  - key: FC-GATE
+    summary: gate — .dispatcher.yaml and .agent/risk-paths.json for forecast
+    description: |
+      ALREADY DONE, HAND-EDITED. Exists so every other row can name it in
+      blockedBy, and so the run has a mechanical gate at all.
+
+      forecast is ONE Go module at the repo root, and unlike claude-workflow
+      the compiled binary is gitignored rather than tracked. Both of
+      claude-workflow's deliberate gate omissions are therefore unnecessary
+      here: `go build` does not dirty the worktree, and `go vet` was measured
+      green on a clean baseline. The gate runs build, vet and `test -race`.
+    type: Task
+    estimate: 1h
+    labels:
+      - size:S
+      - area:tooling
+      - prerequisite
+    agent: claude
+    model: claude-opus-5
+    effort: high
+    role: scaffold
+    status: Done
+    blockedBy: []
+
+  - key: FC-SCAFFOLD
+    summary: scaffold — the dispatched-observation contract and its two interfaces
+    description: |
+      CONTRACT ONLY. Write the skeleton that FC-1 through FC-4 fill. Do not
+      implement extraction, sampling or simulation in this row.
+
+      Read `docs/TASK-ASSIGNMENT-dispatched-forecasting.md` first — it carries
+      the operator's rulings, the measured facts, and the full breakdown. Read
+      `docs/BRIEF-dispatched-work-forecasting.md` for why the current model is
+      wrong.
+
+      Create `internal/dispatched/` holding:
+
+      1. The record type for one observed dispatched row. It MUST be able to
+         distinguish a completed duration from a lower bound, carry a terminal
+         outcome as a closed set, carry the bucket key (role, model) using the
+         STAMPED model rather than the authored one, carry round count, and
+         carry provenance (which run, which source revision).
+
+      2. A reference-class interface that can answer "how many observations in
+         this cell" for a cell it has NONE of. A cell absent from a map is NOT
+         the same as a cell with n=0; the operator has ruled that empty cells
+         are reported rather than predicted, and that ruling is unimplementable
+         if the two are indistinguishable. This is the single most important
+         property of this contract.
+
+      3. A scheduler interface taking a dependency graph and a concurrency cap
+         and returning a completion time plus the critical path. Signature
+         only — FC-2 implements it, under differential testing.
+
+      4. Sentinel errors, wrapped with %w. At minimum: a row that cannot be
+         attributed to a cell, and a source revision that cannot be parsed. An
+         error a caller cannot match on with errors.Is is an error the coverage
+         report cannot classify.
+
+      THE RULE THIS ROW MOST LIKELY BREAKS — read claude-workflow's CLAUDE.md
+      section "A CONTRACT STATES RULES. IT DOES NOT REPORT MEASUREMENTS." That
+      repo spent 15 cross-family panel rounds and $73 learning it, on scaffolds
+      shaped exactly like this one.
+
+      It will be tempting to write into this contract that `bodies` and
+      `adjudicate` have no observations, that the reference class holds about
+      40 rows, or that 47% of the wallet run is uncovered. Every one of those
+      is TRUE TODAY AND FALSE after the next dispatcher run. They are
+      measurements. They belong in the assignment doc, where they already are,
+      and in tests, where they fail loudly. Not here.
+
+      The test: if someone fixed the defect this contract describes, would any
+      sentence in it become false? If yes, that sentence is a measurement.
+
+      Comments state purpose and non-obvious constraints. Rationale goes in the
+      commit message. The settled modules in these repos run about 0.5:1
+      prose-to-code; agent-written ones have hit 4.3:1 and it is paid by every
+      later agent.
+
+      DONE MEANS: the package compiles, the gate is green, the interfaces have
+      godoc stating rules only, and there is at least one test asserting that a
+      zero-observation cell is representable and distinguishable from an absent
+      one.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: scaffold
+    status: To Do
+    blockedBy:
+      - FC-GATE
+
+  - key: FC-1
+    summary: bodies — extraction, union reference class, coverage report
+    description: |
+      Build the reference class from every recoverable dispatched row, and
+      report what it does and does NOT cover. A prediction is NOT in scope for
+      this row.
+
+      Fill the contract from FC-SCAFFOLD. Read
+      `docs/TASK-ASSIGNMENT-dispatched-forecasting.md` section "FC-1" — it
+      lists nine edge cases, each of which needs explicit handling AND a test.
+      They are not optional and they are not a suggestion; several encode
+      operator rulings.
+
+      SOURCES, and each holds something the others do not:
+        - ~/Project/dispatcher-runs/*/journal.jsonl — per-event timestamps,
+          stamped model, labels, rounds, cost, tokens. Carries NO role field.
+        - ~/Project/claude-workflow/features/**/*.yaml at HEAD — role,
+          started_at, completed_at, iteration_count, dispatcher_run_id.
+        - the same files at every revision in that repo's git history —
+          recovers rows since overwritten by a re-run.
+      Join on dispatcher_run_id + task key. Take the UNION of the two YAML
+      sources; neither is a superset of the other.
+
+      REUSE, DO NOT REWRITE: port
+      ~/Project/claude-workflow/features/model-matrix/report.py, function
+      journal_facts(). It already computes the dev/review split, round count
+      and token totals per row, and is known to work.
+
+      THE TWO OPERATOR RULINGS THIS ROW IMPLEMENTS:
+
+      1. EMPTY CELLS ARE REPORTED, NOT PREDICTED. A (role, model) cell with no
+         observations must appear in the output with n=0. Never substitute a
+         default distribution, never back off to a pooled bucket, never omit
+         it. `estimateDistribution` in internal/montecarlo/simulator.go is the
+         anti-pattern — it invents a number when data is missing, and that is
+         precisely the failure being removed.
+
+      2. BLOCKED ROWS ARE RIGHT-CENSORED. A blocked row's elapsed time is a
+         LOWER BOUND. It is recorded, it is counted, and it NEVER enters a
+         duration mean. A row that burned eight rounds and produced nothing
+         must never surface as a fast row. Write a test that FAILS if a
+         censored row's elapsed time reaches a mean — this rule is easy to
+         write, easy to drop in a later refactor, and its failure is silent.
+
+      OUTPUT: `forecast dispatched-reference build --runs-dir … --out …`, plus
+      a coverage report that is this row's actual deliverable. Per (role,
+      model): n_done, n_blocked, n_censored, duration summary, rounds. Then:
+      which cells a named tasks YAML requires and which of those are empty; the
+      share of target rows in a covered cell; and rows recovered vs rows
+      started, with the shortfall named rather than dropped.
+
+      Expect the honest headline to be that a large share of the target run
+      cannot be predicted from data that exists. That is the answer, not a
+      failure of the row — do not tune, pool or default your way to a fuller
+      table.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:forecasting
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    role: bodies
+    status: Blocked
+    blockedBy:
+      - FC-SCAFFOLD
+
+    blocked_reason: 'cross_family_panel: consensus=block | claude=CHANGES_REQUESTED, codex=CHANGES_REQUESTED, grok=CHANGES_REQUESTED | dissenting=3 (claude,codex,grok) | blocking=4 (0C/4H)'
+    blocked_at: '2026-09-02T18:56:04-07:00'
+    started_at: '2026-09-02T17:45:51-07:00'
+    dispatcher_run_id: 2026-09-03T00-34-12Z-tasks
+    cost_usd: 11.264145
+    dispatcher_version: 0.1.0
+    agent_version: 2.1.259 (Claude Code)
+    panel_reviewed_at: '2026-09-04T22:51:08.241931+00:00'
+    panel_reviewed_head: d529265c5e2d510657feb13a701b2b622daeb48e
+    panel_review_path: /home/andrew/Project/dispatcher-runs/2026-09-04T22-34-59Z-FC-1-panel/panel.md
+  - key: FC-2A
+    summary: bodies — critical path under a concurrency cap (differential arm A)
+    description: |
+      HELD. Not dispatched until FC-1's coverage report is read.
+
+      Implement the scheduler interface from FC-SCAFFOLD: given a dependency
+      graph and a concurrency cap, sample a duration per row and return the
+      completion time plus the critical path.
+
+      This row is one of two INDEPENDENT implementations of the same spec.
+      Longest-path-under-a-cap has no reference implementation in this repo,
+      and one agent writing both versions produces correlated code in which the
+      same off-by-one survives and the agreement property passes vacuously.
+
+      A DISAGREEMENT BETWEEN THE ARMS IS AN ESCALATION, NOT AN ITERATION. Two
+      independent implementations of one spec disagreeing means the spec is
+      ambiguous at that input. Record the divergent input and escalate for a
+      spec decision. Finding it here is this protocol's highest-value output.
+
+      Read blockedBy from the tasks YAML rather than re-deriving waves.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:L
+      - area:forecasting
+      - differential
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-SCAFFOLD
+
+  - key: FC-2B
+    summary: bodies — critical path under a concurrency cap (differential arm B)
+    description: |
+      HELD. Not dispatched until FC-1's coverage report is read.
+
+      Implement the scheduler interface from FC-SCAFFOLD: given a dependency
+      graph and a concurrency cap, sample a duration per row and return the
+      completion time plus the critical path.
+
+      This row is one of two INDEPENDENT implementations of the same spec.
+      Longest-path-under-a-cap has no reference implementation in this repo,
+      and one agent writing both versions produces correlated code in which the
+      same off-by-one survives and the agreement property passes vacuously.
+
+      A DISAGREEMENT BETWEEN THE ARMS IS AN ESCALATION, NOT AN ITERATION. Two
+      independent implementations of one spec disagreeing means the spec is
+      ambiguous at that input. Record the divergent input and escalate for a
+      spec decision. Finding it here is this protocol's highest-value output.
+
+      Read blockedBy from the tasks YAML rather than re-deriving waves.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:L
+      - area:forecasting
+      - differential
+    agent: grok
+    model: grok-4.6
+    effort: high
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-SCAFFOLD
+
+  - key: FC-3
+    summary: bodies — round/review-time model and empirical bootstrap sampling
+    description: |
+      HELD. Not dispatched until FC-1's coverage report is read.
+
+      Model row_wall_clock = dev + (rounds x review_per_round), sampling rounds
+      per (role, model) cell from history rather than treating them as
+      constant. Review was measured at 27-50% of wall clock and is charged per
+      round by three reviewer seats whichever model implements, so round count
+      is the dominant cost driver and it is a random variable.
+
+      This is what makes "a cheaper model that needs more rounds" comparable to
+      "an expensive one that needs fewer" — a question the current model cannot
+      express.
+
+      Replace the normal-plus-clamp with an empirical bootstrap: resample
+      observed durations directly. The clamp at
+      internal/montecarlo/simulator.go:100 is the tell that the distribution is
+      wrong — durations are right-skewed and strictly positive, so a normal
+      puts mass below zero and the code truncates it. A resample makes the
+      clamp disappear. Fall back to log-normal only where a cell is too thin to
+      resample, and say so in the output.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-1
+
+  - key: FC-4
+    summary: bodies — dispatched-predict CLI, percentiles and critical path
+    description: |
+      HELD. Not dispatched until FC-1's coverage report is read.
+
+      `forecast dispatched-predict --tasks … --reference … --max-parallel N
+      --iterations N`, emitting p50/p80/p95 wall clock and cost.
+
+      Emit the CRITICAL PATH, naming the rows on it. A p95 nobody can shorten
+      is a number; a p95 plus the chain of rows that produce it is a plan, and
+      the plan is the deliverable.
+
+      State the honest limits in the output rather than burying them: which
+      cells were empty, that n per cell is small, that blocked rows are
+      censored lower bounds, and that rows finished by hand after blocking are
+      invisible to the data and are not agent throughput.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:forecasting
+    agent: codex
+    model: gpt-5.6-sol
+    effort: high
+    role: bodies
+    status: To Do
+    blockedBy:
+      - FC-2A
+      - FC-2B
+      - FC-3
+
+  - key: FC-ADJ
+    summary: adjudicate — validate against a held-out run, land or refuse
+    description: |
+      HELD. Terminal row.
+
+      Hold a run out. Build the reference class from the dogfood-go and
+      model-matrix runs, predict the wallet run, and compare when it lands.
+
+      IF THE p80 DOES NOT CONTAIN THE OUTCOME, SAY SO. Do not tune until it
+      does. A forecaster that was fitted to the run it predicts has measured
+      nothing, and the whole point of holding a run out is to be able to be
+      wrong in public.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:forecasting
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: adjudicate
+    status: To Do
+    blockedBy:
+      - FC-4

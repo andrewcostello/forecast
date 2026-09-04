@@ -1,0 +1,755 @@
+# Revised plan: docs/plans/remaining-work.md is the entry point.
+# Exact previous worklist and runtime evidence: archive/tasks-before-redesign.yaml.
+# Budget/model pins and red-first protocol remain in force; see execution.md.
+# CONTRACT: preserve forecast [--config PATH] jira create and all flags/output.
+# DO NOT PORT ADF: YouTrack descriptions remain Markdown end to end.
+# Original 8-task / 7-wave plan is archived; validate the revised counts below.
+project: forecast
+epic: youtrack-support
+target_repo: forecast
+base_branch: main
+design: docs/plans/remaining-work.md
+tasks:
+  - key: YT-SCAFFOLD
+    summary: scaffold — freeze provider capabilities, routing and write semantics
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1-Y5. Inventory actual CLI/web calls and freeze small neutral DTO/capability
+      interfaces, config selection rules, readable IDs/URLs, equivalence expectations,
+      field mapping matrix and failure states. Keep Jira signatures/output compatible.
+      Define import directions and compile-only YouTrack seams for independent seals.
+      No JQL/ADF in neutral types; no YouTrack implementation bodies yet. Record the
+      create crash-window limitation and any required external idempotency protocol
+      before bodies. Document which Jira-only operations reject YouTrack selection.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    role: scaffold
+    status: To Do
+    blockedBy: []
+    owns:
+      - internal/tracker/types.go
+      - internal/tracker/errors.go
+      - internal/tracker/youtrack/client.go
+      - internal/tracker/youtrack/transport.go
+      - internal/tracker/youtrack/history.go
+      - internal/tracker/youtrack/read.go
+      - internal/tracker/youtrack/create.go
+      - internal/tracker/youtrack/transition.go
+      - internal/jira/tracker_adapter.go
+      - internal/config/config.go
+      - internal/config/tracker.go
+      - features/youtrack-support/notes/YT-SCAFFOLD.md
+  - key: YT-SEALS
+    summary: seals — seal provider contracts and preserve exact Jira argv
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1-Y5. Copy exact generated create argv and output-parser cases from a pinned
+      forecast_bridge.py revision, including every optional flag and --config. Legacy
+      Jira checks stay green and are mutation-verified. New YouTrack checks stay red.
+      Separate test groups for config routing/kind, transport/auth/paging, activity
+      history/cycle-time, Item equivalence, create fields/returned readable ID and
+      ambiguous outcomes, and caller-driven transitions/comment replay. Assert zero
+      mutating requests on preflight field failure and no automatic ambiguous POST
+      retry. Real tokens/network are forbidden; injected transports consume fixtures.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 5h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - YT-SCAFFOLD
+    owns:
+      - internal/jira/tracker_adapter_contract_test.go
+      - internal/jira/testdata/tracker/**
+      - internal/config/youtrack_contract_test.go
+      - internal/config/testdata/youtrack/**
+      - internal/tracker/youtrack/*_test.go
+      - internal/tracker/youtrack/testdata/**
+      - internal/tracker/equivalence_test.go
+      - internal/tracker/testdata/**
+      - cmd/forecast/jira_argv_contract_test.go
+      - cmd/forecast/testdata/tracker/**
+      - features/youtrack-support/notes/YT-SEALS.md
+    seal_groups:
+      - TestYTJiraAdapterContract
+      - TestYTConfigContract
+      - TestYTTransportContract
+      - TestYTHistoryContract
+      - TestYTReadContract
+      - TestYTCreateContract
+      - TestYTTransitionContract
+  - key: YT-JIRA
+    summary: bodies — adapt existing Jira capabilities to the neutral contract
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y3. Implement the neutral adapter by delegating to existing Jira behavior.
+      Preserve public Jira signatures and outputs, raw DTO compatibility and current
+      cycle-time rules. Do not rewrite JQL, ADF or existing client implementation.
+      Pass TestYTJiraAdapterContract against frozen existing-behavior fixtures.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-JIRA.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+    owns:
+      - internal/jira/tracker_adapter.go
+      - features/youtrack-support/notes/YT-JIRA.md
+  - key: YT-CONFIG
+    summary: bodies — implement one tracker-aware configuration resolver
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y2. Preserve legacy no-kind configs and unknown-prefix fallback, add separate
+      YouTrack config, resolve explicit selection/key prefixes through one router,
+      and reject malformed kind/ambiguous ownership/conflicting selection before
+      writes. Document named custom fields and units. Pass TestYTConfigContract.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-CONFIG.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+    owns:
+      - internal/config/config.go
+      - internal/config/tracker.go
+      - features/youtrack-support/notes/YT-CONFIG.md
+  - key: YT-TRANSPORT
+    summary: bodies — implement bounded YouTrack transport and shared client
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y3. Implement bearer auth, injected HTTP transport, selected fields, typed
+      errors, finite deadlines/body bounds and the declared paging primitives.
+      No automatic create retry. Freeze shared client structures for downstream
+      read/write files; pass TestYTTransportContract without external network.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-TRANSPORT.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+      - YT-CONFIG
+    owns:
+      - internal/tracker/youtrack/client.go
+      - internal/tracker/youtrack/transport.go
+      - features/youtrack-support/notes/YT-TRANSPORT.md
+  - key: YT-HISTORY
+    summary: bodies — normalize complete activity history and cycle time
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y3. Consume the selected history API's actual pagination protocol, normalize
+      chronology/status events, and implement the frozen cycle-time/closed-by rules.
+      Cover reopening, missing/partial history, custom override units/precedence,
+      timezone conversion and repeated cursors. Pass TestYTHistoryContract.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-HISTORY.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+      - YT-TRANSPORT
+    owns:
+      - internal/tracker/youtrack/history.go
+      - features/youtrack-support/notes/YT-HISTORY.md
+  - key: YT-READ
+    summary: bodies — query issues and map tracker-equivalent forecast items
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y3. Build native YouTrack queries, page issues completely and combine history
+      with field/name mappings. Preserve downstream Item structure and equivalent
+      Jira fixture outputs, including cycle time. Distinguish valid empty results
+      from auth/malformed/partial data. Pass TestYTReadContract and equivalence cases.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-READ.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+      - YT-HISTORY
+    owns:
+      - internal/tracker/youtrack/read.go
+      - features/youtrack-support/notes/YT-READ.md
+  - key: YT-TRANSITION
+    summary: bodies — apply caller-selected status without replay surprises
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y4/Y5. Implement the frozen target-state/resolution/comment contract. Honor the
+      caller's mapping, no-op already-at-target state and apply the explicit comment
+      replay policy. Unsupported inputs fail by name before mutation. Pass
+      TestYTTransitionContract, including partial failures and repeated invocations.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-TRANSITION.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: grok
+    model: grok-4.6
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+      - YT-TRANSPORT
+    owns:
+      - internal/tracker/youtrack/transition.go
+      - features/youtrack-support/notes/YT-TRANSITION.md
+  - key: YT-WRITE
+    summary: bodies — create YouTrack issues with explicit field and retry outcomes
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y4. Implement create from the frozen field capability matrix. Validate all
+      fields before mutation; return UI-readable key and canonical URL. Preserve
+      Markdown unchanged. Unsupported fields are named errors; uncertain remote
+      outcomes are not retried as fresh creates. Pass TestYTCreateContract and record
+      exactly which replay guarantee is proven versus externally gated.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-WRITE.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: grok
+    model: grok-4.6
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-SEALS
+      - YT-TRANSPORT
+    owns:
+      - internal/tracker/youtrack/create.go
+      - features/youtrack-support/notes/YT-WRITE.md
+  - key: YT-ADAPTER-ADJ
+    summary: adjudicate — rule adapter equivalence and write guarantees
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1-Y5. Rule config rename, field capabilities, cycle time and retry semantics.
+      Run all adapter/config groups without exclusions and legacy argv regression
+      checks. Require precise bridge prerequisites for any unproven create crash
+      window. Review the complete adapter diff before releasing caller rewiring.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-ADAPTER-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: adjudicate
+    status: To Do
+    blockedBy:
+      - YT-JIRA
+      - YT-CONFIG
+      - YT-READ
+      - YT-WRITE
+      - YT-TRANSITION
+    owns:
+      - docs/plans/youtrack-contracts.md
+      - internal/tracker/types.go
+      - internal/tracker/errors.go
+      - features/youtrack-support/notes/YT-ADAPTER-ADJ.md
+    disputed_paths:
+      - docs/plans/youtrack-contracts.md
+      - internal/tracker/types.go
+      - internal/tracker/errors.go
+      - features/youtrack-support/notes/YT-ADAPTER-ADJ.md
+  - key: YT-WIRE-SCAFFOLD
+    summary: scaffold — freeze shared provider factory and caller capabilities
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y2. Define the shared importable provider factory, CLI wrappers and typed
+      Jira-only capability path; prohibit import cycles. Refresh the complete
+      constructor/caller inventory including web, init, status, dashboard and sync.
+      The sole production jira.NewClient exception is the named provider factory.
+      No caller rewiring bodies or output changes in this scaffold.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-WIRE-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: scaffold
+    status: To Do
+    blockedBy:
+      - YT-ADAPTER-ADJ
+    owns:
+      - internal/tracker/provider/provider.go
+      - cmd/forecast/helpers.go
+      - features/youtrack-support/notes/YT-WIRE-SCAFFOLD.md
+  - key: YT-WIRE-SEALS
+    summary: seals — seal caller routing and legacy output compatibility
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y2. Exercise provider selection through real CLI and web entry points with
+      injected providers. Assert Jira output goldens and fail-before-write YouTrack
+      selection for Jira-only capabilities. Scan constructors with the one explicit
+      factory allowance. Separate CLI/factory and web groups so neither body masks
+      its own required behavior. Include sync/status and dashboard variants.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-WIRE-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - YT-WIRE-SCAFFOLD
+    owns:
+      - cmd/forecast/tracker_routing_test.go
+      - cmd/forecast/testdata/routing/**
+      - internal/web/tracker_routing_test.go
+      - internal/web/testdata/**
+      - internal/tracker/provider/provider_test.go
+      - features/youtrack-support/notes/YT-WIRE-SEALS.md
+    seal_groups:
+      - TestYTCLIRoutingContract
+      - TestYTWebRoutingContract
+  - key: YT-WIRE
+    summary: bodies — route CLI clients through the shared provider factory
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y2. Implement factory and all CLI construction-site rewiring. Preserve Jira
+      behavior/output and explicit Jira-only capability failures. No command renames.
+      Pass TestYTCLIRoutingContract and retain byte-for-byte Jira create argv behavior.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-WIRE.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-WIRE-SEALS
+    owns:
+      - internal/tracker/provider/provider.go
+      - cmd/forecast/helpers.go
+      - cmd/forecast/init_cmd.go
+      - cmd/forecast/status_cmd.go
+      - cmd/forecast/dashboard_cmd.go
+      - cmd/forecast/sync_cmd.go
+      - cmd/forecast/jira_cmd.go
+      - features/youtrack-support/notes/YT-WIRE.md
+  - key: YT-WIRE-WEB
+    summary: bodies — route dashboard HTTP handlers through the shared factory
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y2. Replace both web construction sites with the implemented provider factory.
+      Use the same selection/capability rules and error distinctions as CLI. Preserve
+      Jira fixture responses and prove YouTrack read routing in TestYTWebRoutingContract.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-WIRE-WEB.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-WIRE-SEALS
+      - YT-WIRE
+    owns:
+      - internal/web/handlers.go
+      - features/youtrack-support/notes/YT-WIRE-WEB.md
+  - key: YT-WIRE-ADJ
+    summary: adjudicate — audit all construction sites and caller compatibility
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y2. Run routing groups and all prior adapter/legacy regressions without
+      exclusions. Reconcile the refreshed caller inventory with the code; no hidden
+      new-client alias to defeat the constructor assertion. Rule all wiring deviations.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-WIRE-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: adjudicate
+    status: To Do
+    blockedBy:
+      - YT-WIRE
+      - YT-WIRE-WEB
+    owns:
+      - docs/plans/youtrack-contracts.md
+      - internal/tracker/provider/provider.go
+      - features/youtrack-support/notes/YT-WIRE-ADJ.md
+    disputed_paths:
+      - docs/plans/youtrack-contracts.md
+      - internal/tracker/provider/provider.go
+      - features/youtrack-support/notes/YT-WIRE-ADJ.md
+  - key: YT-CMD-SCAFFOLD
+    summary: scaffold — freeze neutral commands and bridge interoperability
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y4/Y5. Freeze issue create and issue transition flags/output, optional issue
+      sync composition, and help/error behavior for legacy jira against YouTrack.
+      Copy BOTH bridge invocation shapes from the inspected source, plus key parser
+      and persistence behavior. Publish a compatibility matrix, including unsupported
+      resolution/comments and crash-replay prerequisites in the external dispatcher.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-CMD-SCAFFOLD.md.
+      Freeze types, error states, ownership and behavior before downstream seals.
+      Preserve baseline behavior during source moves. Do not author acceptance tests.
+      Build and vet must pass; no undeclared behavior changes.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: scaffold
+    status: To Do
+    blockedBy:
+      - YT-WIRE-ADJ
+    owns:
+      - cmd/forecast/issue_cmd.go
+      - features/youtrack-support/notes/YT-CMD-SCAFFOLD.md
+  - key: YT-CMD-SEALS
+    summary: seals — seal neutral commands and dispatcher-generated argv
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y4/Y5. Execute generated create AND transition argv against fixtures; prove
+      legacy and neutral Jira commands agree, selected YouTrack is rejected under
+      jira, and neutral YouTrack returns the exact readable key. Test parser round-
+      trip boundaries, every optional field, error ordering and help text. Test a
+      successfully persisted key rerun without a second create using the pinned
+      bridge contract fixture. Name any external parser/replay gap rather than mock
+      it away. No real tracker token or network.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-CMD-SEALS.md.
+      Use independent recorded/sanitized or explicitly synthetic fixtures in testdata.
+      No external network or real credentials. Record each case, expected failure,
+      and a concrete mutation that proves the assertion has teeth. New capability
+      cases stay red until their named body lands; existing regression cases stay
+      green. No xfail, t.Skip, implementation edits or blanket exclusion.
+      Build and vet pass. Test group names are predeclared by the plan author in
+      config/known-red.yaml; report a mismatch instead of editing that protected file.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: seals
+    status: To Do
+    blockedBy:
+      - YT-CMD-SCAFFOLD
+    owns:
+      - cmd/forecast/issue_cmd_test.go
+      - cmd/forecast/testdata/issue/**
+      - features/youtrack-support/notes/YT-CMD-SEALS.md
+    seal_groups:
+      - TestYTNeutralCLIContract
+  - key: YT-CMD
+    summary: bodies — add neutral commands while preserving the Jira contract
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y4/Y5. Implement the frozen neutral surface and explicit legacy-kind refusal.
+      Keep every Jira flag and output contract. Compose caller-selected transitions;
+      no second status mapping. Pass TestYTNeutralCLIContract and all existing argv
+      seals. Update docs/COMMAND_REFERENCE.md and produce the precise external dispatcher
+      change list with reproductions.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-CMD.md.
+      Implement only the owned source files. Do not edit tests, fixtures or the
+      known-red register. Own seal groups must run and pass; only another unfinished
+      body's registered red groups may be excluded by the dispatcher. Build, vet and
+      race tests pass under that rule. Contract disputes stop for adjudication.
+    type: Task
+    estimate: 4h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: codex
+    model: gpt-5.6-sol
+    effort: xhigh
+    role: bodies
+    status: To Do
+    blockedBy:
+      - YT-CMD-SEALS
+    owns:
+      - cmd/forecast/issue_cmd.go
+      - cmd/forecast/jira_cmd.go
+      - cmd/forecast/sync_cmd.go
+      - cmd/forecast/main.go
+      - docs/COMMAND_REFERENCE.md
+      - features/youtrack-support/notes/YT-CMD.md
+  - key: YT-CMD-ADJ
+    summary: adjudicate — rule CLI and dispatcher interoperability before live use
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y1/Y4/Y5. Run all offline seals without exclusions and a head-pinned panel.
+      Rule the bridge compatibility matrix from evidence. Required external changes
+      are release dependencies; do not implement them in forecast or assert only a
+      subcommand change is sufficient without the complete round-trip proof.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-CMD-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 2h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    effort: high
+    role: adjudicate
+    status: To Do
+    blockedBy:
+      - YT-CMD
+    owns:
+      - docs/plans/youtrack-contracts.md
+      - cmd/forecast/issue_cmd.go
+      - features/youtrack-support/notes/YT-CMD-ADJ.md
+    disputed_paths:
+      - docs/plans/youtrack-contracts.md
+      - cmd/forecast/issue_cmd.go
+      - features/youtrack-support/notes/YT-CMD-ADJ.md
+  - key: YT-ADJ
+    summary: adjudicate — prove one real project and rule all remaining deviations
+    description: |
+      Read docs/plans/youtrack-contracts.md and docs/plans/execution.md first.
+
+      Y6. This is the ONLY row permitted live YouTrack calls. Read the operator's
+      project/token-reference prerequisite before running. Record a real created
+      readable key, read it back, exercise agreed transitions and forecast from real
+      project history. Prove any stronger idempotency claim through the agreed fault
+      case or remain Blocked on its external protocol. Rule every bodies deviation,
+      run the full Go gate and every offline seal without exclusions, and attach the
+      complete dispatcher-side change assessment. No fabricated history or token logs.
+
+      Record evidence and deviations in features/youtrack-support/notes/YT-ADJ.md.
+      Rule every deviation explicitly. A failed proof stays Blocked with its evidence;
+      no acceptance requirement is waived to produce Done. Check the exact reviewed
+      head. New implementation belongs in a corrective bodies row after the relevant
+      contract/seals amendment, not hidden in adjudication.
+    type: Task
+    estimate: 3h
+    labels:
+      - size:M
+      - area:tracker
+      - risk:high
+      - phase:youtrack
+    agent: claude
+    model: claude-fable-5-1
+    role: adjudicate
+    status: Blocked
+    blockedBy:
+      - YT-CMD
+      - YT-CMD-ADJ
+    owns:
+      - docs/plans/youtrack-contracts.md
+      - docs/plans/traceability.md
+      - features/youtrack-support/notes/YT-ADJ.md
+    disputed_paths:
+      - docs/plans/youtrack-contracts.md
+      - docs/plans/traceability.md
+      - features/youtrack-support/notes/YT-ADJ.md
+    blocked_reason: 'external prerequisite: real YouTrack URL/project and permanent-token reference are not yet supplied; live and bridge acceptance cannot be waived'

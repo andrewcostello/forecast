@@ -1,0 +1,15 @@
+# Default gate runs the full suite. During red-first dispatch, only seals
+# registered for other unfinished bodies rows receive dispatcher exclusions.
+test: |
+  set -e
+  go build ./...
+  go vet ./...
+  if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ]; then
+    skip_pattern=$(cat "$DISPATCHER_KNOWN_RED_FILE")
+    go test ./... -race -skip "$skip_pattern"
+  else
+    go test ./... -race
+  fi
+
+test_exclusion: go-skip
+runs_dir: ../dispatcher-runs

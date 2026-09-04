@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+
+  "_comment": [
+    "Risk-path rule table for forecast. This repo moves no money and ships no",
+    "product, so there are no financial rules. Two surfaces carry real risk:",
+    "internal/jira writes to a live external system, and the prediction core is",
+    "what people size projects against — a wrong number there is silent and is",
+    "believed.",
+    "",
+    "Semantics are the same everywhere: risk is the MAX over matched rules,",
+    "components the UNION, financial an OR, and a file is presentational only if",
+    "every rule it matched is. Adding a rule can only ever raise risk.",
+    "",
+    "scaffold is true: this table has not yet been reviewed by a human."
+  ],
+
+  "scaffold": true,
+  "unmatched_risk": "high",
+
+  "server_surface_extensions": [".go", ".sql"],
+
+  "rules": [
+    {
+      "id": "external-writes",
+      "note": "internal/jira mutates issues in a live JIRA instance and ingest projects a whole dispatcher run onto them. A defect here is not recoverable by re-running: it has already commented on real tickets.",
+      "paths": ["internal/jira/**", "internal/tracker/**", "internal/ingest/**"],
+      "risk": "high"
+    },
+    {
+      "id": "prediction-core",
+      "note": "The simulator, the reference class and the dispatched-work model. Output is a number nobody can sanity-check by eye, so a wrong one is believed and planned against. Not high — it ships no code and gates nothing — but never presentation.",
+      "paths": [
+        "internal/montecarlo/**",
+        "internal/referenceclass/**",
+        "internal/dispatched/**",
+        "pkg/forecast/**"
+      ],
+      "risk": "medium"
+    },
+    {
+      "id": "data-ingest",
+      "note": "Parsers for JIRA exports, tasks YAML and dispatcher journals. Silent mis-parse becomes silent mis-prediction.",
+      "paths": ["internal/yaml/**", "internal/storage/**", "internal/history/**", "internal/eva/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "cli-and-serving",
+      "paths": ["cmd/**", "internal/web/**", "internal/report/**", "internal/diagram/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "ci-and-scripts",
+      "note": "A change here can DISABLE a check rather than fail one, so it is never presentation.",
+      "paths": [".github/**", "scripts/**", "**/Makefile", ".dispatcher.yaml", ".agent/risk-paths.json"],
+      "risk": "medium"
+    },
+    {
+      "id": "dependency-manifests",
+      "note": "Supply-chain surface.",
+      "paths": ["**/go.mod", "**/go.sum"],
+      "risk": "medium"
+    },
+    {
+      "id": "test-fixtures",
+      "note": "Fixtures encode the assertions the tools are verified against. Weakening one weakens the verification.",
+      "paths": ["**/testdata/**"],
+      "risk": "medium"
+    },
+    {
+      "id": "docs-and-meta",
+      "paths": [
+        "**/*.md",
+        "**/README*",
+        "docs/**",
+        "web/**",
+        "configs/**",
+        ".gitignore",
+        "**/.gitignore",
+        "**/*.txt"
+      ],
+      "risk": "low",
+      "presentation": true
+    }
+  ],
+
+  "gate_signals": [
+    {
+      "id": "apply-gate",
+      "note": "ingest is dry-run by default and only writes to JIRA behind --apply. Anything touching that boundary decides whether a real external write happens.",
+      "pattern": "--apply|applyFlag|dryRun|DryRun"
+    },
+    {
+      "id": "env-gate",
+      "pattern": "os\\.Getenv\\(|viper\\.Get"
+    },
+    {
+      "id": "fail-open",
+      "note": "Defaults that let missing data read as a valid answer. In a forecaster the canonical form is an absent reference-class cell silently becoming a default distribution.",
+      "pattern": "return true, nil|, nil$|estimateDistribution|defaultAllow"
+    }
+  ]
+}

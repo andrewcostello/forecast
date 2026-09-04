@@ -26,15 +26,27 @@ forecast dashboard --project monorepo   # Detailed view of specific project
 # Build a dispatched-agent reference class and print coverage
 forecast dispatched-reference build \
   --runs-dir ~/Project/dispatcher-runs \
-  --tasks features/dispatched-forecasting/tasks.yaml \
+  --features-repo ~/Project/claude-workflow \
+  --features-repo ~/Project/claude-dispatcher \
+  --tasks path/to/target-tasks.yaml \
+  --fail-on-uncovered-required \
   --out .forecast/dispatched-reference.json
 ```
 
 `dispatched-reference build` joins dispatcher journals to the union of the live
 task YAML and every revision of it in git history, on `dispatcher_run_id` plus
-task key. It defaults `--features-repo` to `~/Project/claude-workflow`; `git`
-must be on `PATH` (2.36 or newer, for `git ls-tree --format`) and the path must
-be a git repository.
+task key and the exact start instant. Ambiguous or unmatched starts never borrow
+another attempt's evidence. Repeat `--features-repo` for every source repository;
+omitting it retains the `~/Project/claude-workflow` default. `git` must be on
+`PATH`, and each supplied path must be a git repository with a `features/`
+directory. The report names each source and its matched attempts; coverage
+reflects only the repositories supplied, not all possible sources.
+
+Targets must contain a `tasks` sequence with unique keys, valid roles, and
+nonblank models. Both coverage gates require `--tasks`. The uncovered-cell
+gate checks completed observations against `--min-observations`; blocked rows
+do not satisfy it. The empty-cell gate checks only whether any observations
+exist. Both write the report and artifact before returning a coverage error.
 
 It reports rather than predicts:
 
@@ -53,8 +65,11 @@ It reports rather than predicts:
 | flag | effect |
 |---|---|
 | `--min-observations` | completed rows a required cell needs before it counts as covered (default 2 — one row is a sample) |
-| `--fail-on-empty-required` | exit non-zero when a required cell has no observations, so CI can refuse rather than forecast |
-| `--max-history-commits` | cap the history walk; the report says whether the cap bit |
+| `--features-repo` | repeat for each source repository; live and historical readings are unioned |
+| `--fail-on-empty-required` | exit non-zero only when a required cell has no observations |
+| `--fail-on-uncovered-required` | exit non-zero when a required cell has fewer completed observations than `--min-observations` |
+| `--max-history-commits` | cap commits per source repository (default 5000); truncated history is explicitly reported |
+| `--timeout` | maximum extraction time, default `5m` |
 
 ## JIRA Commands
 

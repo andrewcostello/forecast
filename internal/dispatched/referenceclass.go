@@ -177,7 +177,7 @@ func merge(a, b Observation) (Observation, error) {
 // describe names a provenance in an error a human has to act on: which run
 // and which reading of the tasks YAML the disagreeing value came from.
 func describe(p Provenance) string {
-	return "run " + p.RunID + " at " + p.Revision.String()
+	return "run " + p.RunID + " at " + p.Revision.String() + " (" + p.Repository + "/" + p.Path + ")"
 }
 
 // provenanceLess is a strict total order over Provenance alone: SourceLive
@@ -186,6 +186,10 @@ func provenanceLess(a, b Provenance) bool {
 	switch {
 	case a.Revision.Source != b.Revision.Source:
 		return a.Revision.Source == SourceLive
+	case a.Repository != b.Repository:
+		return a.Repository < b.Repository
+	case a.Path != b.Path:
+		return a.Path < b.Path
 	case a.Revision.Commit != b.Revision.Commit:
 		return a.Revision.Commit < b.Revision.Commit
 	}

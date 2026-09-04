@@ -145,8 +145,10 @@ func (r Revision) String() string {
 // highest for that field. Per-field attribution would need a set of
 // contributing provenances and is deliberately not carried.
 type Provenance struct {
-	RunID    string
-	Revision Revision
+	RunID      string
+	Revision   Revision
+	Repository string
+	Path       string
 }
 
 // Observation is one dispatched row as the reference class stores it.
@@ -216,6 +218,8 @@ func (o Observation) Validate() error {
 		return fmt.Errorf("%w: row %s has review elapsed %v", ErrNegativeValue, o.Key, o.ReviewElapsed)
 	case o.Rounds < 0:
 		return fmt.Errorf("%w: row %s has rounds %d", ErrNegativeValue, o.Key, o.Rounds)
+	case o.Cascades < 0:
+		return fmt.Errorf("%w: row %s has cascades %d", ErrNegativeValue, o.Key, o.Cascades)
 	case o.InputTokens < 0:
 		return fmt.Errorf("%w: row %s has input tokens %d", ErrNegativeValue, o.Key, o.InputTokens)
 	case o.OutputTokens < 0:

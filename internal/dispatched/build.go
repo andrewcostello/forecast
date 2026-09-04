@@ -27,10 +27,11 @@ const DefaultMinObservations = 2
 // BuildOptions identifies the journal tree, YAML history repository and,
 // optionally, the task list whose coverage should be measured.
 type BuildOptions struct {
-	RunsDir      string
-	FeaturesRepo string
-	TargetTasks  string
-	Now          time.Time
+	RunsDir       string
+	FeaturesRepo  string // Compatibility for callers supplying one repository.
+	FeaturesRepos []string
+	TargetTasks   string
+	Now           time.Time
 	// MinObservations is the completed-observation threshold for calling a
 	// required cell covered. Zero means DefaultMinObservations.
 	MinObservations int
@@ -76,6 +77,8 @@ type ReferenceObservation struct {
 	CostUSD            *float64  `json:"cost_usd"`
 	DispatcherRunID    string    `json:"dispatcher_run_id"`
 	SourceRevision     string    `json:"source_revision"`
+	SourceRepository   string    `json:"source_repository"`
+	SourcePath         string    `json:"source_path"`
 }
 
 type NumericSummary struct {
@@ -110,16 +113,29 @@ type RequiredCell struct {
 	Covered    bool   `json:"covered"`
 }
 
+type RepositoryCoverage struct {
+	Repository         string `json:"repository"`
+	LiveReadings       int    `json:"live_readings"`
+	HistoricalReadings int    `json:"historical_readings"`
+	MatchedAttempts    int    `json:"matched_attempts"`
+}
+
 type Coverage struct {
-	TargetTasks            string         `json:"target_tasks,omitempty"`
-	MinObservations        int            `json:"min_observations"`
-	RequiredCells          []RequiredCell `json:"required_cells"`
-	EmptyRequiredCells     []Cell         `json:"empty_required_cells"`
-	UncoveredRequiredCells []Cell         `json:"uncovered_required_cells"`
-	TargetRows             int            `json:"target_rows"`
-	TargetRowsWithCell     int            `json:"target_rows_with_cell"`
-	TargetRowsCovered      int            `json:"target_rows_covered"`
-	TargetCoveredShare     *float64       `json:"target_covered_share"`
+	Repositories                    []RepositoryCoverage `json:"repositories"`
+	YAMLRowsMissingJoinKeys         int                  `json:"yaml_rows_missing_join_keys"`
+	SnapshotsWithoutMatchingAttempt int                  `json:"snapshots_without_matching_attempt"`
+	AttemptsWithoutMatchingYAML     int                  `json:"attempts_without_matching_yaml"`
+	RecoveredAttempts               int                  `json:"recovered_attempts"`
+	AttemptRecoveryShortfall        int                  `json:"attempt_recovery_shortfall"`
+	TargetTasks                     string               `json:"target_tasks,omitempty"`
+	MinObservations                 int                  `json:"min_observations"`
+	RequiredCells                   []RequiredCell       `json:"required_cells"`
+	EmptyRequiredCells              []Cell               `json:"empty_required_cells"`
+	UncoveredRequiredCells          []Cell               `json:"uncovered_required_cells"`
+	TargetRows                      int                  `json:"target_rows"`
+	TargetRowsWithCell              int                  `json:"target_rows_with_cell"`
+	TargetRowsCovered               int                  `json:"target_rows_covered"`
+	TargetCoveredShare              *float64             `json:"target_covered_share"`
 
 	// JournalStartedRows counts DISTINCT (run, task key) pairs that started,
 	// which is the denominator a recovered row can be compared against.
@@ -182,29 +198,56 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	live, err := readLiveSnapshots(ctx, opts.FeaturesRepo)
-	if err != nil {
-		return nil, err
-	}
-	historical, err := readGitSnapshots(ctx, opts.FeaturesRepo, opts.MaxHistoryCommits)
-	if err != nil {
-		return nil, err
-	}
-
 	coverage := Coverage{
-		TargetTasks:            opts.TargetTasks,
-		MinObservations:        opts.MinObservations,
-		LiveYAMLReadings:       len(live.Snapshots),
-		HistoricalYAMLReadings: len(historical.Snapshots),
-		HistoryCommits:         historical.Commits,
-		HistoryBlobs:           historical.Blobs,
-		HistoryTruncated:       historical.Truncated,
-		UnparseableYAMLDocs:    live.UnparseableDocuments + historical.UnparseableDocuments,
-		MalformedYAMLRows:      live.MalformedRows + historical.MalformedRows,
-		JournalLinesUnparsed:   journals.LinesUnparsed,
-
-		JournalEventsWithBadTimestamp: journals.BadTimestamps,
+		TargetTasks: opts.TargetTasks, MinObservations: opts.MinObservations,
+		JournalLinesUnparsed: journals.LinesUnparsed, JournalEventsWithBadTimestamp: journals.BadTimestamps,
 	}
+	repos := append([]string{}, opts.FeaturesRepos...)
+	if opts.FeaturesRepo != "" {
+		repos = append(repos, opts.FeaturesRepo)
+	}
+	if len(repos) == 0 {
+		return nil, fmt.Errorf("%w: at least one features repository is required", ErrYAMLSource)
+	}
+	var snapshots []taskSnapshot
+	seenRepos := make(map[string]bool)
+	for _, repo := range repos {
+		if strings.TrimSpace(repo) == "" {
+			return nil, fmt.Errorf("%w: empty features repository", ErrYAMLSource)
+		}
+		repo, err = filepath.Abs(repo)
+		if err != nil {
+			return nil, fmt.Errorf("%w: repository path: %v", ErrYAMLSource, err)
+		}
+		repo, err = filepath.EvalSymlinks(repo)
+		if err != nil {
+			return nil, fmt.Errorf("%w: repository path: %v", ErrYAMLSource, err)
+		}
+		if seenRepos[repo] {
+			continue
+		}
+		seenRepos[repo] = true
+		live, err := readLiveSnapshots(ctx, repo)
+		if err != nil {
+			return nil, err
+		}
+		historical, err := readGitSnapshots(ctx, repo, opts.MaxHistoryCommits)
+		if err != nil {
+			return nil, err
+		}
+		coverage.Repositories = append(coverage.Repositories, RepositoryCoverage{Repository: repo, LiveReadings: len(live.Snapshots), HistoricalReadings: len(historical.Snapshots)})
+		coverage.LiveYAMLReadings += len(live.Snapshots)
+		coverage.HistoricalYAMLReadings += len(historical.Snapshots)
+		coverage.HistoryCommits += historical.Commits
+		coverage.HistoryBlobs += historical.Blobs
+		coverage.HistoryTruncated = coverage.HistoryTruncated || historical.Truncated
+		coverage.UnparseableYAMLDocs += live.UnparseableDocuments + historical.UnparseableDocuments
+		coverage.MalformedYAMLRows += live.MalformedRows + historical.MalformedRows
+		coverage.YAMLRowsMissingJoinKeys += live.MissingJoinKeys + historical.MissingJoinKeys
+		snapshots = append(snapshots, live.Snapshots...)
+		snapshots = append(snapshots, historical.Snapshots...)
+	}
+	sort.Slice(coverage.Repositories, func(i, j int) bool { return coverage.Repositories[i].Repository < coverage.Repositories[j].Repository })
 	var target []yamlTask
 	if opts.TargetTasks != "" {
 		target, err = readTargetTasks(opts.TargetTasks)
@@ -216,9 +259,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	coverage.TargetRows = len(target)
 	for _, task := range target {
 		cell := Cell{Role: task.Role, Model: task.Model}
-		if !cell.Role.Valid() || cell.Model == "" {
-			continue
-		}
+
 		required[cell]++
 		coverage.TargetRowsWithCell++
 	}
@@ -240,11 +281,14 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	}
 
 	readings := make(map[identity][]Observation)
+	readingAttempts := make(map[identity]map[*JournalFacts]runTask)
+	matchedAttempts := make(map[*JournalFacts]bool)
+	repoMatches := make(map[string]map[*JournalFacts]bool)
 	joinedRunTasks := make(map[runTask]bool)
 	unattributable := make(map[identity]bool)
 	unrecoverable := make(map[identity]bool)
 	mismatches := make(map[identity]bool)
-	for _, snapshot := range append(append([]taskSnapshot{}, live.Snapshots...), historical.Snapshots...) {
+	for _, snapshot := range snapshots {
 		key := runTask{RunID: snapshot.DispatcherRunID, Key: snapshot.Key}
 		row, ok := journals.Rows[key]
 		if !ok {
@@ -253,8 +297,14 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		joinedRunTasks[key] = true
 		facts := row.Match(snapshot.StartedAt)
 		if facts == nil {
-			facts = &JournalFacts{}
+			coverage.SnapshotsWithoutMatchingAttempt++
+			continue
 		}
+		matchedAttempts[facts] = true
+		if repoMatches[snapshot.Repository] == nil {
+			repoMatches[snapshot.Repository] = make(map[*JournalFacts]bool)
+		}
+		repoMatches[snapshot.Repository][facts] = true
 		id := identity{Key: snapshot.Key, StartedAt: snapshot.StartedAt.UTC()}
 		observation, err := observationFrom(snapshot, facts, opts.Now)
 		if err != nil {
@@ -283,6 +333,20 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 			mismatches[id] = true
 		}
 		readings[id] = append(readings[id], observation)
+		if readingAttempts[id] == nil {
+			readingAttempts[id] = make(map[*JournalFacts]runTask)
+		}
+		readingAttempts[id][facts] = key
+	}
+	for i := range coverage.Repositories {
+		coverage.Repositories[i].MatchedAttempts = len(repoMatches[coverage.Repositories[i].Repository])
+	}
+	for _, row := range journals.Rows {
+		for _, facts := range row.Attempts {
+			if facts.Started > 0 && !matchedAttempts[facts] {
+				coverage.AttemptsWithoutMatchingYAML++
+			}
+		}
 	}
 	coverage.UnattributableJoinedRows = len(unattributable)
 	coverage.UnrecoverableJoinedRows = len(unrecoverable)
@@ -305,6 +369,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	})
 	var conflicts []Conflict
 	recoveredRuns := make(map[runTask]bool)
+	recoveredAttempts := make(map[*JournalFacts]bool)
 	for _, id := range ids {
 		rows := readings[id]
 		// Merge every reading of the identity BEFORE touching the table, so a
@@ -321,9 +386,14 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 			return nil, err
 		}
 		coverage.RecoveredObservations++
-		recoveredRuns[runTask{RunID: joined.Provenance.RunID, Key: joined.Key}] = true
+		for facts, key := range readingAttempts[id] {
+			recoveredRuns[key] = true
+			recoveredAttempts[facts] = true
+		}
 	}
 	coverage.RecoveredRows = len(recoveredRuns)
+	coverage.RecoveredAttempts = len(recoveredAttempts)
+	coverage.AttemptRecoveryShortfall = coverage.JournalStartAttempts - coverage.RecoveredAttempts
 	coverage.StampConflictRows = len(conflicts)
 	coverage.RecoveryShortfall = max(coverage.JournalStartedRows-coverage.RecoveredRows, 0)
 
@@ -343,7 +413,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	cells := summarizeCells(table)
 	coverage.finishTarget(required, cells, opts.MinObservations)
 	artifact := Artifact{
-		SchemaVersion: 2,
+		SchemaVersion: 3,
 		GeneratedAt:   opts.Now.UTC(),
 		Observations:  observations,
 		Cells:         cells,
@@ -359,6 +429,22 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 // picking a winner. It is total: the fold is over a commutative operation, so
 // the order readings arrive in does not change the result.
 func joinReadings(rows []Observation) (Observation, error) {
+	firstCell := rows[0]
+	var terminal *Observation
+	for i := range rows {
+		row := &rows[i]
+		if row.Cell != firstCell.Cell {
+			_, err := merge(firstCell, *row)
+			return Observation{}, err
+		}
+		if row.Outcome.terminal() {
+			if terminal != nil && terminal.Outcome != row.Outcome {
+				_, err := merge(*terminal, *row)
+				return Observation{}, err
+			}
+			terminal = row
+		}
+	}
 	joined := rows[0]
 	for _, row := range rows[1:] {
 		next, err := merge(joined, row)
@@ -414,7 +500,7 @@ func observationFrom(snapshot taskSnapshot, facts *JournalFacts, now time.Time) 
 		OutputTokens:     facts.OutputTokens,
 		CostUSD:          facts.CostUSD,
 		CostKnown:        facts.CostKnown,
-		Provenance:       Provenance{RunID: snapshot.DispatcherRunID, Revision: snapshot.Revision},
+		Provenance:       Provenance{RunID: snapshot.DispatcherRunID, Revision: snapshot.Revision, Repository: snapshot.Repository, Path: snapshot.Path},
 	}
 	if err := observation.Validate(); err != nil {
 		return Observation{}, fmt.Errorf("build observation: %w", err)
@@ -536,7 +622,8 @@ func flattenObservations(table *Table) []ReferenceObservation {
 				Rounds: observation.Rounds, Cascades: observation.Cascades,
 				InputTokens: observation.InputTokens, OutputTokens: observation.OutputTokens,
 				CostUSD: cost, DispatcherRunID: observation.Provenance.RunID,
-				SourceRevision: observation.Provenance.Revision.String(),
+				SourceRevision:   observation.Provenance.Revision.String(),
+				SourceRepository: observation.Provenance.Repository, SourcePath: observation.Provenance.Path,
 			})
 		}
 	}
@@ -630,6 +717,9 @@ func WriteCoverage(w io.Writer, artifact Artifact) {
 			formatDurationSummary(cell.Duration), formatRoundsSummary(cell.Rounds))
 	}
 	c := artifact.Coverage
+	for _, repo := range c.Repositories {
+		fmt.Fprintf(w, "Source repository %s: live=%d historical=%d matched_attempts=%d\n", repo.Repository, repo.LiveReadings, repo.HistoricalReadings, repo.MatchedAttempts)
+	}
 	if c.TargetTasks != "" {
 		fmt.Fprintf(w, "\nTarget tasks: %s (a cell is covered at n_done >= %d)\n", c.TargetTasks, c.MinObservations)
 		for _, cell := range c.RequiredCells {
@@ -645,6 +735,8 @@ func WriteCoverage(w io.Writer, artifact Artifact) {
 		}
 	}
 	fmt.Fprintf(w, "Rows recovered vs journal starts: %d/%d; recovery shortfall=%d\n", c.RecoveredRows, c.JournalStartedRows, c.RecoveryShortfall)
+	fmt.Fprintf(w, "Attempts recovered vs journal starts: %d/%d; attempt shortfall=%d; attempts without matching YAML=%d\n", c.RecoveredAttempts, c.JournalStartAttempts, c.AttemptRecoveryShortfall, c.AttemptsWithoutMatchingYAML)
+	fmt.Fprintf(w, "YAML snapshots without an exact unambiguous attempt: %d; rows missing join keys: %d\n", c.SnapshotsWithoutMatchingAttempt, c.YAMLRowsMissingJoinKeys)
 	fmt.Fprintf(w, "Observations stored (one per recovered attempt): %d\n", c.RecoveredObservations)
 	fmt.Fprintf(w, "task_started events: %d across %d rows (%d restarts)\n", c.JournalStartAttempts, c.JournalStartedRows, c.JournalRestarts)
 	fmt.Fprintf(w, "task_started events carrying no planned model: %d\n", c.TaskStartsWithoutModel)

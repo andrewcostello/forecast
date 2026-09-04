@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -104,29 +105,19 @@ func (r *JournalRow) AttemptsWithoutStampedModel() int {
 	return n
 }
 
-// Match returns the attempt whose start instant is nearest startedAt, which
-// is how a YAML snapshot is bound to the attempt it describes. Ties go to the
-// earlier attempt. Rows with a single attempt always return it, so the common
-// case is unchanged by attempt partitioning.
+// Match binds a snapshot only to an attempt with the same start instant.
+// Multiple starts at that instant are ambiguous and cannot supply evidence.
 func (r *JournalRow) Match(startedAt time.Time) *JournalFacts {
-	var best *JournalFacts
-	var bestDelta time.Duration
+	var match *JournalFacts
 	for _, f := range r.Attempts {
-		if f.StartedAt.IsZero() {
-			continue
-		}
-		delta := f.StartedAt.Sub(startedAt)
-		if delta < 0 {
-			delta = -delta
-		}
-		if best == nil || delta < bestDelta {
-			best, bestDelta = f, delta
+		if !f.StartedAt.IsZero() && f.StartedAt.Equal(startedAt) {
+			if match != nil {
+				return nil
+			}
+			match = f
 		}
 	}
-	if best == nil && len(r.Attempts) > 0 {
-		return r.Attempts[0]
-	}
-	return best
+	return match
 }
 
 // observe routes one event to the attempt it belongs to. A task_started opens
@@ -193,23 +184,30 @@ func readJournals(ctx context.Context, runsDir string) (*journalSources, error) 
 		if err := ctx.Err(); err != nil {
 			return nil, fmt.Errorf("%w: reading %s: %v", ErrJournalSource, path, err)
 		}
-		if err := readJournal(path, filepath.Base(filepath.Dir(path)), sources); err != nil {
+		if err := readJournal(ctx, path, filepath.Base(filepath.Dir(path)), sources); err != nil {
 			return nil, err
 		}
 	}
 	return sources, nil
 }
 
-func readJournal(path, runID string, out *journalSources) error {
+func readJournal(ctx context.Context, path, runID string, out *journalSources) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("%w: open %s: %v", ErrJournalSource, path, err)
 	}
 	defer f.Close()
 
-	scanner := bufio.NewScanner(f)
+	return scanJournal(ctx, f, path, runID, out)
+}
+
+func scanJournal(ctx context.Context, reader io.Reader, path, runID string, out *journalSources) error {
+	scanner := bufio.NewScanner(reader)
 	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: scan %s: %w", ErrJournalSource, path, err)
+		}
 		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
 			continue
 		}
@@ -323,6 +321,8 @@ type taskSnapshot struct {
 	IterationCount  int
 	DispatcherRunID string
 	Revision        Revision
+	Repository      string
+	Path            string
 }
 
 // yamlSources is what one YAML source yielded, plus what it could not yield.
@@ -334,6 +334,7 @@ type yamlSources struct {
 	Documents            int
 	UnparseableDocuments int
 	MalformedRows        int
+	MissingJoinKeys      int
 }
 
 func (s *yamlSources) absorb(other yamlSources) {
@@ -341,6 +342,7 @@ func (s *yamlSources) absorb(other yamlSources) {
 	s.Documents += other.Documents
 	s.UnparseableDocuments += other.UnparseableDocuments
 	s.MalformedRows += other.MalformedRows
+	s.MissingJoinKeys += other.MissingJoinKeys
 }
 
 // parseSnapshots reads one YAML document. It never returns an error: an
@@ -348,13 +350,14 @@ func (s *yamlSources) absorb(other yamlSources) {
 // caller can name the shortfall instead of failing the whole build.
 func parseSnapshots(data []byte, revision Revision) yamlSources {
 	out := yamlSources{Documents: 1}
-	var doc yamlDocument
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	doc, err := decodeTaskDocument(data)
+	if err != nil {
 		out.UnparseableDocuments++
 		return out
 	}
 	for _, task := range doc.Tasks {
 		if task.Key == "" || task.DispatcherRunID == "" || task.StartedAt == "" {
+			out.MissingJoinKeys++
 			continue
 		}
 		started, err := time.Parse(time.RFC3339Nano, task.StartedAt)
@@ -409,7 +412,13 @@ func readLiveSnapshots(ctx context.Context, featuresRepo string) (yamlSources, e
 		if err != nil {
 			return yamlSources{}, fmt.Errorf("%w: read %s: %v", ErrYAMLSource, path, err)
 		}
-		out.absorb(parseSnapshots(data, Revision{Source: SourceLive}))
+		source := parseSnapshots(data, Revision{Source: SourceLive})
+		relative, _ := filepath.Rel(featuresRepo, path)
+		for i := range source.Snapshots {
+			source.Snapshots[i].Repository = featuresRepo
+			source.Snapshots[i].Path = filepath.ToSlash(relative)
+		}
+		out.absorb(source)
 	}
 	return out, nil
 }
@@ -430,19 +439,19 @@ type blobRef struct {
 	commit string
 }
 
-// readGitSnapshots recovers rows that a later run has since overwritten.
-//
-// It walks commits that touched features/, but reads each distinct blob only
-// once and through a single `git cat-file --batch` process, so cost is linear
-// in DISTINCT file contents rather than in commits × files. A blob that
-// appears at several commits is attributed to the first commit in walk order
-// that holds it; the dedupe rule for (key, started_at) makes the others
-// redundant. maxCommits bounds the walk and sets Truncated when it bites.
+// readGitSnapshots reads changed YAML blobs in a bounded commit walk. Git
+// enumerates at most maxCommits+1 commits; the extra commit detects truncation.
+// One diff-tree process lists changes, and one cat-file process reads blobs.
 func readGitSnapshots(ctx context.Context, featuresRepo string, maxCommits int) (gitSources, error) {
 	if maxCommits <= 0 {
 		maxCommits = defaultMaxHistoryCommits
 	}
-	commits, err := gitLines(ctx, featuresRepo, "rev-list", "--all", "--", "features")
+	// Avoid overflow for the lookahead used to detect truncation.
+	limit := maxCommits
+	if limit < int(^uint(0)>>1) {
+		limit++
+	}
+	commits, err := gitLines(ctx, featuresRepo, "rev-list", "--max-count="+strconv.Itoa(limit), "--all", "--", "features")
 	if err != nil {
 		return gitSources{}, err
 	}
@@ -451,34 +460,43 @@ func readGitSnapshots(ctx context.Context, featuresRepo string, maxCommits int) 
 		commits, out.Truncated = commits[:maxCommits], true
 	}
 	out.Commits = len(commits)
-
-	// Walk order first, so blob -> commit attribution is deterministic.
+	if len(commits) == 0 {
+		return out, nil
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", featuresRepo, "diff-tree", "--stdin", "--root", "-r", "-m", "--raw", "-z", "--no-abbrev", "--no-renames", "--", "features")
+	cmd.Stdin = strings.NewReader(strings.Join(commits, "\n") + "\n")
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		return gitSources{}, fmt.Errorf("%w: git diff-tree in %s: %v: %s", ErrGitHistory, featuresRepo, err, strings.TrimSpace(stderr.String()))
+	}
+	records := strings.Split(stdout.String(), "\x00")
 	seen := make(map[string]blobRef)
 	var order []string
-	for _, commit := range commits {
-		if err := ctx.Err(); err != nil {
-			return gitSources{}, fmt.Errorf("%w: listing %s: %v", ErrGitHistory, commit, err)
+	commit := ""
+	for i := 0; i < len(records); i++ {
+		record := records[i]
+		if record == "" {
+			continue
 		}
-		entries, err := gitLines(ctx, featuresRepo, "ls-tree", "-r", "-z",
-			"--format=%(objecttype) %(objectname) %(path)", commit, "--", "features")
-		if err != nil {
-			return gitSources{}, err
+		if !strings.HasPrefix(record, ":") {
+			commit = record
+			continue
 		}
-		for _, entry := range entries {
-			kind, rest, ok := strings.Cut(entry, " ")
-			if !ok || kind != "blob" {
-				continue
-			}
-			oid, path, ok := strings.Cut(rest, " ")
-			if !ok || !isTaskYAML(path) {
-				continue
-			}
-			if _, dup := seen[oid]; dup {
-				continue
-			}
-			seen[oid] = blobRef{oid: oid, path: path, commit: commit}
-			order = append(order, oid)
+		fields := strings.Fields(record)
+		if len(fields) != 5 || i+1 >= len(records) || commit == "" {
+			return gitSources{}, fmt.Errorf("%w: malformed git diff-tree record %q", ErrGitHistory, record)
 		}
+		i++
+		path, oid := records[i], fields[3]
+		if fields[4] == "D" || !strings.HasPrefix(fields[1], "100") || !isTaskYAML(path) {
+			continue
+		}
+		if _, ok := seen[oid]; ok {
+			continue
+		}
+		seen[oid] = blobRef{oid: oid, path: path, commit: commit}
+		order = append(order, oid)
 	}
 	out.Blobs = len(order)
 	if len(order) == 0 {
@@ -493,7 +511,12 @@ func readGitSnapshots(ctx context.Context, featuresRepo string, maxCommits int) 
 		if !ok {
 			return gitSources{}, fmt.Errorf("%w: git cat-file did not return blob %s (%s)", ErrGitHistory, oid, seen[oid].path)
 		}
-		out.absorb(parseSnapshots(data, Revision{Source: SourceGit, Commit: seen[oid].commit}))
+		source := parseSnapshots(data, Revision{Source: SourceGit, Commit: seen[oid].commit})
+		for i := range source.Snapshots {
+			source.Snapshots[i].Repository = featuresRepo
+			source.Snapshots[i].Path = seen[oid].path
+		}
+		out.absorb(source)
 	}
 	return out, nil
 }
@@ -564,9 +587,47 @@ func readTargetTasks(path string) ([]yamlTask, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: read target %s: %v", ErrYAMLSource, path, err)
 	}
-	var doc yamlDocument
-	if err := yaml.Unmarshal(data, &doc); err != nil {
+	doc, err := decodeTaskDocument(data)
+	if err != nil {
 		return nil, fmt.Errorf("%w: parse target %s: %v", ErrYAMLSource, path, err)
 	}
+	seen := make(map[string]bool)
+	for i, task := range doc.Tasks {
+		if strings.TrimSpace(task.Key) == "" || !task.Role.Valid() || strings.TrimSpace(task.Model) == "" {
+			return nil, fmt.Errorf("%w: target %s row %d (%q) requires a key, valid role and model", ErrYAMLSource, path, i+1, task.Key)
+		}
+		if seen[task.Key] {
+			return nil, fmt.Errorf("%w: target %s repeats key %q", ErrYAMLSource, path, task.Key)
+		}
+		seen[task.Key] = true
+	}
 	return doc.Tasks, nil
+}
+
+func decodeTaskDocument(data []byte) (yamlDocument, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal(data, &root); err != nil {
+		return yamlDocument{}, err
+	}
+	if len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode {
+		return yamlDocument{}, fmt.Errorf("expected a mapping with a tasks sequence")
+	}
+	mapping := root.Content[0]
+	found := false
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "tasks" {
+			if mapping.Content[i+1].Kind != yaml.SequenceNode {
+				return yamlDocument{}, fmt.Errorf("tasks must be a sequence")
+			}
+			found = true
+		}
+	}
+	if !found {
+		return yamlDocument{}, fmt.Errorf("missing tasks sequence")
+	}
+	var doc yamlDocument
+	if err := root.Decode(&doc); err != nil {
+		return yamlDocument{}, err
+	}
+	return doc, nil
 }

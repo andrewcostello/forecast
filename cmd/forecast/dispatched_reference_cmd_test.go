@@ -59,7 +59,7 @@ func TestDispatchedReferenceBuildRunEWiresFlagsToTheBuilder(t *testing.T) {
 	if artifact.Coverage.TargetTasks != fixture.target {
 		t.Fatalf("--tasks did not reach the builder: %q", artifact.Coverage.TargetTasks)
 	}
-	if artifact.Coverage.HistoryCommits != 0 {
+	if artifact.Coverage.HistoryCommits != 1 {
 		t.Fatalf("--features-repo did not reach the builder: %+v", artifact.Coverage)
 	}
 	for _, want := range []string{
@@ -109,7 +109,7 @@ func TestDispatchedReferenceBuildWrapsOutputError(t *testing.T) {
 	cmd.SetOut(&bytes.Buffer{})
 
 	err := buildDispatchedReference(context.Background(), cmd,
-		dispatched.BuildOptions{RunsDir: fixture.runs, FeaturesRepo: fixture.repo}, out, false)
+		dispatched.BuildOptions{RunsDir: fixture.runs, FeaturesRepo: fixture.repo}, out, false, false)
 	if !errors.Is(err, dispatched.ErrReferenceOutput) {
 		t.Fatalf("error = %v, want ErrReferenceOutput", err)
 	}
@@ -132,24 +132,10 @@ func TestDispatchedReferenceBuildRequiresAFeaturesRepo(t *testing.T) {
 // restores every flag it touched. If wantErr is nil the call must succeed.
 func runBuildCommand(t *testing.T, flags map[string]string, wantErr *error) string {
 	t.Helper()
-	cmd := dispatchedReferenceBuildCmd
+	cmd := newDispatchedReferenceBuildCmd()
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetContext(context.Background())
-	restore := map[string]string{}
-	for name := range flags {
-		flag := cmd.Flags().Lookup(name)
-		if flag == nil {
-			t.Fatalf("no --%s flag", name)
-		}
-		restore[name] = flag.DefValue
-	}
-	t.Cleanup(func() {
-		cmd.SetOut(nil)
-		for name, value := range restore {
-			_ = cmd.Flags().Set(name, value)
-		}
-	})
 	for name, value := range flags {
 		if err := cmd.Flags().Set(name, value); err != nil {
 			t.Fatalf("set --%s: %v", name, err)
@@ -203,6 +189,11 @@ func newCommandFixture(t *testing.T) commandFixture {
 		`{"event_type":"task_spawn_finished","task_key":"ROW","timestamp":"2026-01-01T00:30:00Z","payload":{"spawn_kind":"implementer","model":"stamp","cost_usd":1.5}}`,
 		`{"event_type":"task_done","task_key":"ROW","timestamp":"2026-01-01T01:00:00Z","payload":null}`,
 	}, "\n")+"\n")
+	for _, args := range [][]string{{"add", "features"}, {"commit", "-q", "-m", "fixture"}} {
+		if out, err := exec.Command("git", append([]string{"-C", fixture.repo}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
 	return fixture
 }
 
@@ -217,5 +208,59 @@ func mustMkdirAll(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCoverageGateRejectsMalformedTargets(t *testing.T) {
+	for _, data := range []string{"foo: bar\n", "tasks:\n - key: A\n   role: wrong\n   model: stamp\n", "tasks:\n - key: A\n   role: bodies\n"} {
+		fixture := newCommandFixture(t)
+		writeFile(t, fixture.target, data)
+		var err error
+		runBuildCommand(t, map[string]string{"runs-dir": fixture.runs, "features-repo": fixture.repo, "out": filepath.Join(t.TempDir(), "o.json"), "tasks": fixture.target, "fail-on-empty-required": "true"}, &err)
+		if !errors.Is(err, dispatched.ErrYAMLSource) {
+			t.Fatalf("malformed target passed: %v", err)
+		}
+	}
+}
+
+func TestCoverageGateRejectsInsufficientCompletedObservations(t *testing.T) {
+	for _, status := range []string{"task_done", "task_blocked"} {
+		t.Run(status, func(t *testing.T) {
+			fixture := newCommandFixture(t)
+			writeFile(t, fixture.target, "tasks:\n - key: TARGET\n   role: bodies\n   model: stamp\n")
+			journal := filepath.Join(fixture.runs, "run", "journal.jsonl")
+			data, err := os.ReadFile(journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			writeFile(t, journal, strings.ReplaceAll(string(data), "task_done", status))
+			var gotErr error
+			runBuildCommand(t, map[string]string{"runs-dir": fixture.runs, "features-repo": fixture.repo, "out": filepath.Join(t.TempDir(), "o.json"), "tasks": fixture.target, "fail-on-uncovered-required": "true"}, &gotErr)
+			if gotErr == nil || !strings.Contains(gotErr.Error(), "bodies/stamp") {
+				t.Fatalf("insufficient completed evidence passed: %v", gotErr)
+			}
+		})
+	}
+}
+
+func TestBuildCommandAcceptsRepeatedSourceRepositories(t *testing.T) {
+	a, b := newCommandFixture(t), newCommandFixture(t)
+	cmd := newDispatchedReferenceBuildCmd()
+	out := filepath.Join(t.TempDir(), "union.json")
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--runs-dir", a.runs, "--features-repo", a.repo, "--features-repo", b.repo, "--out", out})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var artifact dispatched.Artifact
+	if err := json.Unmarshal(data, &artifact); err != nil {
+		t.Fatal(err)
+	}
+	if len(artifact.Coverage.Repositories) != 2 || len(artifact.Observations) != 1 {
+		t.Fatalf("repeated flags or dedupe failed: %+v", artifact)
 	}
 }

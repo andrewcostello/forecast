@@ -14,6 +14,10 @@ four defects; this states what gets built, in what order, under whose rulings.
 
 ## Measured before assigning
 
+**Historical snapshot:** these source counts predate multi-repository extraction.
+The [2026-09-04 correction report](FC1-CORRECTIONS.md) supersedes the claim that
+no bodies/adjudicate observations exist and records current wallet coverage.
+
 Facts the brief did not have. Re-derive rather than trust; each is a
 measurement, not a rule, and belongs here rather than in any contract.
 

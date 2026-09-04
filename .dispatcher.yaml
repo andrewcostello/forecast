@@ -1,20 +1,15 @@
-# Per-repo dispatcher config. `test:` is the mechanical gate: exit 0 = green.
-#
-# One Go module at the repo root, so a single `./...` pattern covers everything.
-#
-# `go build` is safe here: the `forecast` binary is gitignored, not tracked, so
-# building leaves the worktree clean and the dispatcher will accept the
-# evidence. (This is the opposite of claude-workflow, where the binaries ARE
-# tracked and a building gate blocks every task.)
-#
-# `-race` because the web server and the simulator both hold shared state.
+# Default gate runs the full suite. During red-first dispatch, only seals
+# registered for other unfinished bodies rows receive dispatcher exclusions.
 test: |
   set -e
   go build ./...
   go vet ./...
-  go test ./... -race
+  if [ -n "${DISPATCHER_KNOWN_RED_FILE:-}" ]; then
+    skip_pattern=$(cat "$DISPATCHER_KNOWN_RED_FILE")
+    go test ./... -race -skip "$skip_pattern"
+  else
+    go test ./... -race
+  fi
 
-# Outside the repo: a runs dir inside it is gitignored AND lives in a
-# disposable worktree, so the audit trail dies with the worktree. Shared with
-# claude-workflow so one reference class spans both.
+test_exclusion: go-skip
 runs_dir: ../dispatcher-runs

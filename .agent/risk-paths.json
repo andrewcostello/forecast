@@ -24,7 +24,7 @@
     {
       "id": "external-writes",
       "note": "internal/jira mutates issues in a live JIRA instance and ingest projects a whole dispatcher run onto them. A defect here is not recoverable by re-running: it has already commented on real tickets.",
-      "paths": ["internal/jira/**", "internal/ingest/**"],
+      "paths": ["internal/jira/**", "internal/tracker/**", "internal/ingest/**"],
       "risk": "high"
     },
     {

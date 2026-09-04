@@ -40,3 +40,5 @@ Thumbs.db
 
 # Dispatcher run artifacts, if runs_dir ever falls back to the in-repo default
 /docs/runs/
+# Claude Code local session/workflow state
+.claude/

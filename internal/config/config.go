@@ -11,17 +11,17 @@ import (
 
 // Config holds the application configuration
 type Config struct {
-	ProjectName    string                 `mapstructure:"project_name"`
-	ProjectType    string                 `mapstructure:"project_type"`
-	TeamSize       int                    `mapstructure:"team_size"`
-	TeamCapacity   float64                `mapstructure:"team_capacity"` // Hours per day
-	Source         SourceConfig           `mapstructure:"source"`         // Item source: jira (default) or authoritative yaml
-	JIRA           JIRAConfig             `mapstructure:"jira"`
-	JIRAInstances  map[string]JIRAConfig  `mapstructure:"jira_instances"` // Named JIRA instances for multi-JIRA support
-	Projects       []ProjectConfig        `mapstructure:"projects"`       // Multiple project/epic tracking
-	ItemTypes      []ItemTypeConfig       `mapstructure:"item_types"`
-	ReferenceClass ReferenceClassConfig   `mapstructure:"reference_class"`
-	JIRAMapping    JIRAMappingConfig      `mapstructure:"jira_mapping"`
+	ProjectName    string                `mapstructure:"project_name"`
+	ProjectType    string                `mapstructure:"project_type"`
+	TeamSize       int                   `mapstructure:"team_size"`
+	TeamCapacity   float64               `mapstructure:"team_capacity"` // Hours per day
+	Source         SourceConfig          `mapstructure:"source"`        // Item source: jira (default) or authoritative yaml
+	JIRA           JIRAConfig            `mapstructure:"jira"`
+	JIRAInstances  map[string]JIRAConfig `mapstructure:"jira_instances"` // Named JIRA instances for multi-JIRA support
+	Projects       []ProjectConfig       `mapstructure:"projects"`       // Multiple project/epic tracking
+	ItemTypes      []ItemTypeConfig      `mapstructure:"item_types"`
+	ReferenceClass ReferenceClassConfig  `mapstructure:"reference_class"`
+	JIRAMapping    JIRAMappingConfig     `mapstructure:"jira_mapping"`
 }
 
 // SourceConfig selects where forecast items come from.
@@ -54,18 +54,16 @@ type ProjectConfig struct {
 	Epic     string  `mapstructure:"epic"`     // Epic key (e.g., SMG-1688)
 	Key      string  `mapstructure:"key"`      // Short key for CLI (e.g., "monorepo")
 	Capacity float64 `mapstructure:"capacity"` // Optional: team capacity for this project
-	// JIRAInstance is the name of a jira_instances entry that owns this
-	// project's tickets. Empty = use the default jira: block. Used so a
-	// forecast can mix projects from multiple JIRA instances (e.g. SMG on
-	// smgames + an FSG epic on fullswing).
+	// JIRAInstance names a jira_instances entry that owns this project's
+	// tickets. Empty = use the default jira: block.
 	JIRAInstance string `mapstructure:"jira_instance"`
 }
 
 type JIRAConfig struct {
-	URL         string   `mapstructure:"url"`
-	Email       string   `mapstructure:"email"`
-	APIToken    string   `mapstructure:"api_token"`
-	ProjectKey  string   `mapstructure:"project_key"`
+	URL        string `mapstructure:"url"`
+	Email      string `mapstructure:"email"`
+	APIToken   string `mapstructure:"api_token"`
+	ProjectKey string `mapstructure:"project_key"`
 	// ProjectKeys lists additional issue-key prefixes (e.g. "FSG", "SMG")
 	// owned by this JIRA instance. Used by GetJIRAInstanceForKey to route
 	// per-ticket commands to the right instance. ProjectKey is always
@@ -124,8 +122,8 @@ type JIRAMappingConfig struct {
 }
 
 type MappingConfig struct {
-	Field    string            `mapstructure:"field"`
-	Mappings []FieldMapping    `mapstructure:"mappings"`
+	Field    string         `mapstructure:"field"`
+	Mappings []FieldMapping `mapstructure:"mappings"`
 }
 
 type FieldMapping struct {
@@ -168,8 +166,7 @@ func Load(configFile string) error {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// Expand environment variables in JIRA URL/email/token (supports ${VAR} syntax in YAML).
-	// Email + URL are expanded so a single set of env vars can drive multiple instances.
+	// Expand environment variables in API tokens (supports ${VAR} syntax in YAML)
 	current.JIRA.URL = os.ExpandEnv(current.JIRA.URL)
 	current.JIRA.Email = os.ExpandEnv(current.JIRA.Email)
 	current.JIRA.APIToken = os.ExpandEnv(current.JIRA.APIToken)
@@ -250,21 +247,6 @@ func yamlProjectToProjectConfig(yp YAMLProjectConfig) ProjectConfig {
 	return ProjectConfig{Key: yp.Key, Name: name}
 }
 
-// GetJIRAInstance returns a JIRA instance config by name
-// Falls back to default JIRA config if name is empty or not found
-func (c *Config) GetJIRAInstance(name string) *JIRAConfig {
-	if name == "" {
-		return &c.JIRA
-	}
-	if c.JIRAInstances != nil {
-		if instance, ok := c.JIRAInstances[name]; ok {
-			return &instance
-		}
-	}
-	// Fall back to default
-	return &c.JIRA
-}
-
 // ResolvePath resolves a config-relative path against the directory of the
 // loaded config file. Absolute paths are returned unchanged. Returns p as-is
 // when no config file is known (which happens in tests that construct Config
@@ -280,62 +262,19 @@ func ResolvePath(p string) string {
 	return filepath.Join(filepath.Dir(cfgFile), p)
 }
 
-// GetJIRAInstanceForProject returns the JIRA instance that owns the given
-// project. Resolution order:
-//  1. Explicit project.JIRAInstance if set.
-//  2. Prefix-match the project's Epic key against instance ProjectKey/ProjectKeys.
-//  3. Default JIRA.
-func (c *Config) GetJIRAInstanceForProject(p *ProjectConfig) *JIRAConfig {
-	if p == nil {
+// GetJIRAInstance returns a JIRA instance config by name
+// Falls back to default JIRA config if name is empty or not found
+func (c *Config) GetJIRAInstance(name string) *JIRAConfig {
+	if name == "" {
 		return &c.JIRA
 	}
-	if p.JIRAInstance != "" {
-		return c.GetJIRAInstance(p.JIRAInstance)
-	}
-	return c.GetJIRAInstanceForKey(p.Epic)
-}
-
-// GetJIRAInstanceForKey returns the JIRA instance that owns the given issue
-// key (e.g. "FSG-8348" → fullswing instance) by matching the key's project
-// prefix against each instance's ProjectKey + ProjectKeys. Falls back to the
-// default JIRA when no instance claims the prefix.
-func (c *Config) GetJIRAInstanceForKey(issueKey string) *JIRAConfig {
-	prefix := projectPrefix(issueKey)
-	if prefix == "" {
-		return &c.JIRA
-	}
-	if instanceClaimsPrefix(&c.JIRA, prefix) {
-		return &c.JIRA
-	}
-	for name, inst := range c.JIRAInstances {
-		if instanceClaimsPrefix(&inst, prefix) {
-			out := c.JIRAInstances[name]
-			return &out
+	if c.JIRAInstances != nil {
+		if instance, ok := c.JIRAInstances[name]; ok {
+			return &instance
 		}
 	}
+	// Fall back to default
 	return &c.JIRA
-}
-
-// projectPrefix extracts the project key prefix (uppercased) from an issue
-// key like "FSG-8348" → "FSG". Returns "" if the key is malformed.
-func projectPrefix(issueKey string) string {
-	idx := strings.IndexByte(issueKey, '-')
-	if idx <= 0 {
-		return ""
-	}
-	return strings.ToUpper(issueKey[:idx])
-}
-
-func instanceClaimsPrefix(j *JIRAConfig, prefix string) bool {
-	if strings.EqualFold(j.ProjectKey, prefix) {
-		return true
-	}
-	for _, k := range j.ProjectKeys {
-		if strings.EqualFold(k, prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 // InitProject creates a new .forecast directory with default config
@@ -427,4 +366,56 @@ jira_mapping:
 	fmt.Println("3. Run 'forecast sync' to pull data from JIRA")
 
 	return nil
+}
+
+// GetJIRAInstanceForProject returns the JIRA instance that owns the given project.
+func (c *Config) GetJIRAInstanceForProject(p *ProjectConfig) *JIRAConfig {
+	if p == nil {
+		return &c.JIRA
+	}
+	if p.JIRAInstance != "" {
+		return c.GetJIRAInstance(p.JIRAInstance)
+	}
+	return c.GetJIRAInstanceForKey(p.Epic)
+}
+
+// GetJIRAInstanceForKey returns the JIRA instance that owns the given issue key,
+// routed by its project-key prefix. Falls back to the default jira: block.
+func (c *Config) GetJIRAInstanceForKey(issueKey string) *JIRAConfig {
+	prefix := projectPrefix(issueKey)
+	if prefix == "" {
+		return &c.JIRA
+	}
+	if instanceClaimsPrefix(&c.JIRA, prefix) {
+		return &c.JIRA
+	}
+	for name, inst := range c.JIRAInstances {
+		if instanceClaimsPrefix(&inst, prefix) {
+			out := c.JIRAInstances[name]
+			return &out
+		}
+	}
+	return &c.JIRA
+}
+
+// projectPrefix extracts the uppercased project-key prefix from an issue key
+// (e.g. "SMG-1688" -> "SMG"). Returns "" for malformed keys.
+func projectPrefix(issueKey string) string {
+	idx := strings.IndexByte(issueKey, '-')
+	if idx <= 0 {
+		return ""
+	}
+	return strings.ToUpper(issueKey[:idx])
+}
+
+func instanceClaimsPrefix(j *JIRAConfig, prefix string) bool {
+	if strings.EqualFold(j.ProjectKey, prefix) {
+		return true
+	}
+	for _, k := range j.ProjectKeys {
+		if strings.EqualFold(k, prefix) {
+			return true
+		}
+	}
+	return false
 }

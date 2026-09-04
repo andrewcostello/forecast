@@ -48,9 +48,7 @@ func splitAndTrim(s, sep string) []string {
 	return parts
 }
 
-// getJiraClient creates a JIRA client from the default JIRA instance.
-// Use getJiraClientForKey when operating on a specific ticket so that the
-// right instance is picked based on the issue key prefix.
+// getJiraClient creates a JIRA client from the loaded config
 func getJiraClient() (*jira.Client, error) {
 	cfg := config.Get()
 	if cfg == nil {
@@ -60,8 +58,9 @@ func getJiraClient() (*jira.Client, error) {
 }
 
 // getJiraClientForKey returns the JIRA client whose instance owns the given
-// issue key (e.g. "FSG-8348" → fullswing). Falls back to the default JIRA
-// instance when no instance claims the prefix.
+// issue key (routed by project-key prefix). Use it for per-ticket commands so
+// that, with multiple jira_instances configured, each ticket op hits the right
+// instance. Falls back to the default jira: block when nothing claims the key.
 func getJiraClientForKey(issueKey string) (*jira.Client, *config.JIRAConfig, error) {
 	cfg := config.Get()
 	if cfg == nil {

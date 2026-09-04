@@ -371,6 +371,49 @@ jira:
 	}
 }
 
+func TestJIRAMappingConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	configContent := `
+jira_mapping:
+  item_type:
+    field: labels
+    mappings:
+      - jira: "type:component"
+        forecast: "Component"
+      - jira: "type:fix"
+        forecast: "Fix"
+  size:
+    field: labels
+    mappings:
+      - jira: "size:S"
+        forecast: "S"
+      - jira: "size:M"
+        forecast: "M"
+      - jira: "size:L"
+        forecast: "L"
+`
+	configPath := filepath.Join(tempDir, "config.yaml")
+	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
+		t.Fatalf("failed to write config file: %v", err)
+	}
+
+	current = nil
+	if err := Load(configPath); err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	cfg := Get()
+	if cfg.JIRAMapping.ItemType.Field != "labels" {
+		t.Errorf("expected item_type field 'labels', got %s", cfg.JIRAMapping.ItemType.Field)
+	}
+	if len(cfg.JIRAMapping.ItemType.Mappings) != 2 {
+		t.Errorf("expected 2 item type mappings, got %d", len(cfg.JIRAMapping.ItemType.Mappings))
+	}
+	if len(cfg.JIRAMapping.Size.Mappings) != 3 {
+		t.Errorf("expected 3 size mappings, got %d", len(cfg.JIRAMapping.Size.Mappings))
+	}
+}
+
 func TestGetJIRAInstanceForKey(t *testing.T) {
 	cfg := &Config{
 		JIRA: JIRAConfig{
@@ -481,48 +524,5 @@ func TestGetJIRAInstanceForKey_MalformedDashAtStart(t *testing.T) {
 	cfg := &Config{JIRA: JIRAConfig{URL: "https://default", ProjectKey: "DEF"}}
 	if got := cfg.GetJIRAInstanceForKey("-123"); got.URL != "https://default" {
 		t.Errorf("leading-dash key should fall back to default, got %q", got.URL)
-	}
-}
-
-func TestJIRAMappingConfig(t *testing.T) {
-	tempDir := t.TempDir()
-	configContent := `
-jira_mapping:
-  item_type:
-    field: labels
-    mappings:
-      - jira: "type:component"
-        forecast: "Component"
-      - jira: "type:fix"
-        forecast: "Fix"
-  size:
-    field: labels
-    mappings:
-      - jira: "size:S"
-        forecast: "S"
-      - jira: "size:M"
-        forecast: "M"
-      - jira: "size:L"
-        forecast: "L"
-`
-	configPath := filepath.Join(tempDir, "config.yaml")
-	if err := os.WriteFile(configPath, []byte(configContent), 0644); err != nil {
-		t.Fatalf("failed to write config file: %v", err)
-	}
-
-	current = nil
-	if err := Load(configPath); err != nil {
-		t.Fatalf("failed to load config: %v", err)
-	}
-
-	cfg := Get()
-	if cfg.JIRAMapping.ItemType.Field != "labels" {
-		t.Errorf("expected item_type field 'labels', got %s", cfg.JIRAMapping.ItemType.Field)
-	}
-	if len(cfg.JIRAMapping.ItemType.Mappings) != 2 {
-		t.Errorf("expected 2 item type mappings, got %d", len(cfg.JIRAMapping.ItemType.Mappings))
-	}
-	if len(cfg.JIRAMapping.Size.Mappings) != 3 {
-		t.Errorf("expected 3 size mappings, got %d", len(cfg.JIRAMapping.Size.Mappings))
 	}
 }

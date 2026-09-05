@@ -244,7 +244,7 @@ type Attempt struct {
 // Censored rejects invalid outcomes with ErrInvalidOutcome, otherwise reports
 // whether elapsed is a lower bound. FC-JOURNAL body, F4-OUTCOME-WIRE.
 func (a Attempt) Censored() (bool, error) {
-	return false, fmt.Errorf("%w: Attempt.Censored", ErrNotImplemented)
+	return true, fmt.Errorf("%w: Attempt.Censored", ErrNotImplemented)
 }
 
 // MarshalJSON emits textual outcome done/blocked/unfinished in schema 4; invalid
@@ -273,7 +273,10 @@ type AttemptSet struct {
 	Attempts          []Attempt          `json:"attempts"`
 	Ambiguous         []AmbiguousAttempt `json:"ambiguous"`
 	Conflicts         []AttemptConflict  `json:"conflicts"`
-	Diagnostics       JournalDiagnostics `json:"diagnostics"`
+	// Diagnostics contains parser diagnostics plus reducer-added facts. Build
+	// uses only the additions to augment already-counted source diagnostics.
+	// Never sum this total and ParsedJournal.Diagnostics for the same journal.
+	Diagnostics JournalDiagnostics `json:"diagnostics"`
 	// LeadingEvents counts events seen before any task_started for a key;
 	// they belong to no attempt and are never folded into the next one.
 	LeadingEvents int `json:"leading_events"`

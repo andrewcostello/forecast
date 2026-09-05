@@ -289,12 +289,15 @@ type SourceReadings struct {
 // ReadSources reads explicit specs at Selection.Cutoff with resolved bounds.
 // Retained manifest/readings remain meaningful on error. Named errors are
 // ErrInvalidSourceSpec, ErrInvalidSelection, ErrSourceMissing, ErrSourceEmpty,
-// ErrSourceCancelled (also ctx.Err()), and ErrJournalSource for a journal read.
+// ErrSourceCancelled (also ctx.Err.), ErrDuplicateJournalRun, and ErrJournalSource
+// for a journal read; this list is non-exhaustive (see the authoritative handoff).
 // F3 tables and "Entry-point contracts" in notes/FC-SCAFFOLD.md are authoritative.
 // FC-SOURCES body; all amended Git children must use runSourceGit, never the
 // inherited-env legacy helpers below.
 func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, bounds ReadBounds) (*SourceManifest, *SourceReadings, error) {
-	return nil, nil, fmt.Errorf("%w: ReadSources(%d sources)", ErrNotImplemented, len(specs))
+	return &SourceManifest{Sources: []SourceReport{}, Reasons: []string{}, HoldoutRunIDs: []string{}},
+		&SourceReadings{Journals: []ParsedJournal{}, ExcludedJournals: []JournalIdentity{}, Readings: []Reading{}},
+		fmt.Errorf("%w: ReadSources(%d sources)", ErrNotImplemented, len(specs))
 }
 
 // sourceBudget is one source's shared byte/process budget. FC-SOURCES may add
@@ -325,8 +328,19 @@ func runSourceGit(ctx context.Context, repo string, budget *sourceBudget, reques
 	return nil, fmt.Errorf("%w: runSourceGit", ErrNotImplemented)
 }
 
+// openSourceFile is the mandatory amended live/journal reader. It opens a local
+// file and bounds physical reads by the shared source budget BEFORE retaining
+// bytes. A live YAML file also uses MaxBlobBytes; journals use line/total bounds
+// through ParseEvents. Cancellation and byte overflow retain diagnostics and wrap
+// ErrSourceCancelled plus ctx.Err(), or ErrBoundExceeded. Close releases the file.
+// FC-SOURCES body; nil budget is ErrInvalidSourceSpec. No os.ReadFile fallback.
+func openSourceFile(ctx context.Context, path string, budget *sourceBudget, journal bool) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("%w: openSourceFile", ErrNotImplemented)
+}
+
 // sourceGitCommand constructs an amended read-only Git command with an explicit
-// isolated environment. No inherited Git location/config overrides or helpers;
+// isolated environment: discard all inherited GIT_* except GIT_EXEC_PATH, then
+// install the fixed affirmative settings in the handoff. No inherited helpers;
 // system/global config disabled, repository pinned. See F3-GIT-ENV-STRIPPED and
 // "Entry-point contracts". It does not spawn; runSourceGit applies process/byte
 // bounds. Called only by runSourceGit. FC-SOURCES body; legacy helpers remain

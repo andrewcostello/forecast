@@ -15,7 +15,7 @@ remain. No new test or fixture is included in the scaffold's cumulative diff.
 | Owner | Frozen seam to implement after independent FC-SEALS |
 |---|---|
 | FC-JOURNAL | ParseEvents, ReduceAttempts, SummarizeWall, Attempt JSON/Censored methods; canonical attempt/time/cost evidence. |
-| FC-SOURCES | Source/bound/selection validation, parseReadings, ReadSources, newSourceBudget/runSourceGit/sourceGitCommand, ValidateReadingRevision, manifest validation. Depends on FC-JOURNAL because ReadSources consumes its parser. |
+| FC-SOURCES | Source/bound/selection validation, parseReadings, ReadSources, newSourceBudget/runSourceGit/openSourceFile/sourceGitCommand, ValidateReadingRevision, manifest validation. Depends on FC-JOURNAL because ReadSources consumes its parser. |
 | FC-1 | JoinEvidence, amended Build/PredictionEligibility, version 4 ArtifactEvidence and CLI. |
 
 Decision functions above return ErrNotImplemented in this scaffold. Validation
@@ -62,8 +62,8 @@ needs to edit observation.go or extract.go to fill these seams.
 - A non-task YAML document is neither a malformed task nor a lost attempt.
   Decode task rows independently. Invalid siblings cannot erase valid rows.
 - ReadSources validates before IO, applies zero-bound defaults, and reports
-  shallow/capped/malformed reads as PARTIAL with reasons. Only cancellation or
-  actual discovery/read failure returns a read error. Completeness is refused
+  shallow/capped/malformed reads as PARTIAL with reasons. Cancellation, invalid/duplicate source identity, or
+  actual discovery/read failure returns an error with retained diagnostics. Completeness is refused
   by ValidateComplete/PredictionEligibility, with no hidden read policy flag.
 - Version 4 requires SourceManifest plus ArtifactEvidence; the baseline emits version 3. Gate version comparison is equality, never >=. The Evidence payload
   holds full RecoveredAttempt records and audit data with stable JSON names;
@@ -107,7 +107,7 @@ row explicitly amends a legacy expectation under the revised contracts.
 | F1-EV-JOURNAL-OVER-YAML | Journal terminal T1, differing YAML terminal T2/outcome | Choose journal terminal tuple; only equal-authority contradictions are conflicts. | Attempt.Evidence | FC-1 |
 | F1-EV-YAML-ONLY-TERMINAL | No journal terminal; YAML `Done`+`completed_at`, both revision and terminal at/before cutoff | Outcome done, `Terminal.Source=EvidenceYAML`, counted in `EvidenceJoin.RowsWithYAMLOnlyTerminal`. | FieldEvidence; EvidenceJoin.RowsWithYAMLOnlyTerminal | FC-1 |
 | F1-EV-UNKNOWN-STAYS-UNKNOWN | No terminal anywhere | `OutcomeUnfinished`, `Terminal.Source=EvidenceNone`, elapsed to cutoff, censored. | `Attempt.Censored` | FC-JOURNAL |
-| F1-EV-MODEL-CONFLICT | Two implementing spawns in one attempt with different models and no cascade ordering | Last recorded implementing stamp wins (closing model); Cascades counts only recorded agent_fallback events, never inferred from a model change. Equal-authority contradiction that cannot be ordered → `AttemptConflict{Field:"model"}`. | `ErrEvidenceConflict` | FC-JOURNAL |
+| F1-EV-MODEL-CONFLICT | Two ordered implementing spawns in one attempt with different models and no cascade marker | Last physical implementing event with a recorded model wins after retransmission/collision removal; Cascades counts only recorded agent_fallback events. No extra unordered-model case: conflicting same-sequence payloads are parser-malformed by F2-EVENT-IDENTITY. | Attempt.Model | FC-JOURNAL |
 | F1-EV-TERMINAL-CONFLICT | `task_done` and `task_blocked` in one attempt | `AttemptConflict{Field:"terminal"}`; excluded, `DispositionConflictingEvidence`. | `ErrEvidenceConflict` | FC-JOURNAL / FC-1 |
 | F1-EV-PERMUTATION | Inputs/corroborating citations reordered | Same canonical recovered samples/audit; tie order includes every journal and reading member, including Producer and UTC instant. | JoinEvidence | FC-1 |
 | F1-MODEL-CLOSING-STAMP | implementer `opus` → fallback → panel-iterate `sol` | `Model=Known("sol")`, `Cascades=1`, disclosed; not pooled with `opus`. | `Attempt.Model` | FC-JOURNAL |
@@ -120,7 +120,7 @@ row explicitly amends a legacy expectation under the revised contracts.
 | F2-PHASES-DISJOINT | Production order above | Intervals disjoint, contained, classified sum ≤ `Elapsed`; residual `Unclassified`, never development. | `SummarizeWall` | FC-JOURNAL |
 | F2-PHASES-PANEL-WALL | Three reviewer seats in one panel | One panel_review interval from invocation-shaped panel_started to panel_verdict; path-classification gate records never open a review interval. | `Interval` | FC-JOURNAL |
 | F2-PHASES-ITERATE-AFTER-SPAWN | `spawn_finished(panel-iterate)` then `panel_iterate` | Corrective work interval ends at the spawn finish; `panel_iterate` is not a start boundary. | `Interval.Evidence` | FC-JOURNAL |
-| F2-PHASES-INFERRED-LABELED | Boundary not recorded but derivable | `Inferred=true`; ambiguous attribution → no interval, `Complete=false`. | `Interval.Inferred` | FC-JOURNAL |
+| F2-PHASES-INFERRED-LABELED | Direct valid WallBreakdown interval marked Inferred=true | Validator preserves the flag; it does not infer or authenticate caller attribution. The 0.1.0 reducer emits only explicit-event or recorded-duration spans with Inferred=false; missing/ambiguous boundaries are withheld with Complete=false. | Interval.Inferred; SummarizeWall | FC-JOURNAL |
 | F2-ROUNDS-VS-REVIEWS | first review invocation, then two panel corrections each followed by another invocation | `Reviews=3`, `Corrections=2`. | `Attempt` | FC-JOURNAL |
 | F2-COST-NULL-VS-ZERO | spawn `cost_usd: null` vs `cost_usd: 0` | `Unknown` vs `Known(0)`. | `Measured[float64]` | FC-JOURNAL |
 | F2-COST-NO-DOUBLE-SUM | Same spawn seen twice with the same present producer sequence and equivalent payload | Summed once; `CostEvents` lists one ref. | `Attempt.CostEvents` | FC-JOURNAL |
@@ -183,7 +183,7 @@ row explicitly amends a legacy expectation under the revised contracts.
 | F3-RESOLVED-BOUNDS | Requested zero bounds | Manifest stores positive effective defaults, including DefaultMaxCommits; it can be replayed without applying a future version's defaults. | FC-SOURCES |
 | F3-CANCEL-PERSIST | Cancellation after some records | ParseEvents retains parsed events; ReadSources returns PARTIAL manifest/readings with wrapping context error; Build returns diagnostic result plus error; CLI writes/report manifest before failing. | FC-JOURNAL / FC-SOURCES / FC-1 |
 | F4-TARGET-INPUT | Duplicate/blank keys in original TargetRow slice but apparently valid aggregate Coverage | Gate rejects ErrInvalidTarget before source/sample checks. It validates original rows, not reconstructed aggregates; no file IO in the gate. | FC-1 |
-| F4-VERSION-EXACT | Legacy schema 3, unknown schema 5, or schema 4 missing Evidence/manifest | Refusal; only exact EvidenceSchemaVersion=4 with required valid payload can pass. | FC-1 |
+| F4-VERSION-EXACT | Legacy schema 3, unknown schema 5, or schema 4 missing Evidence/manifest | Refusal; only exact AmendedEvidenceSchemaVersion=4 with required valid payload can pass. | FC-1 |
 
 ## Validation
 
@@ -221,9 +221,13 @@ These are completed-body expectations; the scaffold adds no acceptance implement
 | F4-MIXED-OPTIONS | Any legacy RunsDir/FeaturesRepo/non-nil FeaturesRepos/nonzero MaxHistoryCommits together with amended Sources/Selection/Bounds | Completed amended Build returns ErrInvalidSourceSpec before IO. FC-1 CLI maps legacy flag spellings into explicit sources/bounds and clears compatibility fields. No silent ignored location/cap. The scaffold itself still refuses all amended inputs with ErrNotImplemented. | FC-1 |
 | F4-CANONICAL-LISTS | Empty version 4 payload lists or nested citations | Bodies serialize [] not null; JSON-value equality is the replay criterion. Nil Evidence still means unavailable. Reused Cell intentionally retains stable legacy Role/Model keys. | FC-1 |
 
-Replay always names resolved refs and captured live inputs (bytes and mtime),
-not a promise that a moving branch or changed live file is an identical source.
-Newly discovered snapshots produce a new source manifest even with the same cutoff.
+Replay equality is conditional on the caller preserving the same source bytes,
+live mtime and resolved Git objects. The artifact stores citations and resolved
+refs, not live bytes, a content archive or a cryptographic snapshot identity.
+A changed live file with preserved mtime is not distinguishable from these
+citations alone. Portable audit verifies the recorded internal evidence, not
+source authenticity or recovery of old live files. Content-addressed archiving
+is outside F1-F4; no body or report may claim self-contained source replay.
 All in-sample missing revision times are malformed in the source and join; excluded
 quality counters retain malformed facts separately without degrading the in-sample corpus.
 
@@ -255,7 +259,9 @@ unchanged baseline behavior. No downstream row may amend these rules casually.
   contributions make the quantity unknown. Checked duration/count/token/cost
   overflow returns ErrMeasurementOverflow with retained valid data; reversed
   attempt elapsed returns ErrReversedInterval. Propagate added diagnostics to
-  PARTIAL during Build. No saturation and no implicit clock read. Attempt.Wall.StartedAt must equal
+  PARTIAL during Build. AttemptSet.Diagnostics retains parser counts plus reducer
+  additions; Build augments aggregate quality only from those additions because
+  ReadSources already counted parser facts. Never add both full totals. No saturation and no implicit clock read. Attempt.Wall.StartedAt must equal
   Attempt.ID.StartedAt and Wall.Elapsed must equal Attempt.Elapsed. Reduction,
   Attempt JSON encode/decode and joining reject an INPUT mismatch with ErrEvidenceConflict;
   the standalone wall validator only checks the wall it receives. When a valid
@@ -304,16 +310,23 @@ unchanged baseline behavior. No downstream row may amend these rules casually.
   source, including journal/live reads in that budget. sourceGitCommand is private
   construction used only by runSourceGit. The bounded runner applies process slots
   and source-total bytes internally and each blob bound before buffering; no legacy
-  gitLines/gitCatFileBatch calls are allowed. Clear GIT_DIR, GIT_WORK_TREE,
-  GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES,
-  GIT_INDEX_FILE, GIT_CEILING_DIRECTORIES, GIT_DISCOVERY_ACROSS_FILESYSTEM,
-  GIT_PREFIX, GIT_REPLACE_REF_BASE, all GIT_CONFIG* variables and inherited
-  pathspec overrides (GIT_LITERAL_PATHSPECS, GIT_GLOB_PATHSPECS,
-  GIT_NOGLOB_PATHSPECS, GIT_ICASE_PATHSPECS). Preserve PATH/GIT_EXEC_PATH for the
-  selected Git installation. Explicitly disable system/global config, configured
-  fsmonitor/credential/diff/filter helpers and network protocols; no lazy fetch.
-  Pin the repository and use literal root pathspecs with fixed read-only Git
-  subcommands. Detect/report raw replace/graft metadata while disabling their
+  gitLines/gitCatFileBatch calls are allowed. Discard ALL inherited GIT_* variables
+  except GIT_EXEC_PATH; preserve PATH for the selected trusted Git installation.
+  Install GIT_LITERAL_PATHSPECS=1, GIT_CONFIG_NOSYSTEM=1,
+  GIT_CONFIG_SYSTEM=/dev/null, GIT_CONFIG_GLOBAL=/dev/null,
+  GIT_TERMINAL_PROMPT=0, GIT_NO_LAZY_FETCH=1, GIT_NO_REPLACE_OBJECTS=1,
+  GIT_ALLOW_PROTOCOL="", GIT_SSH_COMMAND=/bin/false, GIT_ASKPASS=/bin/false,
+  and GIT_PROXY_COMMAND=/bin/false. Inherited location, namespace, config,
+  alternate-object, pathspec, HTTP, SSH, proxy and external-diff overrides cannot
+  survive that allowlist. Every command adds -c core.fsmonitor=false,
+  -c credential.helper=, -c protocol.allow=never, and -c protocol.file.allow=never.
+  Use only raw metadata/blob modes, never checkout, --filters, --textconv,
+  external diff or user aliases; diff-tree explicitly disables ext-diff/textconv.
+  Thus repository filter/diff/credential helpers have no execution path.
+  Pin the repository and pass plain repository-relative roots after --;
+  GIT_LITERAL_PATHSPECS=1 makes them literal. Do NOT combine that setting with
+  :(literal) prefixes, which would themselves become literal path text. Use
+  fixed read-only Git subcommands. Detect/report raw replace/graft metadata while disabling their
   interpretation; do not hide that evidence by merely disabling replacements. Refs resolve before traversal; all-ref tips are
   sorted and recorded. ValidateReadingRevision accepts only live or git:<full
   lowercase 40/64-hex object ID>; RecordedAt separately carries commit time/mtime.
@@ -508,3 +521,50 @@ output; they do not give input slice order evidentiary authority.
 
 Historical reviewer dispositions are preserved in the correction audit directory
 and in prior commits, not repeated in this behavioral handoff.
+
+## Compatibility projection and bounded execution details
+
+Version 4 creates one ReferenceObservation per recovered AttemptID in canonical
+ID order, without Table.Add or any legacy max-fold/dedupe. BuildResult.Table is
+nil on the amended path: that legacy table cannot represent distinct run IDs.
+Consumers of amended results use Artifact/Evidence. Baseline Table remains unchanged.
+
+| Flat field | Exact version 4 mapping |
+|---|---|
+| Key, DispatcherRunID, StartedAt | Attempt.ID key/run/UTC start |
+| Role, Model | RecoveredAttempt.Cell; must agree with the validated stamped model |
+| Outcome, Censored | Attempt.Outcome.String(); outcome != done |
+| TerminalEvidence | structured none/yaml/journal maps to legacy none/yaml/journal |
+| ElapsedSeconds | Attempt.Elapsed.Seconds(), including censored lower bounds |
+| DevelopmentSeconds, ReviewSeconds | sums of retained disjoint development and panel_review spans in seconds; verifier is separate in Evidence, never folded into review |
+| Rounds, Cascades | Attempt.Corrections, Attempt.Cascades; never YAML iteration_count or review invocation count |
+| InputTokens, OutputTokens | measured value when Known, otherwise legacy zero placeholder; Evidence carries availability |
+| CostUSD | pointer to known value, including zero; otherwise null |
+| SourceRevision, SourceRepository, SourcePath | least canonical recovered ReadingRef's respective members; citation of the reading, not per-field authority |
+
+Legacy phase sums and unknown-token zero placeholders cannot express availability;
+Limits must disclose this, and amended sampling/eligibility never reads them.
+CellSummary groups these same distinct recovered IDs by role/model, plus empty
+requested target cells. N counts all, NDone counts done, NBlocked counts blocked,
+NCensored counts blocked+unfinished. Duration uses done elapsed seconds only;
+Rounds uses correction counts of all outcomes. NumericSummary uses N/min/mean/
+median/max, empty all-zero; cells sort role/model. Coverage's target and recovery
+projections use these same joint counts and the named disposition/manifest facts,
+never a second extraction or Table merge. Evidence is the authoritative diagnostic
+payload; legacy counters without an exact amended counterpart remain zero and are
+explicitly labeled unavailable in Limits, rather than guessed from unrelated counts.
+
+All live/journal file reads use openSourceFile with the same sourceBudget as Git.
+Byte limits apply before retaining bytes; journal line limits remain ParseEvents'
+responsibility and physical bytes are never charged twice. Slot acquisition in
+runSourceGit is context-cancellable and returns the same wrapped cancellation as
+an active child. Bounds are per explicitly requested source, not a total-RSS claim.
+Pure ReduceAttempts/JoinEvidence/SummarizeWall are finite in-memory operations over
+that bounded input and do not spawn children. They have no separate deadline; Build
+checks ctx between source/reduce/join phases and refuses cancelled results. A global
+corpus/RSS cap or required caller deadline is outside this contract and must not be
+advertised. Callers control how many explicit sources they request.
+
+SummarizeWall is the phase checker: the exhaustive classified values are development,
+panel_review and verifier. Unclassified is a report key only; all other interval
+values wrap ErrInvalidPhase. Equivalent enum helpers are optional body details.

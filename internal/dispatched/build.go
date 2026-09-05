@@ -79,15 +79,15 @@ type Artifact struct {
 	Evidence       *ArtifactEvidence `json:"evidence,omitempty"`
 }
 
-// EvidenceSchemaVersion is emitted only once FC-1 implements the amended build.
+// AmendedEvidenceSchemaVersion is emitted only once FC-1 implements the amended build.
 // Legacy version 3 retains its fields. Version 4 requires SourceManifest and Evidence;
 // consumers must reject missing payloads or unsupported versions, not default
 // their absence to zero. Legacy Observations/Cells are compatibility projections
 // only; amended sampling uses Evidence.Observations exclusively.
-const EvidenceSchemaVersion = 4
+const AmendedEvidenceSchemaVersion = 4
 
 // BaselineSchemaVersion is the current legacy writer version. Only the amended
-// FC-1 Build may emit EvidenceSchemaVersion after filling both required payloads.
+// FC-1 Build may emit AmendedEvidenceSchemaVersion after filling both required payloads.
 const BaselineSchemaVersion = 3
 
 // ArtifactEvidence is the complete serializable join audit and joint sample.
@@ -146,7 +146,7 @@ type TargetRow struct {
 	Model string `json:"model"`
 }
 
-// PredictionEligibility requires SchemaVersion == EvidenceSchemaVersion exactly,
+// PredictionEligibility requires SchemaVersion == AmendedEvidenceSchemaVersion exactly,
 // nonnil Evidence, a valid complete SourceManifest, a nonempty valid target
 // argument and sufficient completed
 // samples in every required cell. minCompleted<=0 uses DefaultMinObservations;

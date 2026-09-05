@@ -309,7 +309,9 @@ const (
 // Interval is one classified half-open wall-clock span [Start, End) inside
 // an attempt. Inferred is true when the boundaries were not both recorded
 // events (an explicit boundary or duration in the record makes it false);
-// an inferred interval whose attribution is ambiguous is not emitted at all.
+// The frozen 0.1.0 reducer emits only Inferred=false spans; missing boundaries
+// are withheld. Inferred=true remains valid for explicitly supplied wall inputs
+// whose attribution is justified by their caller, and is preserved by SummarizeWall.
 // Evidence names the events that bound it.
 type Interval struct {
 	Phase    Phase      `json:"phase"`

@@ -112,14 +112,15 @@ retained commit count but no injectable commit iterator, so F3-BOUND-COMMITS
 cannot independently distinguish bounded collection from walk-then-trim without
 pinning an arbitrary Git command. It now requires exactly three retained commits
 and a bound diagnostic; the iterator-access mutation is explicitly deferred.
-Byte pre-buffering is directly observable because the controlled child withholds
-EOF after byte 65. Process/source probes record actual Git entry, output, ordering,
-overlap and cancellation with absolute paths embedded in the wrapper, but the
-frozen seams expose no hook for an attempted slot/source acquisition. Absence of
-an overlap marker is therefore mutation evidence, not a proof under arbitrary
-goroutine scheduling. Journal-source entry is not instrumented. Full process-slot
-and all-source-kind fan-out proof is deferred to body/adjudication code review and
-green-body mutation measurement.
+Byte pre-buffering is observable by the controlled-child harness once an owner
+body reaches it because the child withholds EOF after byte 65. Process/source
+probes record actual Git entry, output, ordering, overlap and cancellation with
+absolute paths embedded in the wrapper, but the frozen seams expose no hook for
+an attempted slot/source acquisition. Absence of an overlap marker is not proof
+under arbitrary goroutine scheduling. Journal-source entry is not instrumented.
+Full process-slot and all-source-kind fan-out proof is deferred to
+body/adjudication code review and green-body mutation measurement; current
+scaffold-red termination does not exercise these controlled-child paths.
 
 ### Journal (`TestFCJournalContract`)
 
@@ -197,7 +198,7 @@ green-body mutation measurement.
 | F3-GIT-DELETED-RENAMED | Old path still read | Skip deleted blobs |
 | F3-BOUND-COMMITS | Exactly three retained commits; bound/PARTIAL diagnostics | Retained over-cap commit fails now; iterator walk-then-trim mutation deferred until the body exists |
 | F3-BOUND-BYTES | PARTIAL plus controlled blob reader rejects unique byte 65 before EOF | Buffer the whole blob before applying the cap |
-| F3-BOUND-PROCESSES | Negative invalid; MaxProcesses=1 preserves COMPLETE/counts; first entry and both controlled outputs are observed, and any actual pre-release overlap is rejected | Eager overlap is observed; proof that a delayed second goroutine attempted slot acquisition is deferred to body review/mutation |
+| F3-BOUND-PROCESSES | Negative invalid; MaxProcesses=1 preserves COMPLETE/counts; after the second call launches, first release stays absent during a bounded positive-presence observation; first entry and both controlled outputs are observed, and any actual pre-release second entry/overlap is rejected | Eager overlap is caught; marker absence is not proof of attempted acquisition/serialization, which remains deferred to body review/mutation |
 | F3-CANCELLED | Both cancel sentinels; not COMPLETE | Ignore ctx |
 | F3-HOLDOUT-EXCLUDED | Held-out journal in ExcludedJournals; live AND git-history YAML rows with `dispatcher_run_id: held` marked HeldOut with snapshot cleared; keep rows remain in-sample | Feed held-out events to reducer; ignore history YAML |
 | F3-CUTOFF-EXCLUDED | AfterCutoff audit envelope | Sample later completed_at |
@@ -217,7 +218,7 @@ green-body mutation measurement.
 | F3-EXCLUDED-QUALITY | Held-out malformed uses MalformedExcluded | Degrade in-sample completeness |
 | F3-MALFORMED-HELDOUT-IDENTITY | Independent RunID still proves holdout | Require valid Snapshot |
 | F3-ALL-JOURNALS-HELDOUT | COMPLETE, Journals=1, excluded=1 | Mark EMPTY |
-| F3-SOURCE-CONCURRENCY | Controlled Git entry records the lower SourceID first; any actual second-repository entry before release is rejected; reports stay SourceID-ordered with unchanged bound counts | Eager cross-Git fan-out/order mutation is observed; unexposed attempted acquisition and journal-kind fan-out are deferred |
+| F3-SOURCE-CONCURRENCY | After the first marker, its release stays absent during a bounded positive-presence observation for second-source entry, overlap, or second-first ordering; any observed violation fails, then reports remain SourceID-ordered with unchanged bound counts | Eager cross-Git fan-out/order is caught; marker absence is not proof of acquisition, and journal-kind fan-out remains deferred |
 | F3-DUPLICATE-JOURNAL-RUN | `ErrDuplicateJournalRun` | Merge replicas |
 | F3-COMPLETENESS-CAUSES | Bound PARTIAL wraps both incompleteness sentinels | COMPLETE with BoundsExceeded>0 |
 | F3-EXCLUSION-ORDER | NotTaskDocument first | Classify as malformed |
@@ -269,7 +270,7 @@ green-body mutation measurement.
 | F4-ARTIFACT-HOLDOUT | Held-out run in artifact refused | Predict anyway |
 | F4-ARTIFACT-CUTOFF | Attempt/manifest cutoff mismatch refuses with both eligibility/incomplete sentinels | Ignore replay cutoff mismatch |
 | F4-ARTIFACT-CELL | Structured Cell model contradicting stamped Attempt model refuses with both sentinels | Trust the contradictory cell |
-| F4-ARTIFACT-JOINT-RECORD | Wall/parent elapsed mismatch refuses with both eligibility/incomplete sentinels | Sample a malformed joint attempt |
+| F4-ARTIFACT-JOINT-RECORD | Wall/parent elapsed mismatch refuses with both eligibility/incomplete sentinels | Accept `Attempt.Elapsed` and ignore contradictory `Wall.Elapsed` |
 | F4-STRUCTURED-THIN-CELL | Cells name completed/threshold | Reasons only |
 | F4-CELL-EMPTY-N0 | Empty required cell present n=0 | Omit it |
 | CLI F3-SRC-EXPLICIT-ONLY | No HOME default; no usage | Default `~/Project/claude-workflow` |
@@ -339,11 +340,20 @@ findings). Every current family/index disposition is recorded here.
 |---|---|
 | `claude/verdict` | APPROVE with no indexed findings; no separate code change required. |
 | `grok/verdict` | APPROVE with no indexed findings; no separate code change required. |
-| `codex/1` | **Corrected and narrowed.** F3-BOUND-PROCESSES has no 300 ms proof claim. Wrapper paths and the absolute real-Git path are shell-quoted into the script, release loops sleep, every start/read/close/cleanup wait is bounded, releases precede drains/closes, and contexts are cancelled. Actual pre-release child overlap still fails. Whether a delayed goroutine attempted slot acquisition is unobservable and deferred to body review/mutation. |
-| `codex/2` | **Corrected and narrowed.** F3-SOURCE-CONCURRENCY has no quiet-window receive. It records which Git repository actually entered first, rejects an actually observed pre-release second-repository entry, and requires canonical SourceID report order. The journal source has no entry hook, so acquisition and all-source-kind fan-out proof are explicitly deferred to body/adjudication review and mutation measurement. Result/error cleanup is bounded and releases/cancels first. |
+| `codex/1` | **Corrected and narrowed.** F3-BOUND-PROCESSES keeps first release absent for a bounded positive-presence observation after the second launch. Wrapper paths and the absolute real-Git path are shell-quoted, waits/cleanup are bounded, and actual pre-release child entry/overlap fails. Absence does not prove attempted slot acquisition or serialization; that remains deferred. |
+| `codex/2` | **Corrected and narrowed.** F3-SOURCE-CONCURRENCY keeps first release absent for a bounded positive-presence observation after first entry and rejects observed second entry, overlap, or second-first ordering. Reports remain canonically SourceID-ordered. Absence does not prove acquisition, and the uninstrumented journal-kind fan-out remains deferred. Cleanup/results stay bounded. |
 | `panel/request-4` | Fixture reachability clocks were replaced by explicit per-repo clocks, fixture Git environments are isolated, and commit parent ordering is asserted in both Go test packages. The tiny helpers remain duplicated because separate `dispatched` and `main` test packages cannot share unexported test code without a production/exported seam; no such scope expansion is justified. Explicit initial branches remove host default-branch dependence. |
 | `panel/request-5` | Added F4-ARTIFACT-JOINT-RECORD for a wall/parent elapsed mismatch, requiring both ErrNotEligible and ErrSourceIncomplete. Aggregate-reason checks require the induced named prefix but permit other valid `reduce:`/`join:` diagnostics. |
 | `panel/request-6` | PROVENANCE now distinguishes the sole recorded/sanitized fixture from wholly synthetic companions. `valid-tasks.yaml` was deleted after repository-wide reference search found no consumer; duplicate in-package mtime calculation was folded into `setFixtureMTime`. |
+
+## Latest panel correction dispositions
+
+| Finding | Disposition |
+|---|---|
+| Bounded process/source probes | Restored a `fixtureHarnessWait` positive-presence observation before first release in both probes. Positive markers fail and trigger bounded release/cleanup; marker absence is not treated as negative proof. Attempted acquisition, serialization adjudication, and journal-kind fan-out remain deferred. |
+| Controlled shell portability/bytes | All controlled release loops use portable `sleep 1`. The byte probe writes exactly 64 `a` bytes plus `Z` with `printf '%s'`, without a newline, and remains alive until release. |
+| Fixture clock wording | Narrowed the helper godoc: commit-producing `runGit` calls advance the explicit per-repository clock; read-only helpers using the isolated environment do not. The clock implementation is unchanged. |
+| Claude malformed-record HIGH | **Not adopted; false positive.** `PredictionEligibility` expressly treats malformed joint records as invalid payloads and, when refusing, requires `ErrNotEligible` plus `ErrSourceIncomplete` (`internal/dispatched/build.go:149-167`, especially 154-166). `ErrEvidenceConflict` applies at the distinct `ReduceAttempts`/Attempt JSON/`JoinEvidence` entry points. The prior panel at `2026-09-05T17-05-25Z` requested this exact negative case and pair. Mutation: accept `Attempt.Elapsed` and ignore contradictory `Wall.Elapsed`. |
 
 ## Residual limitation
 
@@ -364,8 +374,10 @@ On the corrected tree, `gofmt` and `git diff --check` are clean; `go build
 '^(TestFCJournalContract|TestFCSourcesContract|TestFCEvidenceContract|TestFCReferenceCLIContract)$'`
 passes. Each of the four reserved groups exits 1 under `-race` on named
 scaffold/baseline assertions inside a 90-second external bound; all completed
-far below the bound with no panic, fatal runtime error, data race, or harness
-hang. `F4-ARTIFACT-JOINT-RECORD` is among those named scaffold failures. This
-does not claim that deferred green-path body mutations have already been
-exercised. The parent operator's IP-socket-denied check remains a separate
-independent verification step.
+far below the bound with no panic, fatal runtime error, or data race.
+`F4-ARTIFACT-JOINT-RECORD` is among those named scaffold failures. These
+no-hang runs stop at `ErrNotImplemented` and do not enter or empirically exercise
+the controlled-child harness paths; their termination is not evidence that
+those paths ran. Body/adjudication mutation proof remains deferred. The parent
+operator's IP-socket-denied check remains a separate independent verification
+step.

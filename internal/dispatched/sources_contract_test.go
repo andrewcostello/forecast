@@ -657,7 +657,7 @@ func testF3BoundBytes(t *testing.T) {
 	marker := filepath.Join(state, "wrote-over-cap")
 	release := filepath.Join(state, "release")
 	installFixtureGitWrapper(t, fmt.Sprintf(
-		"printf '%%s\\n' %s\n: > %s\nwhile [ ! -e %s ]; do sleep 0.01; done",
+		"printf '%%s' %s\n: > %s\nwhile [ ! -e %s ]; do sleep 1; done",
 		shellQuote(strings.Repeat("a", 64)+"Z"), shellQuote(marker), shellQuote(release),
 	))
 	budget, err := newSourceBudget(ReadBounds{MaxBlobBytes: 64, MaxTotalBytes: 1024, MaxProcesses: 1})
@@ -737,12 +737,12 @@ func testF3BoundProcesses(t *testing.T) {
 	overlap := filepath.Join(state, "children-overlapped")
 	installFixtureGitWrapper(t, fmt.Sprintf(`if mkdir %s 2>/dev/null; then
   : > %s
-  while [ ! -e %s ]; do sleep 0.01; done
+  while [ ! -e %s ]; do sleep 1; done
   printf 'first\n'
 else
   : > %s
   if [ ! -e %s ]; then : > %s; fi
-  while [ ! -e %s ]; do sleep 0.01; done
+  while [ ! -e %s ]; do sleep 1; done
   printf 'second\n'
 fi`,
 		shellQuote(filepath.Join(state, "first-claimed")),
@@ -784,10 +784,22 @@ fi`,
 		cleanupFixtureGit(t, secondCancel, []string{firstRelease, secondRelease}, secondCall, &secondPending, &second, "second controlled Git child")
 	})
 
-	// The frozen seam has no hook at slot-acquisition attempt. Releasing after
-	// the second call is launched lets us reject an overlap if it is actually
-	// observed, but absence of that marker is not proof under arbitrary
-	// goroutine scheduling; that mutation remains a body-review obligation.
+	// Keep the first child blocked while polling only for positive evidence of
+	// eager overlap. Marker absence does not prove that the second call attempted
+	// slot acquisition or that the implementation serialized it.
+	observed, observeErr := observeFixturePathPresence(fixtureHarnessWait, secondStarted, overlap)
+	if observeErr != nil {
+		t.Error(observeErr)
+		releaseFixturePath(t, firstRelease)
+		releaseFixturePath(t, secondRelease)
+		return
+	}
+	if observed != "" {
+		t.Errorf("observed pre-release controlled-child entry at %s", filepath.Base(observed))
+		releaseFixturePath(t, firstRelease)
+		releaseFixturePath(t, secondRelease)
+		return
+	}
 	releaseFixturePath(t, firstRelease)
 	firstRead := startFixtureRead(first)
 	firstCompleted, ok := waitFixtureRead(firstRead, fixtureHarnessWait)
@@ -1349,7 +1361,7 @@ case "$(pwd) $*" in
   *"$first_repo"*)
     if mkdir "$entry_claim" 2>/dev/null; then : > "$first_was_first"; fi
     : > "$first_marker"
-    while [ ! -e "$first_release" ]; do sleep 0.01; done
+    while [ ! -e "$first_release" ]; do sleep 1; done
     ;;
   *"$second_repo"*)
     if mkdir "$entry_claim" 2>/dev/null; then : > "$second_was_first"; fi
@@ -1419,10 +1431,21 @@ exec "$real_git" "$@"`,
 	ticker.Stop()
 	deadline.Stop()
 
-	// Only Git entry is visible at the frozen seam. An actual second-repository
-	// entry before release is a conclusive ordering/fan-out violation, but no
-	// quiet window can prove another goroutine or the journal source attempted
-	// acquisition. Full all-kind fan-out proof stays with body review/mutation.
+	// Keep the first Git source blocked while polling only for positive evidence
+	// of eager entry or wrong ordering. Marker absence does not prove that the
+	// second Git source (or the uninstrumented journal source) attempted
+	// acquisition; that remains deferred to body review and mutation.
+	observed, observeErr := observeFixturePathPresence(fixtureHarnessWait, secondMarker, overlap, secondWasFirst)
+	if observeErr != nil {
+		t.Error(observeErr)
+		releaseFixturePath(t, firstRelease)
+		return
+	}
+	if observed != "" {
+		t.Errorf("observed pre-release source entry/order violation at %s", filepath.Base(observed))
+		releaseFixturePath(t, firstRelease)
+		return
+	}
 	releaseFixturePath(t, firstRelease)
 	timer := time.NewTimer(5 * time.Second)
 	var completed sourceResult

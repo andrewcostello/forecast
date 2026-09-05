@@ -75,10 +75,11 @@ var fixtureGitClocks = struct {
 	clocks []fixtureGitClock
 }{}
 
-// fixtureGitEnv advances an explicit clock for each fixture repository. It is
-// independent of reachable refs, deleted branches, grafts, and replacements.
-// Every fixture Git invocation advances the clock, so a commit-producing
-// invocation is strictly later than every earlier parent-producing invocation.
+// fixtureGitEnv supplies runGit with an explicit clock for each fixture
+// repository, independent of reachable refs, deleted branches, grafts, and
+// replacements. Commit-producing runGit calls advance that clock, so each
+// commit is strictly later than its parents. Read-only helpers using
+// fixtureGitIsolatedEnv do not advance it.
 func fixtureGitEnv(repo string) []string {
 	key := filepath.Clean(repo)
 	identity, _ := os.Stat(filepath.Join(key, ".git"))
@@ -689,6 +690,27 @@ func fixturePathAppears(path string, within time.Duration) bool {
 		select {
 		case <-deadline.C:
 			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func observeFixturePathPresence(within time.Duration, paths ...string) (string, error) {
+	deadline := time.NewTimer(within)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for _, path := range paths {
+			if _, err := os.Stat(path); err == nil {
+				return path, nil
+			} else if !os.IsNotExist(err) {
+				return "", fmt.Errorf("inspect fixture marker %s: %w", path, err)
+			}
+		}
+		select {
+		case <-deadline.C:
+			return "", nil
 		case <-ticker.C:
 		}
 	}

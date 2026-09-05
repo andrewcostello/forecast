@@ -1,0 +1,4 @@
+{"seq":0,"hash":"h0","prev_hash":"","event_type":"run_started","timestamp":"2026-01-01T00:00:00Z","payload":{"dispatcher_version":"0.1.0"}}
+{"seq":1,"hash":"h1","prev_hash":"h0","event_type":"task_started","task_key":"F1-NOSTAMP","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"planned"}}
+{"seq":2,"hash":"h2","prev_hash":"h1","event_type":"task_spawn_finished","task_key":"F1-NOSTAMP","timestamp":"2026-01-01T00:10:00Z","payload":{"spawn_kind":"implementer","duration_ms":600000,"input_tokens":1,"output_tokens":1,"cost_usd":1}}
+{"seq":3,"hash":"h3","prev_hash":"h2","event_type":"task_done","task_key":"F1-NOSTAMP","timestamp":"2026-01-01T00:10:00Z","payload":{}}

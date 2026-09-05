@@ -582,13 +582,37 @@ func TestUnrecordedCostSerializesAsNull(t *testing.T) {
 	}
 }
 
-// Edge case 9. The limit is stated, not modelled around.
+// Edge case 9. The limit is stated, not modelled around. Codex-3: the
+// formatter fixture is not enough; Build itself must populate Limits.
 func TestCoverageStatesHandFinishedLimit(t *testing.T) {
 	artifact := Artifact{Limits: []string{HandFinishedLimit}}
 	var out bytes.Buffer
 	WriteCoverage(&out, artifact)
 	if !strings.Contains(out.String(), "Hand-finished rows have no identifying field") {
 		t.Fatalf("coverage report omitted hand-finished limit:\n%s", out.String())
+	}
+	fixture := newBuildFixture(t)
+	start := "2026-01-01T00:00:00Z"
+	fixture.writeLive(tasksYAML(taskYAML("A", "bodies", "pin", "Done", start, "2026-01-01T00:10:00Z", "run")))
+	writeJournal(t, fixture.runs, "run",
+		event("task_started", "A", start, map[string]any{"model": "planned"}),
+		spawnEvent("A", "2026-01-01T00:10:00Z", "implementer", "stamp", 1, 1, 1),
+		event("task_done", "A", "2026-01-01T00:10:00Z", nil),
+	)
+	result := fixture.build(t)
+	found := false
+	for _, limit := range result.Artifact.Limits {
+		if limit == HandFinishedLimit {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Build omitted HandFinishedLimit: %v", result.Artifact.Limits)
+	}
+	out.Reset()
+	WriteCoverage(&out, result.Artifact)
+	if !strings.Contains(out.String(), "Hand-finished rows have no identifying field") {
+		t.Fatalf("Build report omitted hand-finished limit:\n%s", out.String())
 	}
 }
 

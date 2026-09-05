@@ -1,0 +1,9 @@
+{"seq":0,"hash":"g0","prev_hash":"","event_type":"run_started","timestamp":"2026-01-01T00:00:00Z","payload":{"dispatcher_version":"0.1.0"}}
+{"seq":1,"hash":"g1","prev_hash":"g0","event_type":"task_started","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"opus"}}
+{"seq":2,"hash":"g2","prev_hash":"g1","event_type":"task_spawn_finished","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:10:00Z","payload":{"spawn_kind":"implementer","model":"opus","duration_ms":600000,"input_tokens":1,"output_tokens":1,"cost_usd":1}}
+{"seq":3,"hash":"g3","prev_hash":"g2","event_type":"agent_fallback","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:10:00Z","payload":{"from_agent":"claude","to_agent":"codex"}}
+{"seq":4,"hash":"g4","prev_hash":"g3","event_type":"panel_started","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:10:00Z","payload":{"iteration":0,"iterations_remaining":1}}
+{"seq":5,"hash":"g5","prev_hash":"g4","event_type":"panel_verdict","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:15:00Z","payload":{}}
+{"seq":6,"hash":"g6","prev_hash":"g5","event_type":"task_spawn_finished","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:25:00Z","payload":{"spawn_kind":"panel-iterate","model":"sol","duration_ms":600000,"input_tokens":1,"output_tokens":1,"cost_usd":1}}
+{"seq":7,"hash":"g7","prev_hash":"g6","event_type":"panel_iterate","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:25:00Z","payload":{"iteration":1,"iterations_remaining":0}}
+{"seq":8,"hash":"g8","prev_hash":"g7","event_type":"task_done","task_key":"F1-CASCADE","timestamp":"2026-01-01T00:30:00Z","payload":{}}

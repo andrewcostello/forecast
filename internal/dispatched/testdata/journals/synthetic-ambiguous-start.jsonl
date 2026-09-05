@@ -1,0 +1,5 @@
+{"seq":0,"hash":"a0","prev_hash":"","event_type":"run_started","timestamp":"2026-01-01T00:00:00Z","payload":{"dispatcher_version":"0.1.0"}}
+{"seq":1,"hash":"a1","prev_hash":"a0","event_type":"task_started","task_key":"F1-AMBIG","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"planned"}}
+{"seq":2,"hash":"a2","prev_hash":"a1","event_type":"task_spawn_finished","task_key":"F1-AMBIG","timestamp":"2026-01-01T00:05:00Z","payload":{"spawn_kind":"implementer","model":"stamp-a","duration_ms":300000,"input_tokens":1,"output_tokens":1,"cost_usd":0.1}}
+{"seq":3,"hash":"a3","prev_hash":"a2","event_type":"task_started","task_key":"F1-AMBIG","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"planned"}}
+{"seq":4,"hash":"a4","prev_hash":"a3","event_type":"task_spawn_finished","task_key":"F1-AMBIG","timestamp":"2026-01-01T00:09:00Z","payload":{"spawn_kind":"implementer","model":"stamp-b","duration_ms":300000,"input_tokens":2,"output_tokens":2,"cost_usd":0.2}}

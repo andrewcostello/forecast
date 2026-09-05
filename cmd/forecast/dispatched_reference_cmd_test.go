@@ -23,7 +23,10 @@ func TestDispatchedReferenceBuildCommandIsRegistered(t *testing.T) {
 	if cmd != dispatchedReferenceBuildCmd {
 		t.Fatalf("found %q, want dispatched-reference build", cmd.CommandPath())
 	}
-	for _, name := range []string{"runs-dir", "out", "features-repo", "tasks", "min-observations", "max-history-commits", "fail-on-empty-required"} {
+	for _, name := range []string{
+		"runs-dir", "out", "features-repo", "tasks", "min-observations",
+		"max-history-commits", "fail-on-empty-required", "fail-on-uncovered-required", "timeout",
+	} {
 		if cmd.Flags().Lookup(name) == nil {
 			t.Errorf("missing --%s", name)
 		}

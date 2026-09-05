@@ -1,0 +1,7 @@
+tasks:
+  - key: F2-ITERATE
+    role: bodies
+    model: authored-sonnet
+    status: In Progress
+    started_at: '2026-09-02T16:21:45Z'
+    dispatcher_run_id: recorded-convergence-2026-09-02

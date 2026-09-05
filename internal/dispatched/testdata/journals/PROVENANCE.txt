@@ -1,0 +1,13 @@
+Fixture provenance for FC-SEALS journal testdata.
+
+Producer: dispatcher_version 0.1.0
+Orchestrator revision cited by the scaffold: df771516b905355995d03313b470b06e1aea4e06
+Recorded shape source: dispatcher-runs/2026-09-02T16-21-45Z-convergence/journal.jsonl
+Sanitization: synthetic run/task keys, synthetic hash chain, rounded cost,
+no hostnames, no prompts, no credentials. Event types, spawn_kind values,
+duration_ms, token split (uncached vs cache_*), and the adjacency
+task_spawn_finished(panel-iterate) THEN panel_iterate are preserved.
+
+These files are recorded/sanitized, not live network captures.
+Synthetic companions (*.synthetic.jsonl) are labeled in their first comment
+line and in features/dispatched-forecasting/notes/FC-SEALS.md.

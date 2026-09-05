@@ -1,0 +1,287 @@
+package dispatched
+
+// evidence.go: joining journal attempts with tasks-YAML readings.
+//
+// Ownership: FC-1 implements the frozen seam in this file (JoinEvidence)
+// and may replace the baseline join. The baseline section is the FC-1 code
+// moved verbatim from build.go; Build still runs it until FC-1 switches to
+// JoinEvidence, so the artifact does not change under the move.
+
+import (
+	"errors"
+	"fmt"
+	"sort"
+	"strings"
+	"time"
+)
+
+// ---------------------------------------------------------------------------
+// Frozen contract (F1/F3 reconciliation).
+// ---------------------------------------------------------------------------
+
+// Disposition is the fate of one examined YAML snapshot. Every snapshot
+// gets exactly one; the counts are reported per disposition so no lost
+// attempt hides behind a recovered sibling.
+type Disposition string
+
+const (
+	// DispositionRecovered: the snapshot matched one unambiguous attempt and
+	// contributed a reading to it.
+	DispositionRecovered Disposition = "recovered"
+	// DispositionDuplicateReading: a further reading of an attempt that
+	// already had one from the same reading reference. Counted, not sampled.
+	DispositionDuplicateReading Disposition = "duplicate_reading"
+	// DispositionMissingJoinKeys: no key, run ID or started_at.
+	DispositionMissingJoinKeys Disposition = "missing_join_keys"
+	// DispositionMalformed: a timestamp or field that would not parse.
+	DispositionMalformed Disposition = "malformed"
+	// DispositionNoMatchingRun: no journal has that (run ID, key).
+	DispositionNoMatchingRun Disposition = "no_matching_run_key"
+	// DispositionNoMatchingStart: the run/key exists but no task_started has
+	// that exact instant. Stale or hand-edited timestamps land here; there
+	// is no nearest-start match.
+	DispositionNoMatchingStart Disposition = "no_matching_start"
+	// DispositionAmbiguousStart: more than one task_started shares the
+	// instant (ErrAmbiguousAttempt).
+	DispositionAmbiguousStart Disposition = "ambiguous_start"
+	// DispositionAbsentStamp: the attempt matched but no implementing spawn
+	// stamped a model, so it has no cell (ErrUnattributable).
+	DispositionAbsentStamp Disposition = "absent_stamp"
+	// DispositionConflictingEvidence: the attempt's readings disagree at
+	// equal authority (ErrEvidenceConflict).
+	DispositionConflictingEvidence Disposition = "conflicting_evidence"
+	// DispositionUnrecoverable: the joined row failed Validate for a reason
+	// other than attribution (negative value, invalid outcome, revision).
+	DispositionUnrecoverable Disposition = "unrecoverable"
+	// DispositionHeldOut: the run is in Selection.HoldoutRunIDs.
+	DispositionHeldOut Disposition = "held_out"
+	// DispositionAfterCutoff: the reading's attempt started after Cutoff.
+	DispositionAfterCutoff Disposition = "after_cutoff"
+)
+
+// Dispositions lists every declared value in report order.
+func Dispositions() []Disposition {
+	return []Disposition{
+		DispositionRecovered, DispositionDuplicateReading, DispositionMissingJoinKeys,
+		DispositionMalformed, DispositionNoMatchingRun, DispositionNoMatchingStart,
+		DispositionAmbiguousStart, DispositionAbsentStamp, DispositionConflictingEvidence,
+		DispositionUnrecoverable, DispositionHeldOut, DispositionAfterCutoff,
+	}
+}
+
+// Valid reports whether d is declared.
+func (d Disposition) Valid() bool {
+	for _, known := range Dispositions() {
+		if d == known {
+			return true
+		}
+	}
+	return false
+}
+
+// Examined is one snapshot's disposition with the identity it was matched
+// to (zero when no attempt could be named) and a reason a human can act on.
+type Examined struct {
+	Reading     ReadingRef
+	Attempt     AttemptID
+	Disposition Disposition
+	Reason      string
+}
+
+// DispositionCount is one row of the per-disposition tally.
+type DispositionCount struct {
+	Disposition Disposition `json:"disposition"`
+	Count       int         `json:"count"`
+}
+
+// EvidenceJoin is the result of joining attempts with readings. Unique rows
+// (distinct run/key) and attempts (distinct AttemptID) are reported
+// separately; LostAttempts are started attempts with no recovered reading,
+// listed individually so a recovered sibling cannot hide them.
+type EvidenceJoin struct {
+	Observations  []Observation
+	Examined      []Examined
+	Dispositions  []DispositionCount
+	Conflicts     []Conflict
+	UniqueRows    int
+	Attempts      int
+	Recovered     int
+	LostAttempts  []AttemptID
+	Ambiguous     []AmbiguousAttempt
+	HeldOutRuns   []string
+	CutoffApplied time.Time
+}
+
+// preferEvidence chooses between two pieces of evidence for one field with
+// a total order, so a fold over any permutation of readings yields the same
+// choice (FC-1 panel Claude-7): higher Source wins; equal journal sources
+// prefer the earlier event (journal path, then seq, then line); equal YAML
+// sources prefer the lesser ReadingRef.
+func preferEvidence(a, b FieldEvidence) FieldEvidence {
+	switch {
+	case a.Source != b.Source:
+		if a.Source > b.Source {
+			return a
+		}
+		return b
+	case a.Source == EvidenceJournal:
+		if eventRefLess(b.Event, a.Event) {
+			return b
+		}
+		return a
+	case a.Source == EvidenceYAML:
+		if b.Reading.Less(a.Reading) {
+			return b
+		}
+		return a
+	}
+	return a
+}
+
+// eventRefLess is a strict total order over event positions.
+func eventRefLess(a, b EventRef) bool {
+	switch {
+	case a.Journal.RunID != b.Journal.RunID:
+		return a.Journal.RunID < b.Journal.RunID
+	case a.Journal.SourceID != b.Journal.SourceID:
+		return a.Journal.SourceID < b.Journal.SourceID
+	case a.Journal.Path != b.Journal.Path:
+		return a.Journal.Path < b.Journal.Path
+	case a.Seq != b.Seq:
+		return a.Seq < b.Seq
+	}
+	return a.Line < b.Line
+}
+
+// JoinEvidence joins attempts with readings under F1/F3: readings bind to
+// an attempt only on an exact AttemptID; the journal terminal and
+// implementer stamp outrank YAML; a YAML-only terminal is labeled; unknown
+// stays unknown; within-attempt conflicts of equal authority are excluded
+// as ErrEvidenceConflict; no row is manufactured from independent maxima
+// of incompatible readings; every snapshot receives a Disposition; held-out
+// runs and post-cutoff attempts are excluded before joining; the result is
+// identical under any permutation of attempts and readings.
+//
+// FC-1 body. Parameters are named so the body can use them; the scaffold
+// returns ErrNotImplemented and reads none of them.
+func JoinEvidence(attempts []AttemptSet, readings []taskSnapshot, selection Selection, now time.Time) (EvidenceJoin, error) {
+	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d journals, %d readings)", ErrNotImplemented, len(attempts), len(readings))
+}
+
+// ---------------------------------------------------------------------------
+// FC-1 baseline join, moved from build.go unchanged.
+// ---------------------------------------------------------------------------
+
+// joinReadings folds every reading of one identity into a single row using
+// the same rules Table.Add applies, and reports the conflict rather than
+// picking a winner. It is total: the fold is over a commutative operation, so
+// the order readings arrive in does not change the result.
+//
+// Superseded: the identity it folds over omits the run ID (FC-1 panel
+// Codex-1) and the TerminalEvidence tie is order-dependent (Claude-7).
+func joinReadings(rows []Observation) (Observation, error) {
+	firstCell := rows[0]
+	var terminal *Observation
+	for i := range rows {
+		row := &rows[i]
+		if row.Cell != firstCell.Cell {
+			_, err := merge(firstCell, *row)
+			return Observation{}, err
+		}
+		if row.Outcome.terminal() {
+			if terminal != nil && terminal.Outcome != row.Outcome {
+				_, err := merge(*terminal, *row)
+				return Observation{}, err
+			}
+			terminal = row
+		}
+	}
+	joined := rows[0]
+	for _, row := range rows[1:] {
+		next, err := merge(joined, row)
+		if err != nil {
+			return Observation{}, err
+		}
+		joined = next
+	}
+	return joined, nil
+}
+
+// Terminal evidence values. A journal terminal event is the dispatcher's own
+// record; a YAML status is a mutable file a human may have edited, and edge
+// case 9 says a hand-finished row is indistinguishable from an agent one.
+// They are the String values of EvidenceJournal, EvidenceYAML, EvidenceNone.
+const (
+	terminalEvidenceJournal = "journal"
+	terminalEvidenceYAML    = "yaml"
+	terminalEvidenceNone    = "none"
+)
+
+// observationFrom joins one YAML snapshot to the journal attempt it names.
+//
+// The terminal event, when the journal has one, decides both the outcome and
+// the instant elapsed time is measured to. A YAML completed_at is used ONLY
+// when the YAML status is itself terminal: a row still marked in progress
+// carrying a stale completed_at is censored, and its lower bound runs to now,
+// not back to a timestamp from a previous attempt.
+func observationFrom(snapshot taskSnapshot, facts *JournalFacts, now time.Time) (Observation, error) {
+	if !snapshot.Role.Valid() || facts.Model == "" {
+		return Observation{}, fmt.Errorf("%w: row %s has role %q and stamped model %q", ErrUnattributable, snapshot.Key, snapshot.Role, facts.Model)
+	}
+	outcome, end, evidence := OutcomeUnfinished, now, terminalEvidenceNone
+	if facts.TerminalOutcome.Valid() {
+		outcome, end, evidence = facts.TerminalOutcome, facts.TerminalAt, terminalEvidenceJournal
+	} else if yamlOutcome, ok := terminalStatus(snapshot.Status); ok && !snapshot.CompletedAt.IsZero() {
+		outcome, end, evidence = yamlOutcome, snapshot.CompletedAt, terminalEvidenceYAML
+	}
+	if end.Before(snapshot.StartedAt) {
+		return Observation{}, fmt.Errorf("build observation: %w: row %s ends at %s before it starts at %s", ErrNegativeValue, snapshot.Key, end.Format(time.RFC3339Nano), snapshot.StartedAt.Format(time.RFC3339Nano))
+	}
+	observation := Observation{
+		Key:              snapshot.Key,
+		Cell:             Cell{Role: snapshot.Role, Model: facts.Model},
+		Outcome:          outcome,
+		TerminalEvidence: evidence,
+		StartedAt:        snapshot.StartedAt,
+		Elapsed:          end.Sub(snapshot.StartedAt),
+		DevElapsed:       facts.DevElapsed,
+		ReviewElapsed:    facts.ReviewElapsed,
+		Rounds:           max(snapshot.IterationCount, facts.Rounds),
+		Cascades:         facts.Fallbacks,
+		InputTokens:      facts.InputTokens,
+		OutputTokens:     facts.OutputTokens,
+		CostUSD:          facts.CostUSD,
+		CostKnown:        facts.CostKnown,
+		Provenance:       Provenance{RunID: snapshot.DispatcherRunID, Revision: snapshot.Revision, Repository: snapshot.Repository, Path: snapshot.Path},
+	}
+	if err := observation.Validate(); err != nil {
+		return Observation{}, fmt.Errorf("build observation: %w", err)
+	}
+	return observation, nil
+}
+
+func terminalStatus(status string) (Outcome, bool) {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "done":
+		return OutcomeDone, true
+	case "blocked":
+		return OutcomeBlocked, true
+	}
+	return 0, false
+}
+
+func isUnrecoverableObservationError(err error) bool {
+	return errors.Is(err, ErrNegativeValue) ||
+		errors.Is(err, ErrInvalidOutcome) ||
+		errors.Is(err, ErrUnparseableRevision)
+}
+
+// sortExamined orders dispositions for a stable report.
+func sortExamined(items []Examined) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Reading != items[j].Reading {
+			return items[i].Reading.Less(items[j].Reading)
+		}
+		return items[i].Attempt.Less(items[j].Attempt)
+	})
+}

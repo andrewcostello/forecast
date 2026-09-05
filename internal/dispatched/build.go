@@ -38,6 +38,23 @@ type BuildOptions struct {
 	// MaxHistoryCommits bounds the git history walk. Zero means
 	// defaultMaxHistoryCommits.
 	MaxHistoryCommits int
+
+	// Amended contract inputs (F3/F6), frozen here for FC-1. Sources are the
+	// explicit source specifications that replace RunsDir/FeaturesRepos;
+	// Selection freezes holdout run IDs, cutoff and allow-empty; Bounds are
+	// the byte/commit/process caps. Until FC-1 wires ReadSources and
+	// JoinEvidence into Build, setting any of them makes Build return
+	// ErrNotImplemented rather than silently ignoring an input; the legacy
+	// shape (all three zero) runs the baseline unchanged.
+	Sources   []SourceSpec
+	Selection Selection
+	Bounds    ReadBounds
+}
+
+// amended reports whether the options use the F3/F6 inputs.
+func (o BuildOptions) amended() bool {
+	return len(o.Sources) > 0 || !o.Selection.Cutoff.IsZero() || len(o.Selection.HoldoutRunIDs) > 0 ||
+		o.Selection.AllowEmpty || o.Bounds != (ReadBounds{})
 }
 
 // BuildResult holds both the queryable table and its portable artifact.
@@ -54,6 +71,32 @@ type Artifact struct {
 	Coverage      Coverage               `json:"coverage"`
 	Conflicts     []Conflict             `json:"conflicts"`
 	Limits        []string               `json:"limits"`
+	// SourceManifest (F3) names every source the artifact rests on and its
+	// completeness. Nil from the baseline path; FC-1 populates it and bumps
+	// SchemaVersion when it does.
+	SourceManifest *SourceManifest `json:"source_manifest,omitempty"`
+}
+
+// Eligibility is the F4 prediction gate result. Eligible is true only when
+// the manifest is COMPLETE, the target has at least one row, every required
+// cell is valid, and every required cell holds at least MinCompleted
+// completed samples. Reasons lists every failed condition; MinCompleted is
+// reported as a threshold, not as proof of calibration.
+type Eligibility struct {
+	Eligible     bool     `json:"eligible"`
+	MinCompleted int      `json:"min_completed"`
+	Reasons      []string `json:"reasons,omitempty"`
+}
+
+// PredictionEligibility applies the F4 gate to artifact for a target whose
+// required cells are already in artifact.Coverage.RequiredCells. A zero-row
+// target wraps ErrEmptyTarget; a non-complete manifest or an uncovered cell
+// yields Eligible false and, when refuse is true, wraps ErrNotEligible.
+//
+// FC-1 body. Parameters are named so the body can use them; the scaffold
+// returns ErrNotImplemented and reads none of them.
+func PredictionEligibility(artifact Artifact, minCompleted int, refuse bool) (Eligibility, error) {
+	return Eligibility{}, fmt.Errorf("%w: PredictionEligibility(min %d)", ErrNotImplemented, minCompleted)
 }
 
 // ReferenceObservation is one stored row as the artifact serialises it.
@@ -172,6 +215,15 @@ type Coverage struct {
 	HistoryTruncated       bool `json:"history_truncated"`
 	UnparseableYAMLDocs    int  `json:"unparseable_yaml_documents"`
 	MalformedYAMLRows      int  `json:"malformed_yaml_rows"`
+
+	// Amended reconciliation counters (F3). Dispositions is the per-snapshot
+	// tally from JoinEvidence; UniqueRows and Attempts are reported
+	// separately; LostAttempts lists every started attempt with no recovered
+	// reading. Empty from the baseline path until FC-1 fills them.
+	Dispositions []DispositionCount `json:"dispositions,omitempty"`
+	UniqueRows   int                `json:"unique_rows,omitempty"`
+	Attempts     int                `json:"attempts,omitempty"`
+	LostAttempts []string           `json:"lost_attempts,omitempty"`
 }
 
 type Conflict struct {
@@ -193,6 +245,11 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	}
 	if opts.MinObservations <= 0 {
 		opts.MinObservations = DefaultMinObservations
+	}
+	if opts.amended() {
+		// Fail loudly instead of running the baseline over inputs it would
+		// ignore: an unapplied holdout or cutoff would leak evidence.
+		return nil, fmt.Errorf("%w: Build with Sources, Selection or Bounds", ErrNotImplemented)
 	}
 	journals, err := readJournals(ctx, opts.RunsDir)
 	if err != nil {
@@ -422,106 +479,6 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		Limits:        []string{HandFinishedLimit},
 	}
 	return &BuildResult{Table: table, Artifact: artifact}, nil
-}
-
-// joinReadings folds every reading of one identity into a single row using
-// the same rules Table.Add applies, and reports the conflict rather than
-// picking a winner. It is total: the fold is over a commutative operation, so
-// the order readings arrive in does not change the result.
-func joinReadings(rows []Observation) (Observation, error) {
-	firstCell := rows[0]
-	var terminal *Observation
-	for i := range rows {
-		row := &rows[i]
-		if row.Cell != firstCell.Cell {
-			_, err := merge(firstCell, *row)
-			return Observation{}, err
-		}
-		if row.Outcome.terminal() {
-			if terminal != nil && terminal.Outcome != row.Outcome {
-				_, err := merge(*terminal, *row)
-				return Observation{}, err
-			}
-			terminal = row
-		}
-	}
-	joined := rows[0]
-	for _, row := range rows[1:] {
-		next, err := merge(joined, row)
-		if err != nil {
-			return Observation{}, err
-		}
-		joined = next
-	}
-	return joined, nil
-}
-
-// Terminal evidence values. A journal terminal event is the dispatcher's own
-// record; a YAML status is a mutable file a human may have edited, and edge
-// case 9 says a hand-finished row is indistinguishable from an agent one.
-const (
-	terminalEvidenceJournal = "journal"
-	terminalEvidenceYAML    = "yaml"
-	terminalEvidenceNone    = "none"
-)
-
-// observationFrom joins one YAML snapshot to the journal attempt it names.
-//
-// The terminal event, when the journal has one, decides both the outcome and
-// the instant elapsed time is measured to. A YAML completed_at is used ONLY
-// when the YAML status is itself terminal: a row still marked in progress
-// carrying a stale completed_at is censored, and its lower bound runs to now,
-// not back to a timestamp from a previous attempt.
-func observationFrom(snapshot taskSnapshot, facts *JournalFacts, now time.Time) (Observation, error) {
-	if !snapshot.Role.Valid() || facts.Model == "" {
-		return Observation{}, fmt.Errorf("%w: row %s has role %q and stamped model %q", ErrUnattributable, snapshot.Key, snapshot.Role, facts.Model)
-	}
-	outcome, end, evidence := OutcomeUnfinished, now, terminalEvidenceNone
-	if facts.TerminalOutcome.Valid() {
-		outcome, end, evidence = facts.TerminalOutcome, facts.TerminalAt, terminalEvidenceJournal
-	} else if yamlOutcome, ok := terminalStatus(snapshot.Status); ok && !snapshot.CompletedAt.IsZero() {
-		outcome, end, evidence = yamlOutcome, snapshot.CompletedAt, terminalEvidenceYAML
-	}
-	if end.Before(snapshot.StartedAt) {
-		return Observation{}, fmt.Errorf("build observation: %w: row %s ends at %s before it starts at %s", ErrNegativeValue, snapshot.Key, end.Format(time.RFC3339Nano), snapshot.StartedAt.Format(time.RFC3339Nano))
-	}
-	observation := Observation{
-		Key:              snapshot.Key,
-		Cell:             Cell{Role: snapshot.Role, Model: facts.Model},
-		Outcome:          outcome,
-		TerminalEvidence: evidence,
-		StartedAt:        snapshot.StartedAt,
-		Elapsed:          end.Sub(snapshot.StartedAt),
-		DevElapsed:       facts.DevElapsed,
-		ReviewElapsed:    facts.ReviewElapsed,
-		Rounds:           max(snapshot.IterationCount, facts.Rounds),
-		Cascades:         facts.Fallbacks,
-		InputTokens:      facts.InputTokens,
-		OutputTokens:     facts.OutputTokens,
-		CostUSD:          facts.CostUSD,
-		CostKnown:        facts.CostKnown,
-		Provenance:       Provenance{RunID: snapshot.DispatcherRunID, Revision: snapshot.Revision, Repository: snapshot.Repository, Path: snapshot.Path},
-	}
-	if err := observation.Validate(); err != nil {
-		return Observation{}, fmt.Errorf("build observation: %w", err)
-	}
-	return observation, nil
-}
-
-func terminalStatus(status string) (Outcome, bool) {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "done":
-		return OutcomeDone, true
-	case "blocked":
-		return OutcomeBlocked, true
-	}
-	return 0, false
-}
-
-func isUnrecoverableObservationError(err error) bool {
-	return errors.Is(err, ErrNegativeValue) ||
-		errors.Is(err, ErrInvalidOutcome) ||
-		errors.Is(err, ErrUnparseableRevision)
 }
 
 func distinctCells(rows []Observation) []Cell {

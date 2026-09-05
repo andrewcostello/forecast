@@ -94,7 +94,7 @@ drops the assertion's predicate fails the same test.
 | F1-EV-TERMINAL-CONFLICT | `task_done`+`task_blocked` excluded | Prefer done |
 | F1-MODEL-CLOSING-STAMP | Model `sol`, Cascades=1 | Keep `opus` after fallback |
 | F1-MODEL-ABSENT-STAMP | Model unknown | Substitute planned/YAML model |
-| F1-HASH-PROVENANCE | Hash/prev_hash round-trip | Strip hash on EventRef |
+| F1-HASH-PROVENANCE | First `task_started` and panel-iterate spawn retain fixture `hash`/`prev_hash` | Drop first-event hash/prev_hash; strip hash on EventRef |
 | F1-CONFLICT-PORTABLE | Tagged JSON candidates with outcome | Store only citations |
 | F1-ROW-EQUALITY-BY-CONTENT | Permuted events, same canonical JSON | Keep input order |
 | F2-ELAPSED-TERMINAL | 10m, not censored | Use cutoff |
@@ -201,25 +201,35 @@ drops the assertion's predicate fails the same test.
 | F1-ROLE-CITATION | Conflicting roles not recovered | Pick first role |
 | F1-READING-TOTAL-ORDER | Examined canonical | Input order |
 | F1-ATTEMPT-RUN-CONSISTENCY | `ErrInvalidSelection` | Join anyway |
+| F3-SRC-READ-OK-ZERO-MATCH | Recovered=0, `DispositionNoMatchingRun`; distinct from zero-journal EMPTY | Invent a sample; treat as `F3-SRC-ZERO-JOURNALS` |
 | F3-DISPOSITION-* | Every snapshot; no-run; missing keys | Drop unmatched YAML |
 | F3-ROWS-VS-ATTEMPTS | UniqueRows=1 Attempts=2 | Collapse restarts |
 | F3-LOST-NOT-HIDDEN | Lost sibling listed | Count recovered as covering it |
+| F3-MANIFEST-CUTOFF-STORED | `SourceManifest.Cutoff` set; per-source counts present | Omit cutoff; leave zero |
 | F3-DIRECT-HOLDOUT* | Unmatched/held-out attempt sets refused | Produce observations |
 | F3-EXCLUDED-JOURNAL-AUDIT | Full identity survives | Reduce to run-id strings |
+| F3-HOLDOUT-EXCLUDED-JOIN | HeldOut envelope audited, keep recovered, held snapshot unused | Feed held-out snapshot into join |
 | F2-YAML-TERMINAL-WALL | Rebase elapsed; withhold outside spans | Clip intervals |
 | F4-TARGET-* | Empty → ErrEmptyTarget; malformed → ErrInvalidTarget | Gate on aggregates |
+| F4-TARGET-INPUT | Duplicate original keys → ErrInvalidTarget despite valid aggregate | Gate on aggregates |
 | F4-ELIGIBLE-THRESHOLD | Eligible at n=2 | Eligible at n=1 |
 | F4-NOT-ELIGIBLE-THIN | ErrNotEligible only | Also wrap incomplete |
 | F4-NOT-ELIGIBLE-PARTIAL | Both sentinels when refuse | Eligible diagnostic |
 | F4-HAND-FINISHED-LIMIT | Limits from amended Build; report prints it | Formatter-only |
 | F4-BUILD-AMENDED-OPTIONS | No silent v3 legacy path | Ignore Sources/holdout |
 | F4-THRESHOLD-NONPOSITIVE | DefaultMinObservations | Keep 0 |
+| F4-SCHEMA-ROUNDTRIP | Version 4 round-trip retains counts; empty observations `[]` not null | Drop Reviews/Corrections; emit null observations |
 | F4-VERSION-EXACT | v3/v5/missing Evidence refused | `>=` comparison |
 | F4-MIXED-OPTIONS | ErrInvalidSourceSpec | Ignore one side |
+| F4-CANONICAL-LISTS | Empty v4 lists `[]` not null | Emit null or omit keys |
+| F4-ONE-ARTIFACT-INSTANT | GeneratedAt == manifest.Cutoff == explicit cutoff, not opts.Now | Use opts.Now |
+| F4-AGGREGATE-REASON | PARTIAL aggregate Reasons survive JSON | Emit null reasons |
+| F4-PROJECTION-MAPPING | Corrections preserved; done is not legacy TerminalEvidence none | Map done→none; rounds from Reviews |
 | F4-ARTIFACT-HOLDOUT | Held-out run in artifact refused | Predict anyway |
 | F4-STRUCTURED-THIN-CELL | Cells name completed/threshold | Reasons only |
 | F4-CELL-EMPTY-N0 | Empty required cell present n=0 | Omit it |
 | CLI F3-SRC-EXPLICIT-ONLY | No HOME default; no usage | Default `~/Project/claude-workflow` |
+| CLI F4-MISSING-FLAGS | Missing `--runs-dir` / `--out` fails | Succeed with empty argv; default `--out` |
 | CLI empty/malformed targets | ErrEmptyTarget / ErrInvalidTarget, no usage | Legacy ErrYAMLSource + usage |
 | CLI empty corpus | ErrSourceEmpty, no usage | Succeed with zero journals |
 | CLI partial refusal | NotEligible/Incomplete, no usage | Coverage gate on PARTIAL |

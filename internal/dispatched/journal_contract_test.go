@@ -224,8 +224,14 @@ func testF1HashProvenance(t *testing.T) {
 		t.Fatal("no events")
 	}
 	ref := parsed.Events[0].Ref
-	if ref.Hash == "" || ref.PrevHash == "" && parsed.Events[0].Ref.Type != EventTaskStarted && parsed.Journal.Producer == "" {
-		// first task event should retain hash/prev_hash from the wire
+	if ref.Type != EventTaskStarted {
+		t.Fatalf("first task event type = %q, want %s", ref.Type, EventTaskStarted)
+	}
+	if ref.Hash != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("first task event hash = %q", ref.Hash)
+	}
+	if ref.PrevHash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("first task event prev_hash = %q", ref.PrevHash)
 	}
 	found := false
 	for _, ev := range parsed.Events {
@@ -242,7 +248,6 @@ func testF1HashProvenance(t *testing.T) {
 	if !found {
 		t.Fatal("panel-iterate spawn missing")
 	}
-	_ = ref
 }
 
 func testF1ConflictPortable(t *testing.T) {

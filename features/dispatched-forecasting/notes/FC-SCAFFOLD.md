@@ -171,12 +171,14 @@ field or sentinel that expresses the outcome.
 | F3-GIT-DELETED-RENAMED | File deleted or renamed in history | Old content still read. | `ReadSources` | FC-SOURCES |
 | F3-BOUND-COMMITS | `MaxCommits=3`, 5 commits | Enumeration stops at 3 before collection; `BoundsExceeded=1`, `SourcePartial`. | `ReadBounds` | FC-SOURCES |
 | F3-BOUND-BYTES | Blob over `MaxBlobBytes` | Not read; counted; `SourcePartial`. | `ErrBoundExceeded` | FC-SOURCES |
+| F3-BOUND-PROCESSES | `MaxProcesses=1`, two sources read concurrently | At most one git child runs per source at any instant; a read that would exceed the cap waits rather than spawning; the cap never alters counts, order or `SourceState`. `MaxProcesses<0` → `ErrInvalidSourceSpec`. | `ReadBounds.MaxProcesses` | FC-SOURCES |
 | F3-CANCELLED | Context cancelled mid-read | `ErrSourceCancelled` (also `context.Canceled`); partial manifest with `Cancelled=true`, never COMPLETE. | `SourceReport.Cancelled` | FC-SOURCES |
 | F3-HOLDOUT-EXCLUDED | `HoldoutRunIDs=[R]`, live and historical readings for R | Excluded at source boundary before both joins; `ExcludedByRun` counted; `DispositionHeldOut`. | `Selection.HeldOut` | FC-SOURCES / FC-1 |
 | F3-CUTOFF-EXCLUDED | Attempt started after `Cutoff` | Excluded; `AfterCutoff` counted; `DispositionAfterCutoff`. | `Selection.Cutoff` | FC-SOURCES / FC-1 |
 | F3-SELECTION-INVALID | Blank or duplicate holdout ID | `ErrInvalidSelection`. | `Selection.Validate` | scaffold (implemented) |
 | F3-DISPOSITION-EVERY-SNAPSHOT | Any corpus | `len(Examined)` = snapshots examined; `Dispositions` sums to it. | `EvidenceJoin` | FC-1 |
 | F3-DISPOSITION-NO-RUN | YAML run ID absent from journals | `DispositionNoMatchingRun` (not silently dropped). | `Disposition` | FC-1 |
+| F3-DISPOSITION-MISSING-JOIN-KEYS | YAML snapshot lacking any of key, run ID or `started_at` | `AttemptID.Valid()=false`; snapshot listed in `Examined` with `DispositionMissingJoinKeys`; never matched by nearest start or run alone. | `AttemptID.Valid` | FC-1 |
 | F3-ROWS-VS-ATTEMPTS | One run restarts a task | `UniqueRows=1`, `Attempts=2`, both listed. | `EvidenceJoin` | FC-1 |
 | F3-LOST-NOT-HIDDEN | Two attempts, one recovered | `LostAttempts=[other]`; recovered sibling does not count for it. | `EvidenceJoin.LostAttempts` | FC-1 |
 | F3-MANIFEST-CUTOFF-STORED | Any build | `SourceManifest.Cutoff` set; per-source counts present. | `SourceManifest` | FC-1 |

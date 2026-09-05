@@ -53,7 +53,7 @@ type BuildOptions struct {
 
 // amended reports whether the options use the F3/F6 inputs.
 func (o BuildOptions) amended() bool {
-	return len(o.Sources) > 0 || !o.Selection.Cutoff.IsZero() || len(o.Selection.HoldoutRunIDs) > 0 ||
+	return o.Sources != nil || !o.Selection.Cutoff.IsZero() || o.Selection.HoldoutRunIDs != nil ||
 		o.Selection.AllowEmpty || o.Bounds != (ReadBounds{})
 }
 
@@ -74,7 +74,31 @@ type Artifact struct {
 	// SourceManifest (F3) names every source the artifact rests on and its
 	// completeness. Nil from the baseline path; FC-1 populates it and bumps
 	// SchemaVersion when it does.
-	SourceManifest *SourceManifest `json:"source_manifest,omitempty"`
+	SourceManifest *SourceManifest   `json:"source_manifest,omitempty"`
+	Evidence       *ArtifactEvidence `json:"evidence,omitempty"`
+}
+
+// EvidenceSchemaVersion is emitted only once FC-1 implements the amended build.
+// Version 1 retains legacy fields. Version 2 requires SourceManifest and Evidence;
+// consumers must reject missing payloads or unsupported versions, not default
+// their absence to zero. Legacy Observations/Cells are compatibility projections
+// only; amended sampling uses Evidence.Observations exclusively.
+const EvidenceSchemaVersion = 2
+
+// ArtifactEvidence is the complete serializable join audit and joint sample.
+// A nil payload means unavailable (version 1); all counters inside a version 2
+// payload are present, including zero. Durations on Attempt use nanoseconds.
+type ArtifactEvidence struct {
+	Observations     []RecoveredAttempt `json:"observations"`
+	Examined         []Examined         `json:"examined"`
+	Dispositions     []DispositionCount `json:"dispositions"`
+	Conflicts        []AttemptConflict  `json:"conflicts"`
+	Ambiguous        []AmbiguousAttempt `json:"ambiguous"`
+	UniqueRows       int                `json:"unique_rows"`
+	Attempts         int                `json:"attempts"`
+	Recovered        int                `json:"recovered"`
+	LostAttempts     []AttemptID        `json:"lost_attempts"`
+	ExcludedJournals []JournalIdentity  `json:"excluded_journals"`
 }
 
 // Eligibility is the F4 prediction gate result. Eligible is true only when
@@ -88,10 +112,16 @@ type Eligibility struct {
 	Reasons      []string `json:"reasons,omitempty"`
 }
 
-// PredictionEligibility applies the F4 gate to artifact for a target whose
-// required cells are already in artifact.Coverage.RequiredCells. A zero-row
-// target wraps ErrEmptyTarget; a non-complete manifest or an uncovered cell
-// yields Eligible false and, when refuse is true, wraps ErrNotEligible.
+// PredictionEligibility requires schema version 2, nonnil Evidence and a valid
+// complete SourceManifest, a nonempty valid target and sufficient completed
+// samples in every required cell. minCompleted<=0 uses DefaultMinObservations;
+// Eligibility.MinCompleted records the effective positive threshold.
+// Invalid schema/payload or incomplete sources yield Eligible=false and a
+// reason; when refuse is true their error wraps BOTH ErrNotEligible and
+// ErrSourceIncomplete. A thin cell wraps ErrNotEligible when refusing. Zero-row
+// targets always wrap ErrEmptyTarget; malformed targets wrap ErrInvalidTarget.
+// With refuse=false, ordinary insufficiency is a diagnostic result, not an
+// error. The scaffold returns ErrNotImplemented regardless of inputs.
 //
 // FC-1 body. Parameters are named so the body can use them; the scaffold
 // returns ErrNotImplemented and reads none of them.
@@ -215,15 +245,6 @@ type Coverage struct {
 	HistoryTruncated       bool `json:"history_truncated"`
 	UnparseableYAMLDocs    int  `json:"unparseable_yaml_documents"`
 	MalformedYAMLRows      int  `json:"malformed_yaml_rows"`
-
-	// Amended reconciliation counters (F3). Dispositions is the per-snapshot
-	// tally from JoinEvidence; UniqueRows and Attempts are reported
-	// separately; LostAttempts lists every started attempt with no recovered
-	// reading. Empty from the baseline path until FC-1 fills them.
-	Dispositions []DispositionCount `json:"dispositions,omitempty"`
-	UniqueRows   int                `json:"unique_rows,omitempty"`
-	Attempts     int                `json:"attempts,omitempty"`
-	LostAttempts []string           `json:"lost_attempts,omitempty"`
 }
 
 type Conflict struct {

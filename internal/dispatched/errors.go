@@ -8,7 +8,7 @@ import "errors"
 // The first block is the FC-1 baseline. The second block is the F1–F4
 // amendment (docs/plans/forecasting-contracts.md); every refusal named in the
 // behavior table of features/dispatched-forecasting/notes/FC-SCAFFOLD.md
-// carries exactly one of these.
+// carries a documented sentinel (some refusals wrap more than one).
 var (
 	// ErrUnattributable: the row cannot be placed in a (role, model) cell.
 	ErrUnattributable = errors.New("dispatched: row cannot be attributed to a cell")
@@ -71,12 +71,15 @@ var (
 	ErrAmbiguousAttempt = errors.New("dispatched: attempt identity is ambiguous")
 
 	// ErrEvidenceConflict (F1): within one AttemptID, two authoritative
-	// readings disagree on the implementing model or the terminal outcome.
+	// readings disagree on a measurement or a terminal selection unit.
 	// Precedence cannot resolve it because both sides rank equally.
 	ErrEvidenceConflict = errors.New("dispatched: conflicting authoritative evidence within one attempt")
 
 	// ErrUnknownMeasurement (F2): a Measured value was read as if known.
 	ErrUnknownMeasurement = errors.New("dispatched: measurement is unknown")
+
+	// ErrInvalidPhase (F2): an undeclared phase or unclassified interval.
+	ErrInvalidPhase = errors.New("dispatched: invalid classified phase")
 
 	// ErrReversedInterval (F2): an interval or attempt whose end precedes its
 	// start, or a terminal event before the task_started it closes.
@@ -123,8 +126,8 @@ var (
 	ErrInvalidSelection = errors.New("dispatched: cutoff or holdout selection is invalid")
 
 	// ErrInvalidTarget (F4): a target row lacks a key, a valid role or a
-	// nonblank model, or repeats a key. readTargetTasks keeps wrapping
-	// ErrYAMLSource for the baseline callers; new callers wrap this too.
+	// nonblank model, or repeats a key. Legacy readTargetTasks keeps its
+	// ErrYAMLSource contract; the amended FC-1 path uses this sentinel.
 	ErrInvalidTarget = errors.New("dispatched: target task is malformed")
 
 	// ErrEmptyTarget (F4): a coverage or prediction gate was asked to check a

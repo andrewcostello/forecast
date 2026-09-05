@@ -9,7 +9,6 @@ package dispatched
 import (
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 )
@@ -181,45 +180,6 @@ type Observation struct {
 	// CostKnown false has no cost, and CostUSD must not be read as one.
 	CostKnown  bool
 	Provenance Provenance
-
-	// Amended contract fields (F1/F2). Wall is the classified breakdown of
-	// Elapsed, nil while unknown; when set it supersedes DevElapsed and
-	// ReviewElapsed, which the baseline reducer filled from the superseded
-	// faithful-copy timing rule and which FC-JOURNAL replaces. Evidence is
-	// per-field provenance beside the single baseline Provenance. Validate
-	// does not inspect either; Wall.Validate is applied by the reducer that
-	// produces it.
-	//
-	// Wall is a pointer because WallBreakdown holds a slice, and Observation
-	// must stay usable with == by the baseline table. Row equality is
-	// therefore defined by Equal, which compares Wall by content; == on two
-	// rows compares Wall by pointer identity and is not the contract
-	// (F1-ROW-EQUALITY-BY-CONTENT). merge joins Wall and Evidence
-	// order-independently (F1-EV-MERGE-PERMUTATION).
-	Wall     *WallBreakdown
-	Evidence ObservationEvidence
-}
-
-// Equal reports whether two rows are the same by content: every comparable
-// field with ==, StartedAt by instant, and Wall by WallBreakdown.Equal (nil
-// equals only nil). Seals compare rows with this, never with ==.
-func (o Observation) Equal(other Observation) bool {
-	if !o.StartedAt.Equal(other.StartedAt) {
-		return false
-	}
-	a, b := o, other
-	a.StartedAt, b.StartedAt = time.Time{}, time.Time{}
-	a.Wall, b.Wall = nil, nil
-	if a != b {
-		return false
-	}
-	switch {
-	case o.Wall == nil && other.Wall == nil:
-		return true
-	case o.Wall == nil || other.Wall == nil:
-		return false
-	}
-	return o.Wall.Equal(*other.Wall)
 }
 
 // Censored reports whether Elapsed is a lower bound rather than a duration.
@@ -275,12 +235,8 @@ func (o Observation) Validate() error {
 	return nil
 }
 
-// ---------------------------------------------------------------------------
-// F1–F4 amendment (docs/plans/forecasting-contracts.md). Everything below is
-// frozen for the FC-SEALS / FC-JOURNAL / FC-SOURCES / FC-1 rows. The baseline
-// types above are unchanged so legacy call shapes keep compiling; the notes
-// file names which baseline fields are superseded.
-// ---------------------------------------------------------------------------
+// Amended F1-F4 carriers. Decision bodies live in journal.go, sources.go and
+// evidence.go; the legacy Observation and Table remain unchanged.
 
 // AttemptID is the identity of one attempt at one task: the dispatcher run,
 // the task key and the task_started instant, normalised to UTC.
@@ -291,54 +247,15 @@ func (o Observation) Validate() error {
 // triple are ambiguous (ErrAmbiguousAttempt), never resolved by proximity.
 // This supersedes the baseline identity (Key, StartedAt) in referenceclass.go.
 type AttemptID struct {
-	RunID     string
-	Key       string
-	StartedAt time.Time
+	RunID     string    `json:"run_id"`
+	Key       string    `json:"key"`
+	StartedAt time.Time `json:"started_at"`
 }
 
 // NewAttemptID builds an AttemptID with startedAt normalised to UTC, so two
 // offsets of one instant are one identity.
 func NewAttemptID(runID, key string, startedAt time.Time) AttemptID {
-	return AttemptID{RunID: runID, Key: key, StartedAt: startedAt.UTC()}
-}
-
-// Normalize returns the identity with StartedAt in UTC.
-func (id AttemptID) Normalize() AttemptID {
-	return NewAttemptID(id.RunID, id.Key, id.StartedAt)
-}
-
-// Valid reports whether every component is present. An identity missing any
-// part cannot join evidence (DispositionMissingJoinKeys).
-func (id AttemptID) Valid() bool {
-	return id.RunID != "" && id.Key != "" && !id.StartedAt.IsZero()
-}
-
-// Equal compares identities by instant, not by offset.
-func (id AttemptID) Equal(other AttemptID) bool {
-	return id.RunID == other.RunID && id.Key == other.Key && id.StartedAt.Equal(other.StartedAt)
-}
-
-// Less is the stable order for reports and deterministic tie-breaks: start
-// instant, then key, then run ID.
-func (id AttemptID) Less(other AttemptID) bool {
-	switch {
-	case !id.StartedAt.Equal(other.StartedAt):
-		return id.StartedAt.Before(other.StartedAt)
-	case id.Key != other.Key:
-		return id.Key < other.Key
-	}
-	return id.RunID < other.RunID
-}
-
-func (id AttemptID) String() string {
-	return id.RunID + "/" + id.Key + "@" + id.StartedAt.UTC().Format(time.RFC3339Nano)
-}
-
-// AttemptID returns the amended identity of a stored row. Provenance.RunID is
-// the run component; the baseline row never carried it in its identity, which
-// is the defect (FC-1 panel Codex-1) the amendment corrects.
-func (o Observation) AttemptID() AttemptID {
-	return NewAttemptID(o.Provenance.RunID, o.Key, o.StartedAt)
+	return AttemptID{RunID: runID, Key: key, StartedAt: startedAt.Round(0).UTC()}
 }
 
 // Measured is a quantity that may be unknown. Known false means nobody
@@ -348,8 +265,8 @@ func (o Observation) AttemptID() AttemptID {
 // Money and tokens are separate Measured values from wall time; nothing
 // converts between them.
 type Measured[T any] struct {
-	Value T
-	Known bool
+	Value T    `json:"value"`
+	Known bool `json:"known"`
 }
 
 // Known returns a known measurement.
@@ -377,6 +294,9 @@ func (m Measured[T]) Must(name string) (T, error) {
 // never the sum of simultaneous reviewer seats); verifier is verification
 // wall time; unclassified is the residual an additive breakdown could not
 // attribute. Unclassified is never reported as development.
+//
+// PhaseUnclassified is a report key only. SummarizeWall rejects it on an
+// interval and computes its duration as the residual of elapsed.
 type Phase string
 
 const (
@@ -386,225 +306,73 @@ const (
 	PhaseUnclassified Phase = "unclassified"
 )
 
-// Valid reports whether p is a declared phase.
-func (p Phase) Valid() bool {
-	switch p {
-	case PhaseDevelopment, PhasePanelReview, PhaseVerifier, PhaseUnclassified:
-		return true
-	}
-	return false
-}
-
 // Interval is one classified half-open wall-clock span [Start, End) inside
 // an attempt. Inferred is true when the boundaries were not both recorded
 // events (an explicit boundary or duration in the record makes it false);
 // an inferred interval whose attribution is ambiguous is not emitted at all.
 // Evidence names the events that bound it.
 type Interval struct {
-	Phase    Phase
-	Start    time.Time
-	End      time.Time
-	Inferred bool
-	Evidence []EventRef
+	Phase    Phase      `json:"phase"`
+	Start    time.Time  `json:"start"`
+	End      time.Time  `json:"end"`
+	Inferred bool       `json:"inferred"`
+	Evidence []EventRef `json:"evidence,omitempty"`
 }
 
-// Duration is End−Start. Validate rejects a reversed interval before it can
-// be summed.
-func (iv Interval) Duration() time.Duration { return iv.End.Sub(iv.Start) }
-
-// Equal compares intervals by content: phase, instants, the Inferred flag
-// and the cited events in order.
-func (iv Interval) Equal(other Interval) bool {
-	if iv.Phase != other.Phase || iv.Inferred != other.Inferred ||
-		!iv.Start.Equal(other.Start) || !iv.End.Equal(other.End) || len(iv.Evidence) != len(other.Evidence) {
-		return false
-	}
-	for i := range iv.Evidence {
-		if !iv.Evidence[i].Equal(other.Evidence[i]) {
-			return false
-		}
-	}
-	return true
-}
-
-// Validate wraps ErrInvalidOutcome for an undeclared phase and
-// ErrReversedInterval when End precedes Start.
-func (iv Interval) Validate() error {
-	if !iv.Phase.Valid() {
-		return fmt.Errorf("%w: interval phase %q", ErrInvalidOutcome, iv.Phase)
-	}
-	if iv.End.Before(iv.Start) {
-		return fmt.Errorf("%w: %s interval %s to %s", ErrReversedInterval, iv.Phase,
-			iv.Start.UTC().Format(time.RFC3339Nano), iv.End.UTC().Format(time.RFC3339Nano))
-	}
-	return nil
-}
-
-// WallBreakdown is the additive decomposition of one attempt's elapsed wall
-// time into disjoint classified intervals contained in [StartedAt,
-// StartedAt+Elapsed]. Complete is false when phase data was missing or
-// ambiguous: the breakdown is then incomplete, not zero and not a fabricated
-// precise split. Elapsed is always usable on its own (F2: known elapsed
-// survives an unknown finer breakdown).
+// WallBreakdown holds classified intervals in ascending (Start, End, Phase)
+// order, with event citations in ascending journal/run/source/path/producer,
+// sequence, line, type, UTC-instant order. All timestamps are normalized to UTC
+// without monotonic components. Unclassified time is residual only; it is not
+// an interval. Missing phase attribution means Complete=false.
 type WallBreakdown struct {
-	StartedAt time.Time
-	Elapsed   time.Duration
-	Intervals []Interval
-	Complete  bool
+	StartedAt time.Time     `json:"started_at"`
+	Elapsed   time.Duration `json:"elapsed_ns"`
+	Intervals []Interval    `json:"intervals"`
+	Complete  bool          `json:"complete"`
 }
 
-// Equal compares breakdowns by content: start instant, elapsed, the
-// Complete flag and the intervals in slice order.
-func (w WallBreakdown) Equal(other WallBreakdown) bool {
-	if w.Complete != other.Complete || w.Elapsed != other.Elapsed ||
-		!w.StartedAt.Equal(other.StartedAt) || len(w.Intervals) != len(other.Intervals) {
-		return false
-	}
-	for i := range w.Intervals {
-		if !w.Intervals[i].Equal(other.Intervals[i]) {
-			return false
-		}
-	}
-	return true
+// WallSummary partitions elapsed into classified phases and the residual.
+type WallSummary struct {
+	Development  time.Duration `json:"development_ns"`
+	PanelReview  time.Duration `json:"panel_review_ns"`
+	Verifier     time.Duration `json:"verifier_ns"`
+	Unclassified time.Duration `json:"unclassified_ns"`
 }
 
-// Classified sums the intervals by phase. Unclassified residual is reported
-// by Unclassified, never stored as an interval of PhaseDevelopment.
-func (w WallBreakdown) Classified() map[Phase]time.Duration {
-	out := make(map[Phase]time.Duration, 4)
-	for _, iv := range w.Intervals {
-		out[iv.Phase] += iv.Duration()
-	}
-	return out
-}
-
-// Unclassified is Elapsed minus the sum of classified intervals. Validate
-// guarantees it is not negative.
-func (w WallBreakdown) Unclassified() time.Duration {
-	sum := time.Duration(0)
-	for _, iv := range w.Intervals {
-		sum += iv.Duration()
-	}
-	return w.Elapsed - sum
-}
-
-// Validate wraps ErrNegativeValue for a negative Elapsed, the interval's own
-// error for a reversed or unphased interval, and ErrOverlappingIntervals
-// when intervals overlap each other, leave the attempt, or sum past Elapsed.
-// Intervals are checked in Start order regardless of slice order.
-func (w WallBreakdown) Validate() error {
-	if w.Elapsed < 0 {
-		return fmt.Errorf("%w: elapsed %v", ErrNegativeValue, w.Elapsed)
-	}
-	ordered := make([]Interval, len(w.Intervals))
-	copy(ordered, w.Intervals)
-	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].Start.Before(ordered[j].Start) })
-	attemptEnd := w.StartedAt.Add(w.Elapsed)
-	sum := time.Duration(0)
-	for i, iv := range ordered {
-		if err := iv.Validate(); err != nil {
-			return err
-		}
-		if !w.StartedAt.IsZero() && (iv.Start.Before(w.StartedAt) || iv.End.After(attemptEnd)) {
-			return fmt.Errorf("%w: %s interval %s to %s leaves the attempt %s to %s", ErrOverlappingIntervals, iv.Phase,
-				iv.Start.UTC().Format(time.RFC3339Nano), iv.End.UTC().Format(time.RFC3339Nano),
-				w.StartedAt.UTC().Format(time.RFC3339Nano), attemptEnd.UTC().Format(time.RFC3339Nano))
-		}
-		if i > 0 && iv.Start.Before(ordered[i-1].End) {
-			return fmt.Errorf("%w: %s interval starting %s overlaps %s interval ending %s", ErrOverlappingIntervals,
-				iv.Phase, iv.Start.UTC().Format(time.RFC3339Nano), ordered[i-1].Phase, ordered[i-1].End.UTC().Format(time.RFC3339Nano))
-		}
-		sum += iv.Duration()
-	}
-	if sum > w.Elapsed {
-		return fmt.Errorf("%w: classified %v exceeds elapsed %v", ErrOverlappingIntervals, sum, w.Elapsed)
-	}
-	return nil
-}
-
-// EvidenceSource is where a field's value was read from, in precedence
-// order: a journal event outranks a tasks-YAML field, which outranks nothing.
-// The authored YAML model is never evidence for the implementing model.
-type EvidenceSource int
+// EvidenceSource ranks recorded evidence: journal > YAML > none. A source
+// label always travels with its value; choosing evidence separately is invalid.
+type EvidenceSource string
 
 const (
-	EvidenceNone EvidenceSource = iota
-	EvidenceYAML
-	EvidenceJournal
+	EvidenceNone    EvidenceSource = ""
+	EvidenceYAML    EvidenceSource = "yaml"
+	EvidenceJournal EvidenceSource = "journal"
 )
 
-func (s EvidenceSource) String() string {
-	switch s {
-	case EvidenceJournal:
-		return "journal"
-	case EvidenceYAML:
-		return "yaml"
-	case EvidenceNone:
-		return "none"
-	}
-	return fmt.Sprintf("EvidenceSource(%d)", int(s))
-}
-
-// FieldEvidence records what one field of an observation rests on: the
-// source class, the journal event (when Source is EvidenceJournal) and the
-// reading (when Source is EvidenceYAML). Unknown stays EvidenceNone. For a
-// field summed over several events (tokens, cost) Event is the least of the
-// summed events under eventRefLess and the full list is on Attempt.
+// FieldEvidence is the complete citation for one value. Unused members are
+// zero; ties compare all members after UTC normalization. The full citation
+// lists for sums live on Attempt. "none" is represented by the zero source.
 type FieldEvidence struct {
-	Source  EvidenceSource
-	Event   EventRef
-	Reading ReadingRef
+	Source  EvidenceSource `json:"source"`
+	Event   EventRef       `json:"event"`
+	Reading ReadingRef     `json:"reading"`
 }
 
-// ObservationEvidence is the per-field provenance the amended row carries
-// beside the baseline single Provenance: one FieldEvidence for every value
-// the row derives (F1-EV-PROVENANCE-KEPT). It is comparable, so Observation
-// stays comparable; the event lists behind the summed fields live on
-// Attempt.
-//
-//   - Model: the implementing stamp (journal spawn payload) or none.
-//   - Start: the task_started event, or the YAML started_at reading when the
-//     row is YAML-only.
-//   - Terminal: the terminal outcome. Elapsed: the instant Elapsed is
-//     measured to, which is Terminal when terminal and EvidenceNone when
-//     censored to cutoff or extraction time.
-//   - Wall: the journal whose events bound the classified intervals; none
-//     while Observation.Wall is nil.
-//   - Rounds, Cascades, Reviews: the least counted event (panel_iterate,
-//     agent_fallback, panel_started) or the YAML reading of iteration_count.
-//   - InputTokens, OutputTokens, Cost: the least summed spawn event; none
-//     when the measurement is unknown. Input and output tokens are cited
-//     separately because either can be absent on its own.
-//
-// merge joins each field with preferEvidence (F1-EV-MERGE-PERMUTATION).
+// ObservationEvidence accompanies each field of the reconciled Attempt.
+// Any merge selects a value and its citation atomically. Terminal outcome,
+// terminal instant, elapsed and their citations form one selection unit.
+// Equal-authority incompatible values are conflicts, never independent maxima.
 type ObservationEvidence struct {
-	Model        FieldEvidence
-	Start        FieldEvidence
-	Terminal     FieldEvidence
-	Elapsed      FieldEvidence
-	Wall         FieldEvidence
-	Rounds       FieldEvidence
-	Cascades     FieldEvidence
-	Reviews      FieldEvidence
-	InputTokens  FieldEvidence
-	OutputTokens FieldEvidence
-	Cost         FieldEvidence
-}
-
-// merge joins two evidence records field by field with preferEvidence, so
-// the result is the same under any permutation of readings.
-func (e ObservationEvidence) merge(other ObservationEvidence) ObservationEvidence {
-	return ObservationEvidence{
-		Model:        preferEvidence(e.Model, other.Model),
-		Start:        preferEvidence(e.Start, other.Start),
-		Terminal:     preferEvidence(e.Terminal, other.Terminal),
-		Elapsed:      preferEvidence(e.Elapsed, other.Elapsed),
-		Wall:         preferEvidence(e.Wall, other.Wall),
-		Rounds:       preferEvidence(e.Rounds, other.Rounds),
-		Cascades:     preferEvidence(e.Cascades, other.Cascades),
-		Reviews:      preferEvidence(e.Reviews, other.Reviews),
-		InputTokens:  preferEvidence(e.InputTokens, other.InputTokens),
-		OutputTokens: preferEvidence(e.OutputTokens, other.OutputTokens),
-		Cost:         preferEvidence(e.Cost, other.Cost),
-	}
+	Model         FieldEvidence `json:"model"`
+	Start         FieldEvidence `json:"start"`
+	Terminal      FieldEvidence `json:"terminal"`
+	Elapsed       FieldEvidence `json:"elapsed"`
+	Wall          FieldEvidence `json:"wall"`
+	Rounds        FieldEvidence `json:"rounds"`
+	Cascades      FieldEvidence `json:"cascades"`
+	Reviews       FieldEvidence `json:"reviews"`
+	Verifications FieldEvidence `json:"verifications"`
+	InputTokens   FieldEvidence `json:"input_tokens"`
+	OutputTokens  FieldEvidence `json:"output_tokens"`
+	Cost          FieldEvidence `json:"cost"`
 }

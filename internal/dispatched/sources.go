@@ -7,7 +7,8 @@ package dispatched
 // are the FC-1 code moved verbatim from extract.go; Build still runs them
 // until FC-1 switches Build to ReadSources, so the artifact does not change
 // under the move. Everything in this file that touches the filesystem or
-// runs git lives here; YAML decoding stays in extract.go.
+// runs git lives here; legacy YAML decoding stays in extract.go, while
+// the amended per-row parser is owned here by FC-SOURCES.
 
 import (
 	"bytes"
@@ -47,8 +48,8 @@ const (
 	DefaultMaxLineBytes = 16 * 1024 * 1024
 	// DefaultMaxBlobBytes is the largest single YAML blob that is read.
 	DefaultMaxBlobBytes = 16 * 1024 * 1024
-	// DefaultMaxTotalBytes caps the bytes of YAML content read from one
-	// source across all blobs and files.
+	// DefaultMaxTotalBytes caps input bytes read from one source across
+	// journals, blobs and files, including metadata retained for enumeration.
 	DefaultMaxTotalBytes = 512 * 1024 * 1024
 	// DefaultMaxProcesses is the serializer width: the largest number of git
 	// children in flight per source at one instant. Excess reads wait.
@@ -68,32 +69,10 @@ type ReadBounds struct {
 	MaxProcesses  int   `json:"max_processes"`
 }
 
-// WithDefaults fills zero fields.
-func (b ReadBounds) WithDefaults() ReadBounds {
-	if b.MaxCommits == 0 {
-		b.MaxCommits = defaultMaxHistoryCommits
-	}
-	if b.MaxLineBytes == 0 {
-		b.MaxLineBytes = DefaultMaxLineBytes
-	}
-	if b.MaxBlobBytes == 0 {
-		b.MaxBlobBytes = DefaultMaxBlobBytes
-	}
-	if b.MaxTotalBytes == 0 {
-		b.MaxTotalBytes = DefaultMaxTotalBytes
-	}
-	if b.MaxProcesses == 0 {
-		b.MaxProcesses = DefaultMaxProcesses
-	}
-	return b
-}
-
-// Validate wraps ErrInvalidSourceSpec for any negative bound.
+// Validate wraps ErrInvalidSourceSpec for any negative bound when FC-SOURCES
+// fills this named stub. Zero fields mean their documented defaults.
 func (b ReadBounds) Validate() error {
-	if b.MaxCommits < 0 || b.MaxLineBytes < 0 || b.MaxBlobBytes < 0 || b.MaxTotalBytes < 0 || b.MaxProcesses < 0 {
-		return fmt.Errorf("%w: read bounds must not be negative: %+v", ErrInvalidSourceSpec, b)
-	}
-	return nil
+	return fmt.Errorf("%w: source validation", ErrNotImplemented)
 }
 
 // SourceKind is what a source contributes.
@@ -139,27 +118,10 @@ type SourceSpec struct {
 }
 
 // Validate wraps ErrInvalidSourceSpec for a blank ID or repository, an
-// undeclared kind, a blank or absolute root, or roots on a journal source.
+// undeclared kind, missing roots on a YAML source, a blank/absolute/escaping
+// root, or roots on a journal source. FC-SOURCES fills this named stub.
 func (s SourceSpec) Validate() error {
-	switch {
-	case strings.TrimSpace(s.ID) == "":
-		return fmt.Errorf("%w: source has no ID", ErrInvalidSourceSpec)
-	case !s.Kind.Valid():
-		return fmt.Errorf("%w: source %s has kind %q", ErrInvalidSourceSpec, s.ID, s.Kind)
-	case strings.TrimSpace(s.Repository) == "":
-		return fmt.Errorf("%w: source %s has no repository", ErrInvalidSourceSpec, s.ID)
-	case s.Kind == SourceKindJournals && len(s.Roots) > 0:
-		return fmt.Errorf("%w: journal source %s does not take roots", ErrInvalidSourceSpec, s.ID)
-	case s.Kind != SourceKindJournals && len(s.Roots) == 0:
-		return fmt.Errorf("%w: source %s names no roots", ErrInvalidSourceSpec, s.ID)
-	}
-	for _, root := range s.Roots {
-		clean := filepath.ToSlash(filepath.Clean(root))
-		if strings.TrimSpace(root) == "" || filepath.IsAbs(root) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
-			return fmt.Errorf("%w: source %s root %q must be a relative path inside the repository", ErrInvalidSourceSpec, s.ID, root)
-		}
-	}
-	return nil
+	return fmt.Errorf("%w: source validation", ErrNotImplemented)
 }
 
 // SourceState is the completeness of one source or of the whole manifest.
@@ -170,47 +132,54 @@ const (
 	// SourceComplete: every requested record was enumerated and read within
 	// bounds, history is not shallow, nothing was cancelled.
 	SourceComplete SourceState = "COMPLETE"
-	// SourcePartial: something was read, and at least one of: a bound was
+	// SourcePartial: enumeration/read is incomplete because at least one of: a bound was
 	// hit, history is shallow/grafted/replaced, a record was unreadable or
 	// malformed, or the read was cancelled. Valid records are retained.
 	SourcePartial SourceState = "PARTIAL"
 	// SourceEmpty: the source was read successfully and yielded zero
-	// records. Reachable only under Selection.AllowEmpty; otherwise
-	// ErrSourceEmpty. Never prediction-eligible.
+	// journals in explicit AllowEmpty diagnostic mode. A YAML source with no
+	// task rows can be COMPLETE. An EMPTY manifest is never prediction-eligible.
 	SourceEmpty SourceState = "EMPTY"
 )
 
 // SourceCounts are the per-source tallies the manifest stores.
 type SourceCounts struct {
-	Files         int   `json:"files"`
-	Journals      int   `json:"journals"`
-	Commits       int   `json:"commits"`
-	Blobs         int   `json:"blobs"`
-	Bytes         int64 `json:"bytes"`
-	Records       int   `json:"records"`
-	Malformed     int   `json:"malformed"`
-	Unreadable    int   `json:"unreadable"`
-	ExcludedByRun int   `json:"excluded_by_holdout"`
-	AfterCutoff   int   `json:"excluded_after_cutoff"`
+	Files            int   `json:"files"`
+	Journals         int   `json:"journals"`
+	Commits          int   `json:"commits"`
+	Blobs            int   `json:"blobs"`
+	Bytes            int64 `json:"bytes"`
+	Records          int   `json:"records"`
+	NonTaskDocuments int   `json:"non_task_documents"`
+	Malformed        int   `json:"malformed"`
+	Unreadable       int   `json:"unreadable"`
+	ExcludedByRun    int   `json:"excluded_by_holdout"`
+	AfterCutoff      int   `json:"excluded_after_cutoff"`
 	// BoundsExceeded counts the commit, line, blob and total-byte caps that
 	// stopped a read of this source. MaxProcesses never contributes to it.
 	BoundsExceeded int `json:"bounds_exceeded"`
 }
 
+type ResolvedRef struct {
+	Name   string `json:"name"`
+	Commit string `json:"commit"`
+}
+
 // SourceReport is one source's identity, what was asked for, what was
 // actually resolved and how the read ended.
 type SourceReport struct {
-	ID           string       `json:"id"`
-	Kind         SourceKind   `json:"kind"`
-	Repository   string       `json:"repository"`
-	Roots        []string     `json:"roots,omitempty"`
-	RequestedRef string       `json:"requested_ref,omitempty"`
-	ResolvedRef  string       `json:"resolved_ref,omitempty"`
-	State        SourceState  `json:"state"`
-	Reasons      []string     `json:"reasons,omitempty"`
-	Shallow      bool         `json:"shallow"`
-	Cancelled    bool         `json:"cancelled"`
-	Counts       SourceCounts `json:"counts"`
+	ID           string        `json:"id"`
+	Kind         SourceKind    `json:"kind"`
+	Repository   string        `json:"repository"`
+	Roots        []string      `json:"roots,omitempty"`
+	RequestedRef string        `json:"requested_ref,omitempty"`
+	ResolvedRef  string        `json:"resolved_ref,omitempty"`
+	ResolvedRefs []ResolvedRef `json:"resolved_refs,omitempty"`
+	State        SourceState   `json:"state"`
+	Reasons      []string      `json:"reasons,omitempty"`
+	Shallow      bool          `json:"shallow"`
+	Cancelled    bool          `json:"cancelled"`
+	Counts       SourceCounts  `json:"counts"`
 }
 
 // Selection freezes, before extraction, which evidence is excluded: runs
@@ -218,8 +187,8 @@ type SourceReport struct {
 // held-out run is excluded at the source boundary for BOTH live and
 // historical joins; evidence after Cutoff is excluded and counted.
 //
-// AllowEmpty is the explicit diagnostic mode: zero journals or zero readings
-// then yield an EMPTY manifest instead of ErrSourceEmpty. An EMPTY or
+// AllowEmpty permits a zero-journal diagnostic manifest instead of ErrSourceEmpty.
+// A successfully enumerated YAML source may have zero task rows without error. An EMPTY or
 // PARTIAL manifest is never prediction-eligible.
 type Selection struct {
 	Cutoff        time.Time
@@ -231,39 +200,9 @@ type Selection struct {
 // that differs from its whitespace-trimmed form, or that is listed twice.
 // Rejecting an untrimmed ID (rather than trimming it) keeps the stored list
 // identical to the compared one, so a holdout can never pass validation and
-// then fail to match the run it names.
+// then fail to match the run it names. FC-SOURCES fills this named stub.
 func (s Selection) Validate() error {
-	seen := make(map[string]bool, len(s.HoldoutRunIDs))
-	for _, id := range s.HoldoutRunIDs {
-		trimmed := strings.TrimSpace(id)
-		if trimmed == "" {
-			return fmt.Errorf("%w: blank held-out run ID", ErrInvalidSelection)
-		}
-		if trimmed != id {
-			return fmt.Errorf("%w: held-out run ID %q has surrounding whitespace", ErrInvalidSelection, id)
-		}
-		if seen[id] {
-			return fmt.Errorf("%w: held-out run %q listed twice", ErrInvalidSelection, id)
-		}
-		seen[id] = true
-	}
-	return nil
-}
-
-// HeldOut reports whether runID is excluded by the selection. Both sides are
-// compared in whitespace-trimmed form so a caller that skipped Validate
-// still cannot leak a padded holdout into the corpus.
-func (s Selection) HeldOut(runID string) bool {
-	want := strings.TrimSpace(runID)
-	if want == "" {
-		return false
-	}
-	for _, id := range s.HoldoutRunIDs {
-		if strings.TrimSpace(id) == want {
-			return true
-		}
-	}
-	return false
+	return fmt.Errorf("%w: source validation", ErrNotImplemented)
 }
 
 // UnmatchedHoldouts wraps ErrInvalidSelection when any held-out run ID names
@@ -271,23 +210,9 @@ func (s Selection) HeldOut(runID string) bool {
 // journal sources BEFORE exclusion. A holdout that matches nothing is a
 // misspelling, and silently ignoring it would put the run it meant to hold
 // out into the corpus the artifact is then used to predict. ReadSources
-// calls this once discovery is complete (F3-HOLDOUT-UNMATCHED); it is a pure
-// check so seals can exercise it directly.
+// calls this once discovery is complete. This is a named stub for FC-SOURCES.
 func (s Selection) UnmatchedHoldouts(discoveredRunIDs []string) error {
-	discovered := make(map[string]bool, len(discoveredRunIDs))
-	for _, id := range discoveredRunIDs {
-		discovered[strings.TrimSpace(id)] = true
-	}
-	var missing []string
-	for _, id := range s.HoldoutRunIDs {
-		if !discovered[strings.TrimSpace(id)] {
-			missing = append(missing, id)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("%w: held-out run IDs match no discovered run: %q", ErrInvalidSelection, missing)
-	}
-	return nil
+	return fmt.Errorf("%w: source validation", ErrNotImplemented)
 }
 
 // SourceManifest is the record of every source supplied to one extraction.
@@ -301,106 +226,65 @@ type SourceManifest struct {
 	State         SourceState    `json:"state"`
 }
 
-// Complete reports whether every source is COMPLETE. Only a complete
-// manifest can pass a prediction gate.
-func (m SourceManifest) Complete() bool {
-	if len(m.Sources) == 0 {
-		return false
-	}
-	for _, s := range m.Sources {
-		if s.State != SourceComplete {
-			return false
-		}
-	}
-	return true
+// ValidateComplete rejects nil/empty manifests, non-COMPLETE aggregate or
+// source states, shallow/grafted/replaced history, cancellation, positive
+// malformed/unreadable/bound counters, and invalid/negative counters. Zero
+// matching task rows alone do not make a successfully enumerated YAML source
+// incomplete. At least one journal must have been read across the manifest.
+// All completed-body refusals wrap ErrSourceIncomplete. Until FC-SOURCES
+// lands, this nil-safe seam returns ErrNotImplemented for every input.
+func (m *SourceManifest) ValidateComplete() error {
+	return fmt.Errorf("%w: SourceManifest.ValidateComplete", ErrNotImplemented)
 }
 
 // ReadingRef identifies one reading of a tasks YAML: the source, the
 // repository-relative path, and the revision it was read at.
 type ReadingRef struct {
-	SourceID   string
-	Repository string
-	Path       string
-	Revision   Revision
+	SourceID   string   `json:"source_id"`
+	Repository string   `json:"repository"`
+	Path       string   `json:"path"`
+	Revision   Revision `json:"revision"`
 }
 
-// Less is the strict total order used for deterministic evidence ties:
-// live before git, then repository, path, commit, source ID.
-func (r ReadingRef) Less(other ReadingRef) bool {
-	switch {
-	case r.Revision.Source != other.Revision.Source:
-		return r.Revision.Source == SourceLive
-	case r.Repository != other.Repository:
-		return r.Repository < other.Repository
-	case r.Path != other.Path:
-		return r.Path < other.Path
-	case r.Revision.Commit != other.Revision.Commit:
-		return r.Revision.Commit < other.Revision.Commit
-	}
-	return r.SourceID < other.SourceID
-}
-
-func (r ReadingRef) String() string {
-	return r.SourceID + ":" + r.Repository + "/" + r.Path + "@" + r.Revision.String()
-}
-
-// SourceReadings is everything ReadSources recovered: every parsed journal
-// (with its resolved identity, events and diagnostics), ordered by
-// JournalIdentity, and every discovered tasks-YAML row as a Reading envelope,
-// ordered by ReadingRef then row. Readings that failed to parse are present
-// with Err set so the join can give each one its Disposition; selection
-// exclusions (holdout, cutoff) have already been applied and counted per
-// source and those readings are NOT present here.
+// SourceReadings retains every YAML envelope, including non-task documents
+// and excluded rows. ReadSources marks Excluded before joining and counts it;
+// excluded envelopes carry identity/citation only, never predictive values.
+// Journals from held-out runs have no task events here; their identities are
+// retained in ExcludedJournals. ReduceAttempts ignores events after cutoff.
+// JoinEvidence rechecks selection, emits one audit disposition per envelope,
+// and never contributes excluded rows to observations.
 type SourceReadings struct {
-	Journals []ParsedJournal
-	Readings []Reading
+	Journals         []ParsedJournal
+	ExcludedJournals []JournalIdentity
+	Readings         []Reading
 }
 
-// gitEnvironmentOverrides are the variables that redirect git away from the
-// repository named on the command line. Every git child spawned against a
-// selected repository runs with them stripped (FC-1 panel Grok-4).
-var gitEnvironmentOverrides = []string{
-	"GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY",
-	"GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_INDEX_FILE", "GIT_NAMESPACE",
-	"GIT_CEILING_DIRECTORIES", "GIT_DISCOVERY_ACROSS_FILESYSTEM",
-}
-
-// gitEnvironment returns parent without the location overrides. Pure; the
-// baseline readers below do not yet apply it (FC-SOURCES wires it).
-func gitEnvironment(parent []string) []string {
-	out := make([]string, 0, len(parent))
-	for _, kv := range parent {
-		name, _, _ := strings.Cut(kv, "=")
-		stripped := false
-		for _, override := range gitEnvironmentOverrides {
-			if name == override {
-				stripped = true
-				break
-			}
-		}
-		if !stripped {
-			out = append(out, kv)
-		}
-	}
-	return out
-}
-
-// ReadSources reads every spec under bounds and selection and returns the
-// manifest and readings. Rules: a missing or unreadable requested source is
-// ErrSourceMissing; zero journals or zero readings without AllowEmpty is
-// ErrSourceEmpty; commit enumeration is bounded before collection; blobs
-// are streamed and capped by bytes; shallow, grafted or replaced history is
-// PARTIAL (or ErrShallowHistory when the caller demands complete history);
-// cancellation is ErrSourceCancelled with the partial manifest returned
-// beside it; held-out runs and post-cutoff records are excluded at this
-// boundary and counted; a held-out run ID that matches no discovered journal
-// is ErrInvalidSelection via Selection.UnmatchedHoldouts; MaxProcesses only
-// serialises git children and never marks a source PARTIAL; git runs with
-// gitEnvironment; history enumeration uses --full-history over the roots and
-// includes deleted and renamed paths.
-//
-// FC-SOURCES body. Parameters are named so the body can use them; the
-// scaffold returns ErrNotImplemented and reads none of them.
+// ReadSources validates each SourceSpec, unique source IDs, Selection and
+// nonnegative bounds before I/O; it applies the documented defaults to zeros.
+// Each missing/unreadable requested source returns ErrSourceMissing. Zero
+// discovered journals returns ErrSourceEmpty unless AllowEmpty; a valid YAML
+// source with zero task rows is complete, not a discovery failure. Non-task
+// documents have a separate count and never degrade completeness.
+// It uses ParseEvents for journals and carries malformed/bad-timestamp/
+// over-bound parser diagnostics into source quality counters and PARTIAL state.
+// It decodes task rows independently through parseReadings. Malformed rows
+// mark PARTIAL without dropping valid siblings. Shallow/grafted/replaced
+// history and data caps return PARTIAL manifests with named Reasons; they do
+// not cause a read error solely because completeness is lost. There is no
+// hidden "demand complete" option: ValidateComplete/PredictionEligibility
+// alone refuse such manifests. Cancellation returns retained readings and a
+// PARTIAL manifest beside an error wrapping ErrSourceCancelled and ctx.Err().
+// Every named holdout must match a discovered journal run before exclusion.
+// SourceReadings preserves excluded audit envelopes as documented above.
+// Git uses full reachable history, including superseded/deleted/renamed blobs,
+// with bounded streamed metadata/content and a per-source process semaphore.
+// Strip GIT_DIR/WORK_TREE/COMMON_DIR/OBJECT_DIRECTORY and all inherited GIT_*
+// configuration/location overrides (including the GIT_CONFIG* family); ignore
+// global/system config, pin the selected repository, and disable replace/graft
+// interpretation after detecting/reporting it. Do not fetch or run configured
+// helpers to satisfy enumeration. Resolve every ref named by an all-refs walk
+// into ResolvedRefs before traversal. Only the explicit roots are read.
+// FC-SOURCES implements this seam; the scaffold always returns ErrNotImplemented.
 func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, bounds ReadBounds) (*SourceManifest, *SourceReadings, error) {
 	return nil, nil, fmt.Errorf("%w: ReadSources(%d sources)", ErrNotImplemented, len(specs))
 }
@@ -667,12 +551,24 @@ func readTargetTasks(path string) ([]yamlTask, error) {
 	seen := make(map[string]bool)
 	for i, task := range doc.Tasks {
 		if strings.TrimSpace(task.Key) == "" || !task.Role.Valid() || strings.TrimSpace(task.Model) == "" {
-			return nil, fmt.Errorf("%w: %w: target %s row %d (%q) requires a key, valid role and model", ErrYAMLSource, ErrInvalidTarget, path, i+1, task.Key)
+			return nil, fmt.Errorf("%w: target %s row %d (%q) requires a key, valid role and model", ErrYAMLSource, path, i+1, task.Key)
 		}
 		if seen[task.Key] {
-			return nil, fmt.Errorf("%w: %w: target %s repeats key %q", ErrYAMLSource, ErrInvalidTarget, path, task.Key)
+			return nil, fmt.Errorf("%w: target %s repeats key %q", ErrYAMLSource, path, task.Key)
 		}
 		seen[task.Key] = true
 	}
 	return doc.Tasks, nil
+}
+
+// parseReadings decodes each YAML tasks-sequence row independently, preserving
+// valid siblings of type-invalid rows. Non-task documents yield one
+// DocumentNotTasks envelope, Row=0, Err=nil. Invalid document syntax or an
+// explicitly malformed tasks value yields DocumentMalformed, Row=0, Err set.
+// Valid empty tasks lists yield no row envelopes. Every task row has Row>=1,
+// raw join-key presence, and its own parse error. Exclusion is not applied here.
+// FC-SOURCES implements it; the top-level error is reserved for an unimplemented
+// parser (this scaffold), not an ordinary malformed row/document.
+func parseReadings(data []byte, ref ReadingRef) ([]Reading, error) {
+	return nil, fmt.Errorf("%w: parseReadings", ErrNotImplemented)
 }

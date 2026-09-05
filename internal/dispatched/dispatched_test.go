@@ -213,7 +213,7 @@ func TestAddJoinsReadingsInAnyOrder(t *testing.T) {
 			if conflict != nil {
 				t.Fatalf("%s: order %v: %v", tc.name, outcomes(order), conflict)
 			}
-			if len(got) != 1 || !got[0].Equal(tc.want) {
+			if len(got) != 1 || got[0] != tc.want {
 				t.Errorf("%s: order %v stored %+v, want %+v", tc.name, outcomes(order), got, tc.want)
 			}
 		}

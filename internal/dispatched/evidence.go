@@ -10,7 +10,6 @@ package dispatched
 import (
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 )
@@ -27,7 +26,8 @@ type Disposition string
 const (
 	// DispositionRecovered: the snapshot matched one unambiguous attempt and
 	// contributed a reading to it.
-	DispositionRecovered Disposition = "recovered"
+	DispositionRecovered       Disposition = "recovered"
+	DispositionNotTaskDocument Disposition = "not_task_document"
 	// DispositionDuplicateReading: a further reading of an attempt that
 	// already had one from the same reading reference. Counted, not sampled.
 	DispositionDuplicateReading Disposition = "duplicate_reading"
@@ -65,19 +65,22 @@ const (
 // Dispositions lists every declared value in report order.
 func Dispositions() []Disposition {
 	return []Disposition{
-		DispositionRecovered, DispositionDuplicateReading, DispositionMissingJoinKeys,
+		DispositionNotTaskDocument, DispositionRecovered, DispositionDuplicateReading, DispositionMissingJoinKeys,
 		DispositionMalformed, DispositionNoMatchingRun, DispositionNoMatchingStart,
 		DispositionAmbiguousStart, DispositionAbsentStamp, DispositionConflictingEvidence,
 		DispositionUnrecoverable, DispositionHeldOut, DispositionAfterCutoff,
 	}
 }
 
-// Valid reports whether d is declared.
+// Valid reports whether d is declared, without allocating a slice per row.
 func (d Disposition) Valid() bool {
-	for _, known := range Dispositions() {
-		if d == known {
-			return true
-		}
+	switch d {
+	case DispositionNotTaskDocument, DispositionRecovered, DispositionDuplicateReading,
+		DispositionMissingJoinKeys, DispositionMalformed, DispositionNoMatchingRun,
+		DispositionNoMatchingStart, DispositionAmbiguousStart, DispositionAbsentStamp,
+		DispositionConflictingEvidence, DispositionUnrecoverable, DispositionHeldOut,
+		DispositionAfterCutoff:
+		return true
 	}
 	return false
 }
@@ -87,11 +90,11 @@ func (d Disposition) Valid() bool {
 // Row is the reading's row in its document, so two rows of one file are two
 // Examined entries.
 type Examined struct {
-	Reading     ReadingRef
-	Row         int
-	Attempt     AttemptID
-	Disposition Disposition
-	Reason      string
+	Reading     ReadingRef  `json:"reading"`
+	Row         int         `json:"row"`
+	Attempt     AttemptID   `json:"attempt"`
+	Disposition Disposition `json:"disposition"`
+	Reason      string      `json:"reason"`
 }
 
 // DispositionCount is one row of the per-disposition tally.
@@ -100,15 +103,25 @@ type DispositionCount struct {
 	Count       int         `json:"count"`
 }
 
+// RecoveredAttempt is the amended joint sample and portable record. Cell.Model
+// equals Attempt.Model.Value (which must be known); Cell.Role comes from matching
+// YAML evidence. Readings lists every contributing tasks-YAML citation. No
+// legacy Table.Add/merge operation is used to reconcile this record.
+type RecoveredAttempt struct {
+	Attempt  Attempt      `json:"attempt"`
+	Cell     Cell         `json:"cell"`
+	Readings []ReadingRef `json:"readings"`
+}
+
 // EvidenceJoin is the result of joining attempts with readings. Unique rows
 // (distinct run/key) and attempts (distinct AttemptID) are reported
 // separately; LostAttempts are started attempts with no recovered reading,
 // listed individually so a recovered sibling cannot hide them.
 type EvidenceJoin struct {
-	Observations  []Observation
+	Observations  []RecoveredAttempt
 	Examined      []Examined
 	Dispositions  []DispositionCount
-	Conflicts     []Conflict
+	Conflicts     []AttemptConflict
 	UniqueRows    int
 	Attempts      int
 	Recovered     int
@@ -118,61 +131,28 @@ type EvidenceJoin struct {
 	CutoffApplied time.Time
 }
 
-// preferEvidence chooses between two pieces of evidence for one field with
-// a total order, so a fold over any permutation of readings yields the same
-// choice (FC-1 panel Claude-7): higher Source wins; equal journal sources
-// prefer the earlier event (journal path, then seq, then line); equal YAML
-// sources prefer the lesser ReadingRef.
-func preferEvidence(a, b FieldEvidence) FieldEvidence {
-	switch {
-	case a.Source != b.Source:
-		if a.Source > b.Source {
-			return a
-		}
-		return b
-	case a.Source == EvidenceJournal:
-		if eventRefLess(b.Event, a.Event) {
-			return b
-		}
-		return a
-	case a.Source == EvidenceYAML:
-		if b.Reading.Less(a.Reading) {
-			return b
-		}
-		return a
-	}
-	return a
-}
-
-// eventRefLess is a strict total order over event positions.
-func eventRefLess(a, b EventRef) bool {
-	switch {
-	case a.Journal.RunID != b.Journal.RunID:
-		return a.Journal.RunID < b.Journal.RunID
-	case a.Journal.SourceID != b.Journal.SourceID:
-		return a.Journal.SourceID < b.Journal.SourceID
-	case a.Journal.Path != b.Journal.Path:
-		return a.Journal.Path < b.Journal.Path
-	case a.Seq != b.Seq:
-		return a.Seq < b.Seq
-	}
-	return a.Line < b.Line
-}
-
 // JoinEvidence joins attempts with readings under F1/F3: readings bind to
 // an attempt only on an exact AttemptID; the journal terminal and
 // implementer stamp outrank YAML; a YAML-only terminal is labeled; unknown
 // stays unknown; within-attempt conflicts of equal authority are excluded
 // as ErrEvidenceConflict; no row is manufactured from independent maxima
 // of incompatible readings; every Reading receives exactly one Disposition
-// (Err → DispositionMalformed, incomplete Present → DispositionMissingJoinKeys,
+// (non-task document → DispositionNotTaskDocument; exclusion marker or selection
+// match → excluded disposition; Err → DispositionMalformed; missing join keys →
+// DispositionMissingJoinKeys,
 // then the match outcome); held-out runs and post-cutoff attempts are
-// excluded before joining; every field of each Observation carries its
-// FieldEvidence; the result is identical under any permutation of attempts
+// excluded from contribution before joining; every reconciled field carries its
+// FieldEvidence in its RecoveredAttempt.Attempt; the result is identical under any permutation of attempts
 // and readings.
 //
 // FC-1 body. Parameters are named so the body can use them; the scaffold
 // returns ErrNotImplemented and reads none of them.
+// Values and citations are selected atomically, with the terminal outcome,
+// terminal time and elapsed treated as one unit. Canonicalize all instants to
+// UTC without monotonic components. Equal-source citation ties compare the
+// complete journal identity (including Producer), sequence, line, type, instant,
+// then the complete ReadingRef. A tie never justifies choosing incompatible
+// values. Full event lists and verification counts remain in RecoveredAttempt.
 func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection, now time.Time) (EvidenceJoin, error) {
 	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d journals, %d readings)", ErrNotImplemented, len(attempts), len(readings))
 }
@@ -283,17 +263,4 @@ func isUnrecoverableObservationError(err error) bool {
 	return errors.Is(err, ErrNegativeValue) ||
 		errors.Is(err, ErrInvalidOutcome) ||
 		errors.Is(err, ErrUnparseableRevision)
-}
-
-// sortExamined orders dispositions for a stable report.
-func sortExamined(items []Examined) {
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].Reading != items[j].Reading {
-			return items[i].Reading.Less(items[j].Reading)
-		}
-		if items[i].Row != items[j].Row {
-			return items[i].Row < items[j].Row
-		}
-		return items[i].Attempt.Less(items[j].Attempt)
-	})
 }

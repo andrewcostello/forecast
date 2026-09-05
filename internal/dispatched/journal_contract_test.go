@@ -194,9 +194,7 @@ func testF1EVTerminalConflict(t *testing.T) {
 	if set.Conflicts[0].Code != EvidenceConflictCode {
 		t.Fatalf("code = %q", set.Conflicts[0].Code)
 	}
-	if !errors.Is(set.Conflicts[0].Err, ErrEvidenceConflict) && set.Conflicts[0].Err != nil {
-		t.Fatalf("conflict err = %v, want ErrEvidenceConflict", set.Conflicts[0].Err)
-	}
+	requireSentinel(t, set.Conflicts[0].Err, ErrEvidenceConflict)
 }
 
 func testF1ModelClosingStamp(t *testing.T) {
@@ -637,14 +635,32 @@ func testF2SpawnWire(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := oneAttempt(t, set)
+	finish := mustTime(t, "2026-01-01T00:01:00Z")
+	wantStart := finish.Add(-1250 * time.Millisecond)
 	var found bool
 	for _, iv := range got.Wall.Intervals {
-		if iv.Phase == PhaseDevelopment && iv.End.Sub(iv.Start) == 1250*time.Millisecond {
-			found = true
+		if iv.Phase != PhaseDevelopment || !iv.Start.Equal(wantStart) || !iv.End.Equal(finish) {
+			continue
+		}
+		found = true
+		if iv.End.Sub(iv.Start) != 1250*time.Millisecond {
+			t.Fatalf("development duration = %s, want 1.25s", iv.End.Sub(iv.Start))
+		}
+		if iv.Inferred {
+			t.Fatal("wire duration was labeled inferred")
+		}
+		cited := false
+		for _, ref := range iv.Evidence {
+			if ref.Type == EventTaskSpawnFinished && ref.At.Equal(finish) {
+				cited = true
+			}
+		}
+		if !cited {
+			t.Fatalf("1.25s interval omitted its spawn citation: %+v", iv)
 		}
 	}
-	if !found && got.Wall.Complete {
-		t.Fatalf("duration_ms 1250 did not become 1.25s span: %+v", got.Wall.Intervals)
+	if !found {
+		t.Fatalf("duration_ms 1250 did not become exact [%s, %s) development span: %+v", wantStart, finish, got.Wall.Intervals)
 	}
 }
 
@@ -736,18 +752,25 @@ func testF2EventIdentity(t *testing.T) {
 func testF2AllSpawnCost(t *testing.T) {
 	got := oneAttempt(t, reduceFixture(t, "run-kinds", "synthetic-all-kinds.jsonl"))
 	// 0.1+0.2+0.05+0.01+0.01+0.01+0.3+0.4+0.02 = 1.10
-	requireKnown(t, got.CostUSD, 1.10, "all spawn kinds")
+	if !got.CostUSD.Known || math.Abs(got.CostUSD.Value-1.10) > 1e-9 {
+		t.Fatalf("all spawn cost = %+v, want 1.10", got.CostUSD)
+	}
 	if got.CostScope != CostScopeRecordedSpawns {
 		t.Fatalf("cost scope = %q", got.CostScope)
 	}
-	if got.InputTokens.Known && got.InputTokens.Value != 15 {
-		// uncached only: 1+2+1+1+1+1+3+4+1 = 15; cache tokens are absent here
-		t.Fatalf("input tokens = %v, want uncached 15", got.InputTokens)
-	}
+	requireKnown(t, got.InputTokens, int64(15), "synthetic uncached input tokens")
+
+	// The recorded fixture carries 7.9M cache-read tokens beside only 242
+	// uncached input tokens. Counting cache fields makes this assertion fail.
+	recorded := oneAttempt(t, reduceFixture(t, "run-recorded", "recorded-panel-iterate.jsonl"))
+	requireKnown(t, recorded.InputTokens, int64(118+36+88), "recorded uncached input tokens")
 }
 
 func testF2ArithmeticErrors(t *testing.T) {
-	huge := int64(math.MaxInt64 / int64(time.Millisecond))
+	// Invalid wire conversion is a parser diagnostic, not a whole-journal
+	// ErrMeasurementOverflow. This is exactly one millisecond beyond the
+	// largest time.Duration that can be represented.
+	huge := int64(math.MaxInt64/int64(time.Millisecond)) + 1
 	parsed := parseLines(t, "run-ovf",
 		journalLine(0, EventRunStarted, "", "2026-01-01T00:00:00Z", map[string]any{"dispatcher_version": ProducerDispatcherV0_1_0}),
 		journalLine(1, EventTaskStarted, "O", "2026-01-01T00:00:00Z", map[string]any{}),
@@ -755,16 +778,48 @@ func testF2ArithmeticErrors(t *testing.T) {
 			"spawn_kind": SpawnKindImplementer, "model": "stamp", "duration_ms": huge, "cost_usd": 1, "input_tokens": 1, "output_tokens": 1,
 		}),
 	)
-	if parsed.Diagnostics.LinesUnparsed == 0 {
-		_, err := ReduceAttempts(parsed, contractCutoff())
-		if err != nil && !errors.Is(err, ErrMeasurementOverflow) && !errors.Is(err, ErrNotImplemented) {
-			t.Fatalf("overflow path = %v", err)
+	if parsed.Diagnostics.LinesUnparsed != 1 {
+		t.Fatalf("wire overflow LinesUnparsed = %d, want 1: %+v", parsed.Diagnostics.LinesUnparsed, parsed.Diagnostics)
+	}
+	for _, event := range parsed.Events {
+		if event.Ref.Type == EventTaskSpawnFinished {
+			t.Fatalf("overflowing wire duration reached parsed events: %+v", event)
 		}
-		if err == nil {
-			t.Fatal("overflow duration produced a finite attempt")
+	}
+	parsedSet, err := ReduceAttempts(parsed, contractCutoff())
+	if err != nil {
+		t.Fatalf("parser-diagnosed wire overflow became a whole-attempt error: %v", err)
+	}
+	for _, attempt := range parsedSet.Attempts {
+		for _, interval := range attempt.Wall.Intervals {
+			if interval.Phase == PhaseDevelopment {
+				t.Fatalf("overflowing wire duration reached a development interval: %+v", interval)
+			}
 		}
-		if errors.Is(err, ErrNotImplemented) {
-			t.Fatal(err)
+	}
+
+	// Reducer arithmetic is the separate ErrMeasurementOverflow path. Each
+	// scalar is finite and parser-valid; their cost sum is not representable.
+	sumParsed := parseLines(t, "run-sum-ovf",
+		journalLine(0, EventRunStarted, "", "2026-01-01T00:00:00Z", map[string]any{"dispatcher_version": ProducerDispatcherV0_1_0}),
+		journalLine(1, EventTaskStarted, "S", "2026-01-01T00:00:00Z", map[string]any{}),
+		journalLine(2, EventTaskSpawnFinished, "S", "2026-01-01T00:01:00Z", map[string]any{
+			"spawn_kind": SpawnKindImplementer, "model": "stamp", "duration_ms": 1000, "cost_usd": math.MaxFloat64, "input_tokens": 1, "output_tokens": 1,
+		}),
+		journalLine(3, EventTaskSpawnFinished, "S", "2026-01-01T00:02:00Z", map[string]any{
+			"spawn_kind": SpawnKindPanelIterate, "model": "stamp", "duration_ms": 1000, "cost_usd": math.MaxFloat64, "input_tokens": 1, "output_tokens": 1,
+		}),
+		journalLine(4, EventPanelIterate, "S", "2026-01-01T00:02:00Z", map[string]any{"iteration": 1, "iterations_remaining": 0}),
+		journalLine(5, EventTaskDone, "S", "2026-01-01T00:03:00Z", map[string]any{}),
+	)
+	if sumParsed.Diagnostics.LinesUnparsed != 0 {
+		t.Fatalf("finite reducer inputs rejected by parser: %+v", sumParsed.Diagnostics)
+	}
+	sumSet, err := ReduceAttempts(sumParsed, contractCutoff())
+	requireSentinel(t, err, ErrMeasurementOverflow)
+	for _, attempt := range sumSet.Attempts {
+		if attempt.CostUSD.Known && (math.IsInf(attempt.CostUSD.Value, 0) || math.IsNaN(attempt.CostUSD.Value) || attempt.CostUSD.Value == math.MaxFloat64) {
+			t.Fatalf("overflowing cost sum saturated into an attempt: %+v", attempt.CostUSD)
 		}
 	}
 }
@@ -895,14 +950,24 @@ func testF2DesignSpawn(t *testing.T) {
 	if got.Model.Value == "designer" {
 		t.Fatal("design spawn stamped implementing model")
 	}
+	if !got.CostUSD.Known || math.Abs(got.CostUSD.Value-1.10) > 1e-9 {
+		t.Fatalf("cost including design spawn = %+v, want 1.10", got.CostUSD)
+	}
+	design := Interval{
+		Start: mustTime(t, "2026-01-01T00:01:00Z"),
+		End:   mustTime(t, "2026-01-01T00:02:00Z"),
+	}
 	for _, iv := range got.Wall.Intervals {
-		if iv.Phase == PhaseDevelopment {
-			for _, ref := range iv.Evidence {
-				if ref.Type == EventTaskSpawnFinished && strings.Contains(strings.ToLower(ref.Journal.Path), "design") {
-					t.Fatal("design time classified as development")
-				}
-			}
+		if intervalsOverlap(iv, design) {
+			t.Fatalf("design window [%s, %s) was classified as %s: %+v", design.Start, design.End, iv.Phase, iv)
 		}
+	}
+	summary, err := SummarizeWall(got.Wall)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Unclassified < time.Minute {
+		t.Fatalf("design minute absent from unclassified residual: %+v", summary)
 	}
 	if got.Wall.Complete {
 		t.Fatal("design residual must leave the breakdown incomplete")

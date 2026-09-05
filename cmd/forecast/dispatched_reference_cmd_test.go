@@ -8,8 +8,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/andrewcostello/forecast/internal/dispatched"
 	"github.com/spf13/cobra"
@@ -159,6 +161,52 @@ type commandFixture struct {
 	target string
 }
 
+func commandFixtureTime() time.Time {
+	return time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
+}
+
+func commandFixtureGitEnv(repo string) []string {
+	count := 0
+	cmd := exec.Command("git", "-C", repo, "rev-list", "--count", "--all")
+	if out, err := cmd.Output(); err == nil {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(out))); parseErr == nil {
+			count = parsed
+		}
+	}
+	when := commandFixtureTime().Add(time.Duration(count) * time.Minute).Format(time.RFC3339)
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, "GIT_AUTHOR_DATE=") || strings.HasPrefix(item, "GIT_COMMITTER_DATE=") {
+			continue
+		}
+		env = append(env, item)
+	}
+	return append(env, "GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+}
+
+func runCommandFixtureGit(t *testing.T, repo string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = commandFixtureGitEnv(repo)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	if len(args) > 0 && args[0] == "commit" {
+		show := exec.Command("git", "-C", repo, "show", "-s", "--format=%aI%n%cI", "HEAD")
+		out, err := show.Output()
+		if err != nil {
+			t.Fatalf("read command fixture commit dates: %v", err)
+		}
+		cutoff := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
+		for _, raw := range strings.Fields(string(out)) {
+			when, parseErr := time.Parse(time.RFC3339, raw)
+			if parseErr != nil || !when.Before(cutoff) {
+				t.Fatalf("command fixture commit date %q is not before cutoff %s: %v", raw, cutoff, parseErr)
+			}
+		}
+	}
+}
+
 // newCommandFixture builds the smallest tree the command can be pointed at:
 // one journal run, one live tasks YAML in a git repository, and a target list
 // naming one covered cell and one that has never been observed.
@@ -176,9 +224,7 @@ func newCommandFixture(t *testing.T) commandFixture {
 	for _, args := range [][]string{
 		{"init", "-q"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "T"},
 	} {
-		if out, err := exec.Command("git", append([]string{"-C", fixture.repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v\n%s", args, err, out)
-		}
+		runCommandFixtureGit(t, fixture.repo, args...)
 	}
 	writeFile(t, yamlPath, "tasks:\n"+
 		"  - key: ROW\n    role: bodies\n    model: authored\n    status: Done\n"+
@@ -193,9 +239,7 @@ func newCommandFixture(t *testing.T) commandFixture {
 		`{"event_type":"task_done","task_key":"ROW","timestamp":"2026-01-01T01:00:00Z","payload":null}`,
 	}, "\n")+"\n")
 	for _, args := range [][]string{{"add", "features"}, {"commit", "-q", "-m", "fixture"}} {
-		if out, err := exec.Command("git", append([]string{"-C", fixture.repo}, args...)...).CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %v: %s", args, err, out)
-		}
+		runCommandFixtureGit(t, fixture.repo, args...)
 	}
 	return fixture
 }
@@ -204,6 +248,10 @@ func writeFile(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	when := commandFixtureTime()
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("freeze fixture mtime %s: %v", path, err)
 	}
 }
 

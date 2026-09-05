@@ -9,5 +9,6 @@ duration_ms, token split (uncached vs cache_*), and the adjacency
 task_spawn_finished(panel-iterate) THEN panel_iterate are preserved.
 
 These files are recorded/sanitized, not live network captures.
-Synthetic companions (*.synthetic.jsonl) are labeled in their first comment
-line and in features/dispatched-forecasting/notes/FC-SEALS.md.
+The sole recorded/sanitized fixture is recorded-panel-iterate.jsonl. Synthetic
+companions use the synthetic- filename prefix and are enumerated in
+features/dispatched-forecasting/notes/FC-SEALS.md.

@@ -708,13 +708,16 @@ func (f *buildFixture) writeLive(data string) {
 	if err := os.WriteFile(f.yamlPath, []byte(data), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
+	setFixtureMTime(f.t, f.yamlPath)
 }
 
 func (f *buildFixture) writeSibling(name, data string) {
 	f.t.Helper()
-	if err := os.WriteFile(filepath.Join(filepath.Dir(f.yamlPath), name), []byte(data), 0o644); err != nil {
+	path := filepath.Join(filepath.Dir(f.yamlPath), name)
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
+	setFixtureMTime(f.t, path)
 }
 
 func (f *buildFixture) commitYAML(data string) {
@@ -729,6 +732,7 @@ func (f *buildFixture) writeTarget(data string) {
 	if err := os.WriteFile(f.target, []byte(data), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
+	setFixtureMTime(f.t, f.target)
 }
 
 func (f *buildFixture) build(t *testing.T) *BuildResult {
@@ -791,9 +795,11 @@ func writeJournal(t *testing.T, runs, run string, events ...string) {
 	t.Helper()
 	dir := filepath.Join(runs, run)
 	mustMkdir(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, "journal.jsonl"), []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
+	path := filepath.Join(dir, "journal.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	setFixtureMTime(t, path)
 }
 
 func mustMkdir(t *testing.T, path string) {
@@ -806,7 +812,16 @@ func mustMkdir(t *testing.T, path string) {
 func runGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = fixtureGitEnv(repo)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
+	if len(args) > 0 && (args[0] == "commit" || args[0] == "merge") {
+		requireFixtureCommitBeforeCutoff(t, repo)
+	}
+	// checkout, merge and clone can replace a worktree file after its original
+	// write helper froze the mtime. Re-freeze every regular fixture worktree
+	// file after Git operations; explicit after-cutoff evidence lives in the
+	// fixture payload/ReadingRef and is not rewritten here.
+	freezeFixtureTree(t, repo)
 }

@@ -62,21 +62,46 @@ func hasUsage(r cliResult) bool {
 }
 
 func testCLIMissingExplicitRepos(t *testing.T) {
+	fixture := newCommandFixture(t)
 	home := t.TempDir()
 	decoy := filepath.Join(home, "Project", "claude-workflow")
-	if err := os.MkdirAll(filepath.Join(decoy, "features"), 0o755); err != nil {
+	decoyFixture := newCommandFixture(t)
+	if err := os.MkdirAll(filepath.Dir(decoy), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Rename(decoyFixture.repo, decoy); err != nil {
+		t.Fatal(err)
+	}
+	// This distinctive row is valid and would be scanned only by the forbidden
+	// HOME default. The matching ROW row already in this repository also makes
+	// legacy defaulting capable of completing against fixture.runs.
+	writeFile(t, filepath.Join(decoy, "features", "study", "home-decoy.yaml"), `tasks:
+  - key: FC-SEALS-HOME-DECOY
+    role: bodies
+    model: home-decoy
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:01:00Z'
+    dispatcher_run_id: decoy-only
+`)
+	runCommandFixtureGit(t, decoy, "add", "features")
+	runCommandFixtureGit(t, decoy, "commit", "-q", "-m", "distinctive home decoy")
 	t.Setenv("HOME", home)
 	out := filepath.Join(t.TempDir(), "o.json")
 	r := executeReferenceBuild(t, []string{
-		"--runs-dir", t.TempDir(), "--out", out,
+		"--runs-dir", fixture.runs, "--out", out,
 	})
 	if r.err == nil {
 		t.Fatal("missing explicit repo succeeded via home default")
 	}
+	if !strings.Contains(r.err.Error(), "--features-repo") && !errors.Is(r.err, dispatched.ErrInvalidSourceSpec) {
+		t.Fatalf("missing explicit repo failed after source processing: %v", r.err)
+	}
 	if strings.Contains(r.err.Error(), decoy) || strings.Contains(combinedOutput(r), decoy) {
 		t.Fatalf("CLI used HOME default %s: %v\n%s", decoy, r.err, combinedOutput(r))
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing explicit source wrote an artifact before refusal: %v", err)
 	}
 	if hasUsage(r) {
 		t.Fatalf("data error printed usage:\n%s", combinedOutput(r))

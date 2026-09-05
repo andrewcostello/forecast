@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,95 @@ func contractCutoff() time.Time {
 	return time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
 }
 
-func ptr[T any](v T) *T { return &v }
+// fixtureRecordedAt predates every selection cutoff used by these seals.
+// File mtimes and fixture Git commits are frozen here so a checkout made after
+// contractCutoff cannot silently turn otherwise in-sample evidence into an
+// after-cutoff envelope.
+func fixtureRecordedAt() time.Time {
+	return time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
+}
+
+func setFixtureMTime(t *testing.T, path string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture for mtime %s: %v", path, err)
+	}
+	hash := fnv.New32a()
+	_, _ = hash.Write(data)
+	when := fixtureRecordedAt().Add(time.Duration(hash.Sum32()%2_000_000) * time.Second)
+	if err := os.Chtimes(path, when, when); err != nil {
+		t.Fatalf("freeze fixture mtime %s: %v", path, err)
+	}
+}
+
+func freezeFixtureTree(t *testing.T, root string) {
+	t.Helper()
+	if _, err := os.Stat(root); err != nil {
+		return
+	}
+	if err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() && entry.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if entry.Type().IsRegular() {
+			data, readErr := os.ReadFile(path)
+			if readErr != nil {
+				return readErr
+			}
+			hash := fnv.New32a()
+			_, _ = hash.Write(data)
+			when := fixtureRecordedAt().Add(time.Duration(hash.Sum32()%2_000_000) * time.Second)
+			return os.Chtimes(path, when, when)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("freeze fixture tree %s: %v", root, err)
+	}
+}
+
+// fixtureGitEnv gives topology-ordered commits deterministic author and
+// committer instants. Counting all reachable commits handles branch/merge
+// fixtures without relying on the host clock.
+func fixtureGitEnv(repo string) []string {
+	count := 0
+	cmd := exec.Command("git", "-C", repo, "rev-list", "--count", "--all")
+	if out, err := cmd.Output(); err == nil {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(out))); parseErr == nil {
+			count = parsed
+		}
+	}
+	when := fixtureRecordedAt().Add(time.Duration(count) * time.Minute).Format(time.RFC3339)
+	env := make([]string, 0, len(os.Environ())+2)
+	for _, item := range os.Environ() {
+		if strings.HasPrefix(item, "GIT_AUTHOR_DATE=") || strings.HasPrefix(item, "GIT_COMMITTER_DATE=") {
+			continue
+		}
+		env = append(env, item)
+	}
+	return append(env, "GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+}
+
+func requireFixtureCommitBeforeCutoff(t *testing.T, repo string) {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "show", "-s", "--format=%aI%n%cI", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("read fixture commit dates: %v", err)
+	}
+	for _, raw := range strings.Fields(string(out)) {
+		when, parseErr := time.Parse(time.RFC3339, raw)
+		if parseErr != nil {
+			t.Fatalf("parse fixture commit date %q: %v", raw, parseErr)
+		}
+		if !when.Before(contractCutoff()) {
+			t.Fatalf("fixture commit date %s is not before cutoff %s", when, contractCutoff())
+		}
+	}
+}
 
 func testdataFile(t *testing.T, parts ...string) string {
 	t.Helper()
@@ -29,10 +119,6 @@ func testdataFile(t *testing.T, parts ...string) string {
 		t.Fatal(err)
 	}
 	return string(data)
-}
-
-func testdataPath(parts ...string) string {
-	return filepath.Join(append([]string{"testdata"}, parts...)...)
 }
 
 func journalID(run, path string) JournalIdentity {
@@ -160,19 +246,23 @@ func writeJournalTree(t *testing.T, runs, run, fixture string) {
 		t.Fatal(err)
 	}
 	data := testdataFile(t, "journals", fixture)
-	if err := os.WriteFile(filepath.Join(dir, "journal.jsonl"), []byte(data), 0o644); err != nil {
+	path := filepath.Join(dir, "journal.jsonl")
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	setFixtureMTime(t, path)
 }
 
-func copyTestdata(t *testing.T, dest string, parts ...string) {
+func writeJournalData(t *testing.T, runs, run, data string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+	path := filepath.Join(runs, run, "journal.jsonl")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(dest, []byte(testdataFile(t, parts...)), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	setFixtureMTime(t, path)
 }
 
 type gitRepo struct {
@@ -202,6 +292,7 @@ func (g gitRepo) write(rel, data string) {
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		g.t.Fatal(err)
 	}
+	setFixtureMTime(g.t, path)
 }
 
 func (g gitRepo) writeTestdata(rel string, parts ...string) {
@@ -287,9 +378,17 @@ func journalAttempt(run, key string, start time.Time, elapsed time.Duration, mod
 	if outcome == OutcomeBlocked {
 		termRef.Type = EventTaskBlocked
 	}
+	modelRef := startRef
+	modelRef.Type = EventTaskSpawnFinished
+	modelRef.At = id.StartedAt.Add(elapsed / 2)
+	modelRef.Seq = 2
+	modelRef.Line = 3
 	ev := ObservationEvidence{
 		Start: FieldEvidence{Source: EvidenceJournal, Event: startRef},
-		Model: FieldEvidence{Source: modelSrc, Event: startRef},
+		Model: FieldEvidence{Source: modelSrc},
+	}
+	if modelKnown {
+		ev.Model.Event = modelRef
 	}
 	if terminalSrc != EvidenceNone {
 		ev.Terminal = FieldEvidence{Source: terminalSrc, Event: termRef}
@@ -447,10 +546,6 @@ func identityUniverse(sets ...AttemptSet) []JournalIdentity {
 	return out
 }
 
-func usageSpam(output string) bool {
-	return strings.Contains(output, "Usage:") || strings.Contains(output, "usage:")
-}
-
 func mustMkdirAllT(t *testing.T, path string) {
 	t.Helper()
 	if err := os.MkdirAll(path, 0o755); err != nil {
@@ -464,12 +559,16 @@ func writeFileT(t *testing.T, path, data string) {
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	setFixtureMTime(t, path)
 }
 
 func shallowClone(t *testing.T, src string) string {
 	t.Helper()
 	dst := filepath.Join(t.TempDir(), "shallow")
-	runGit(t, src, "clone", "--depth", "1", "file://"+src, dst)
+	// The test fixture explicitly opts into local file transport. Production
+	// sourceGitCommand remains pinned to protocol.file.allow=never.
+	runGit(t, src, "-c", "protocol.file.allow=always", "clone", "--depth", "1", "file://"+src, dst)
+	freezeFixtureTree(t, dst)
 	return dst
 }
 
@@ -481,6 +580,44 @@ func gitOutput(t *testing.T, repo string, args ...string) string {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
 	return string(out)
+}
+
+func installFixtureGitWrapper(t *testing.T, body string) {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	wrapper := filepath.Join(bin, "git")
+	writeFileT(t, wrapper, "#!/bin/sh\nset -eu\n"+body+"\n")
+	if err := os.Chmod(wrapper, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("FC_SEALS_REAL_GIT", realGit)
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func fixturePathAppears(path string, within time.Duration) bool {
+	deadline := time.NewTimer(within)
+	defer deadline.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		select {
+		case <-deadline.C:
+			return false
+		case <-ticker.C:
+		}
+	}
+}
+
+func signalFixturePath(t *testing.T, path string) {
+	t.Helper()
+	writeFileT(t, path, "released\n")
 }
 
 func containPath(readings []Reading, fragment string) bool {

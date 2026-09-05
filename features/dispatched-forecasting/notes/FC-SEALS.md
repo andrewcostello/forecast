@@ -3,6 +3,10 @@
 Independent seals against the frozen FC-SCAFFOLD handoff. No implementation
 edits, no `t.Skip`, no xfail, no `config/known-red.yaml` edits.
 
+Operator correction author: Codex Sol. The dispatched task/model pin remains
+Grok; this note records the substantive correction model separately and does
+not amend the worklist.
+
 ## Groups (predeclared)
 
 | Group | Body | File |
@@ -34,6 +38,14 @@ are built in-process from those YAML files; no network and no real credentials.
 Replace-ref fixtures are created with `git replace` against those in-process
 repos (F3-HISTORY-FACTS).
 
+Fixture Git author/committer dates are topology-ordered from
+`2025-12-01T00:00:00Z`, and copied/generated live files receive deterministic
+content-derived mtimes in December 2025. Git checkout/merge paths re-freeze
+worktree files. All are before `contractCutoff`; explicitly later journal/YAML
+timestamps and direct `ReadingRef` cases retain their deliberate later values.
+The malformed-document fixture is `testdata/yaml/malformed-document.yaml`;
+unused stale-start/missing-run/conflicting-role/text fixtures were removed.
+
 CLI targets live under `cmd/forecast/testdata/dispatched/targets/`.
 
 ## Green vs red
@@ -44,9 +56,11 @@ timing. Two additive green amendments:
 
 - `TestDispatchedReferenceBuildCommandIsRegistered` now lists `--timeout` and
   `--fail-on-uncovered-required` (FC-1 panel Grok-7).
-- `TestCoverageStatesHandFinishedLimit` now asserts `Build` itself populates
-  `Limits` (FC-1 panel Codex-3). Mutation: delete `HandFinishedLimit` from
-  `Build`'s artifact constructor.
+- `TestCoverageStatesHandFinishedLimit` asserts `Build` itself populates
+  `Limits` (FC-1 panel Codex-3). This remains green because the accepted
+  baseline constructor already emits `HandFinishedLimit`; the regression gate
+  confirms it is not a new FC-1 body dependency. Mutation: delete that value
+  from the baseline artifact constructor.
 
 New capability cases in the four reserved groups are red against
 `ErrNotImplemented` seams until the named body lands.
@@ -79,6 +93,18 @@ follow-ups that would change that contract are recorded below, not adopted.
 Expected failure today is the named assertion failing because the owning seam
 returns `ErrNotImplemented` (or the baseline CLI/sentinel). A passing body that
 drops the assertion's predicate fails the same test.
+
+Mutation execution is intentionally split: the unchanged green regressions
+have current-body evidence; the four owner groups are verified red against the
+scaffold but their proposed green-path mutations cannot be executed until the
+owners land. Those mutations are obligations for body adjudication, not claims
+of proof against stubs. In particular, the fixed `ReadSources` seam exposes the
+retained commit count but no injectable commit iterator, so F3-BOUND-COMMITS
+cannot independently distinguish bounded collection from walk-then-trim without
+pinning an arbitrary Git command. It now requires exactly three retained commits
+and a bound diagnostic; the iterator-access mutation is explicitly deferred.
+Byte pre-buffering, per-source process slots, and cross-source ordering do have
+observable accepted seams and use controlled Git children/markers.
 
 ### Journal (`TestFCJournalContract`)
 
@@ -114,21 +140,21 @@ drops the assertion's predicate fails the same test.
 | F2-UNCLASSIFIED-RESIDUAL-ONLY | `ErrInvalidPhase` on unclassified interval | Accept it as a span |
 | F2-CANONICAL-ORDER | `ErrNonCanonicalEvidence` | Sort silently |
 | F2-PARTIAL-SUM-UNKNOWN | Total unknown, citations retained | Report partial sum as complete |
-| F2-SPAWN-WIRE | `duration_ms` 1250 → 1.25s; zero vs null | Decode scalars into `Measured` |
+| F2-SPAWN-WIRE | `duration_ms` 1250 → exact cited `[T-1.25s,T)` development span; zero vs null | Drop the reducer span or label it inferred |
 | F2-CORRECTIVE-BOUNDARY | Overlap component withheld; elapsed survives | Keep overlapping panel+iterate spans |
 | F2-PRODUCER-SHAPES | Unknown `panel_started` → LinesUnparsed | Guess a review start |
 | F2-CORRECTION-KINDS | 6 counted kinds | Also count paired panel spawn finishes |
 | F2-VERIFICATIONS | Count `verification_started` only | Count skipped/mechanical |
 | F2-EVENT-IDENTITY | Retransmission once; colliding seq discarded | Merge collisions |
-| F2-ALL-SPAWN-COST | All kinds including verifier/design; uncached input only | Add cache tokens |
-| F2-ARITHMETIC-ERRORS | Overflow named, no saturation | Saturate duration |
+| F2-ALL-SPAWN-COST | All kinds including verifier/design; recorded cache-heavy fixture still totals 242 uncached input tokens | Add cache creation/read tokens; leave tokens unknown |
+| F2-ARITHMETIC-ERRORS | Wire duration at max-ms+1 is `LinesUnparsed` with no whole-file error; finite cost-sum overflow is reducer `ErrMeasurementOverflow` | Return parser overflow error; saturate reducer cost |
 | F2-LATER-START | StartsAfterCutoff=1, no attempt | Negative elapsed |
 | F2-INITIAL-SPAWN | `[T1-D,T1)`, residual includes setup | Use `task_started` as development start |
 | F2-ALL-KINDS | Closing stamp from implementing kinds; design does not stamp | Stamp designer |
 | F2-CITATION-MEMBERSHIP | Evidence cites list[0]; lists complete | Evidence cites a leftover ref |
 | F2-SUMMARY-AVAILABILITY | Same numbers, different Complete | Drop Complete |
 | F4-OUTCOME-WIRE | `done/blocked/unfinished`; invalid → `ErrInvalidOutcome` | Decode missing outcome as unfinished |
-| F2-DESIGN-SPAWN | Cost included; incomplete wall | Classify design as development |
+| F2-DESIGN-SPAWN | Cost included; exact design `[00:01,00:02)` remains unclassified residual | Classify the design window into any phase |
 | F2-PRODUCER-DECLARATIONS | Conflict clears Producer | Pick last version |
 | F2-LINE-ENVELOPE | HasSeq from presence; explicit 0 distinct from null | Treat missing seq as 0 present |
 | F2-PARSER-TOTAL-CAP | TotalBoundExceeded, retained data | Unbounded parse |
@@ -145,25 +171,25 @@ drops the assertion's predicate fails the same test.
 | F3-SRC-ROOT-ESCAPES | Reject `../`, `/abs`, symlink escape | Follow the symlink |
 | F3-SRC-MISSING | `ErrSourceMissing` | Return EMPTY |
 | F3-SRC-ZERO-JOURNALS | `ErrSourceEmpty`; AllowEmpty → EMPTY, not eligible | Succeed with zero journals |
-| F3-SRC-MALFORMED-PARTIAL | Valid sibling kept; PARTIAL; Reading.Err set | Abort the document |
-| F3-READING-ENVELOPE | Four independent envelopes | One row-zero error for typed mismatch |
+| F3-SRC-MALFORMED-PARTIAL | Valid sibling kept; row and document errors retained; PARTIAL; malformed count includes both | Abort the document or skip malformed-document diagnostics |
+| F3-READING-ENVELOPE | Four independent task envelopes plus row-zero `DocumentMalformed` envelope | Collapse siblings or classify invalid YAML as non-task |
 | F3-NON-TASK-DOCUMENT | `DocumentNotTasks`, not Malformed/PARTIAL | Count as malformed |
 | F3-SRC-RESOLVED-REF | SHA in ResolvedRef | Leave branch name |
 | F3-GIT-ENV-STRIPPED | Drop `GIT_DIR`/`GIT_CONFIG*` family; pin `/dev/null` | Honour `GIT_CONFIG_COUNT` |
 | F3-GIT-INSTALLATION-ENV | Keep `GIT_EXEC_PATH` and PATH | Strip exec-path too |
 | F3-GIT-SHALLOW | Shallow+PARTIAL; ValidateComplete wraps both incompleteness sentinels | Report COMPLETE |
-| F3-GIT-FULL-HISTORY | Superseded merge parent blob present | First-parent only |
+| F3-GIT-FULL-HISTORY | Reading revision exactly equals the superseded side-parent SHA | First-parent only |
 | F3-GIT-DELETED-RENAMED | Old path still read | Skip deleted blobs |
-| F3-BOUND-COMMITS | Cap before collection; PARTIAL | Walk then trim |
-| F3-BOUND-BYTES | PARTIAL on blob cap | Buffer the whole blob |
-| F3-BOUND-PROCESSES | Negative invalid; cap does not mark PARTIAL | Treat as data cap |
+| F3-BOUND-COMMITS | Exactly three retained commits; bound/PARTIAL diagnostics | Retained over-cap commit fails now; iterator walk-then-trim mutation deferred until the body exists |
+| F3-BOUND-BYTES | PARTIAL plus controlled blob reader rejects unique byte 65 before EOF | Buffer the whole blob before applying the cap |
+| F3-BOUND-PROCESSES | Negative invalid; a second controlled child cannot spawn/return until the first releases its sole per-source slot | Spawn over the per-source slot; treat it as a data cap |
 | F3-CANCELLED | Both cancel sentinels; not COMPLETE | Ignore ctx |
 | F3-HOLDOUT-EXCLUDED | Held-out journal in ExcludedJournals; live AND git-history YAML rows with `dispatcher_run_id: held` marked HeldOut with snapshot cleared; keep rows remain in-sample | Feed held-out events to reducer; ignore history YAML |
 | F3-CUTOFF-EXCLUDED | AfterCutoff audit envelope | Sample later completed_at |
 | F3-SELECTION-INVALID | Padded/duplicate/zero cutoff rejected before IO | Trim then match |
 | F3-HOLDOUT-PADDED-STILL-EXCLUDES | `ErrInvalidSelection` | Match after trim |
 | F3-HOLDOUT-UNMATCHED | `ErrInvalidSelection` | Ignore unknown IDs |
-| F3-MISSING-REVISION-TIME | Zero RecordedAt is malformed in-sample | Treat as AfterCutoff |
+| F3-MISSING-REVISION-TIME | Direct zero-RecordedAt envelope: Malformed=1, AfterCutoff=0, no recovery | Treat zero as AfterCutoff |
 | F3-COMPLETE-CONSISTENCY | Nil receiver does not panic; COMPLETE+shallow/grafted/replaced each wrap ErrShallowHistory+ErrSourceIncomplete | Panic on nil; ignore Replaced |
 | F3-DEFAULT-BOUNDS | Zeros become stored defaults; negatives invalid | Persist zeros |
 | F3-RESOLVED-BOUNDS | Positive DefaultMaxCommits stored | Re-apply future defaults |
@@ -176,7 +202,7 @@ drops the assertion's predicate fails the same test.
 | F3-EXCLUDED-QUALITY | Held-out malformed uses MalformedExcluded | Degrade in-sample completeness |
 | F3-MALFORMED-HELDOUT-IDENTITY | Independent RunID still proves holdout | Require valid Snapshot |
 | F3-ALL-JOURNALS-HELDOUT | COMPLETE, Journals=1, excluded=1 | Mark EMPTY |
-| F3-SOURCE-CONCURRENCY | Sequential sources, per-source slots | Fan-out across sources |
+| F3-SOURCE-CONCURRENCY | Controlled first Git source blocks; second marker is absent until release; reports stay SourceID-ordered | Fan-out across sources |
 | F3-DUPLICATE-JOURNAL-RUN | `ErrDuplicateJournalRun` | Merge replicas |
 | F3-COMPLETENESS-CAUSES | Bound PARTIAL wraps both incompleteness sentinels | COMPLETE with BoundsExceeded>0 |
 | F3-EXCLUSION-ORDER | NotTaskDocument first | Classify as malformed |
@@ -192,13 +218,13 @@ drops the assertion's predicate fails the same test.
 | F1-ID-SAME-RUN-REVISIONS | 1 recovered + 2 duplicate readings | One sample per commit |
 | F1-ID-NEAREST-NOT-MATCHED | NoMatchingStart; lost attempt listed | Match 1s offset |
 | F1-ID-UTC-OFFSET-YAML | Offset YAML joins UTC journal start | Require identical strings |
-| F1-EV-MERGE-PERMUTATION | Journal 10m+journal citation together | Elapsed 12m with journal label |
-| F1-EV-NO-MANUFACTURED-ROW | No independent max across YAML X/Y | Max elapsed from Y, cost from X |
+| F1-EV-MERGE-PERMUTATION | Two YAML citation orders yield byte-identical complete join; journal 10m terminal and cost retain event citations | Elapsed 12m with journal label; first-reading tie |
+| F1-EV-NO-MANUFACTURED-ROW | YAML has no cost carrier: terminal/elapsed and cost remain separate journal event-cited fields while both readings are retained | Attribute cost to a YAML `ReadingRef`; take YAML 12m terminal |
 | F1-EV-JOURNAL-OVER-YAML | Journal done beats YAML blocked | Conflict or YAML wins |
 | F1-EV-YAML-ONLY-TERMINAL | YAML source; counter=1 | Leave unfinished |
 | F1-EV-PERMUTATION | Canonical JSON across set order | First-write-wins |
 | F1-MODEL-NO-ALIAS-POOL | Two cells | Pool opus aliases |
-| F1-ROLE-CITATION | Conflicting roles not recovered | Pick first role |
+| F1-ROLE-CITATION | Both conflicting rows are audited/cited; zero recovery/observations; `ErrEvidenceConflict` | Pick first role or omit either conflict disposition |
 | F1-READING-TOTAL-ORDER | Examined canonical | Input order |
 | F1-ATTEMPT-RUN-CONSISTENCY | `ErrInvalidSelection` | Join anyway |
 | F3-SRC-READ-OK-ZERO-MATCH | Recovered=0, `DispositionNoMatchingRun`; distinct from zero-journal EMPTY | Invent a sample; treat as `F3-SRC-ZERO-JOURNALS` |
@@ -218,14 +244,16 @@ drops the assertion's predicate fails the same test.
 | F4-HAND-FINISHED-LIMIT | Limits from amended Build; report prints it | Formatter-only |
 | F4-BUILD-AMENDED-OPTIONS | No silent v3 legacy path | Ignore Sources/holdout |
 | F4-THRESHOLD-NONPOSITIVE | DefaultMinObservations | Keep 0 |
-| F4-SCHEMA-ROUNDTRIP | Version 4 round-trip retains counts; empty observations `[]` not null | Drop Reviews/Corrections; emit null observations |
+| F4-SCHEMA-ROUNDTRIP | Version 4 round-trip retains counts and mandatory observations key/array | Drop Reviews/Corrections; emit null or omit observations |
 | F4-VERSION-EXACT | v3/v5/missing Evidence refused | `>=` comparison |
 | F4-MIXED-OPTIONS | ErrInvalidSourceSpec | Ignore one side |
-| F4-CANONICAL-LISTS | Empty v4 lists `[]` not null | Emit null or omit keys |
+| F4-CANONICAL-LISTS | Every mandated empty v4 list key exists as `[]` | Emit null or omit keys |
 | F4-ONE-ARTIFACT-INSTANT | GeneratedAt == manifest.Cutoff == explicit cutoff, not opts.Now | Use opts.Now |
-| F4-AGGREGATE-REASON | PARTIAL aggregate Reasons survive JSON | Emit null reasons |
-| F4-PROJECTION-MAPPING | Corrections preserved; done is not legacy TerminalEvidence none | Map done→none; rounds from Reviews |
+| F4-AGGREGATE-REASON | Successful reads followed by real reducer and join errors yield retained PARTIAL results with sorted unique `reduce:`/`join:` reasons surviving JSON | Emit null/omitted reasons; report source/duplicate-run error instead |
+| F4-PROJECTION-MAPPING | Successful Build projects the recovered all-kinds attempt as rounds=6, outcome=done, terminal_evidence=journal | Map done→none; rounds from Reviews |
 | F4-ARTIFACT-HOLDOUT | Held-out run in artifact refused | Predict anyway |
+| F4-ARTIFACT-CUTOFF | Attempt/manifest cutoff mismatch refuses with both eligibility/incomplete sentinels | Ignore replay cutoff mismatch |
+| F4-ARTIFACT-CELL | Structured Cell model contradicting stamped Attempt model refuses with both sentinels | Trust the contradictory cell |
 | F4-STRUCTURED-THIN-CELL | Cells name completed/threshold | Reasons only |
 | F4-CELL-EMPTY-N0 | Empty required cell present n=0 | Omit it |
 | CLI F3-SRC-EXPLICIT-ONLY | No HOME default; no usage | Default `~/Project/claude-workflow` |
@@ -252,7 +280,52 @@ They do not amend the accepted contract.
 | grok-1 | FC-SOURCES | **Not adopted.** Accepted isolation list does not install `GIT_PAGER=cat` or `safe.directory`. Pin: `F3-GIT-ENV-STRIPPED` as written. |
 | grok-2 | FC-SOURCES | **Documentation only.** Same `ctx.Err()` typo as claude-5. |
 
+## FC-SEALS panel finding dispositions
+
+Family/index values refer to the blocked panel at
+`2026-09-05T16-15-07Z-FC-SEALS-corrected-panel`. Repeated reviewers are grouped
+only where the same correction answers each finding; every finding is named.
+
+| Finding(s) | Disposition and concrete evidence |
+|---|---|
+| `claude/1`, `codex/8`, `grok/12` | Corrected F4-AGGREGATE-REASON with one valid-read reducer reversal and one valid-read role join conflict. Both require retained nonnil results, COMPLETE individual source reports, PARTIAL aggregate state, sorted unique structured-prefix reasons, and a present JSON array. Projection now requires one recovered flat row exactly. |
+| `claude/2`, `codex/11`, `grok/8` | Corrected F2-DESIGN-SPAWN by asserting the exact recorded design window `[00:01,00:02)` intersects no classified interval, remains at least one minute of unclassified residual, and its cost remains included. No nonexistent spawn kind is inferred from `Journal.Path`. |
+| `claude/3`, `grok/9` | Input tokens are unconditionally Known(15) for all-kinds and Known(242) for the recorded cache-heavy fixture. Cost 1.10 uses tolerance, not raw decimal equality. |
+| `claude/4`, `codex/4`, `grok/10` | F1-EV-MERGE-PERMUTATION now uses two distinct YAML citations in both orders and compares the complete join JSON. F1-EV-NO-MANUFACTURED-ROW reflects the real carrier: no YAML cost field; journal terminal/elapsed/cost each retain their event citation and both YAML readings remain listed. |
+| `claude/5`, `grok/7` | F3-SOURCE-CONCURRENCY now blocks the first SourceID inside the accepted Git runner, proves no second-source marker before release, then requires SourceID-ordered reports and unchanged bound counts. F3-BOUND-PROCESSES separately proves a second child waits for the one per-source slot. |
+| `claude/6`, `codex/13`, `grok/5` | F3-MISSING-REVISION-TIME feeds the zero-time parse envelope directly to JoinEvidence: Malformed=1, AfterCutoff=0, no observation, and the zero citation remains in Examined. |
+| `claude/7` | Added F4-ARTIFACT-CUTOFF and F4-ARTIFACT-CELL; each requires an ineligible result plus both ErrNotEligible and ErrSourceIncomplete. |
+| `claude/8` | Added malformed-document parse and discovery assertions (`DocumentMalformed`, row 0, Err, PARTIAL/count), renamed the fixture to discoverable `.yaml`, and removed three unused YAML fixtures. |
+| `claude/9`, `codex/14`, `grok/13` | Corrected PROVENANCE.txt to the real `synthetic-` convention and sole recorded fixture; removed the other dead fixtures noted by Grok. |
+| `claude/10` | Terminal conflict now unconditionally requires its in-process ErrEvidenceConflict sentinel. |
+| `claude/11` | Removed the unreachable disposition loop and require every disposition in exact `Dispositions()` order, including zero counts. |
+| `claude/12` | Removed unused `ptr`, `testdataPath`, `copyTestdata`, and `usageSpam` helpers. |
+| `codex/1` | All fixture commits use deterministic topology-ordered author/committer dates before cutoff; content-derived live mtimes are frozen before cutoff and checkout/merge paths re-freeze files. Commit setup asserts its dates. Deliberately later payload/citation times are untouched. |
+| `codex/2`, `grok/2` | Symlink escape must return exactly one of the two accepted sentinels (ErrInvalidSourceSpec or ErrSourceMissing). Neither `features/link.yaml` nor the unique external task key may appear in readings. No third sentinel was added. |
+| `codex/3`, `grok/4` | Full-history proof now requires `Reading.Ref.Revision == "git:" + sideParentSHA`; merge-tree content and abbreviated SHA cannot satisfy it. |
+| `codex/5` | Role conflict independently requires zero recovery, zero observations, two conflict dispositions, two Examined citations, and both portable conflict-side row citations. |
+| `codex/6` | CLI missing-source case uses a valid journal corpus and a valid HOME-default Git repository with a distinctive decoy row; it requires a pre-processing explicit-source error, no artifact, no decoy-path disclosure, and no usage spam. |
+| `codex/7` | F4 schema/canonical-list assertions decode `map[string]json.RawMessage`; omission, null, non-array, and wrong cardinality all fail. Manifest list seals use the same helper. |
+| `codex/9`, `grok/3` | F2-SPAWN-WIRE unconditionally requires the exact 1.25-second development boundaries, recorded citation, and `Inferred=false`; Wall.Complete cannot mask a dropped span. |
+| `codex/10` | Parser duration uses max representable milliseconds + 1 and must become exactly one LinesUnparsed diagnostic with no spawn/interval and no whole-file error. A separate finite MaxFloat cost-sum fixture requires reducer ErrMeasurementOverflow and forbids saturation. |
+| `codex/12` | Byte cap uses a controlled child that writes unique byte 65 and withholds EOF; bounded read must fail before release without retaining that byte. Process/source sequencing uses deterministic markers. Commit retention is exactly capped, but pre-collection iterator access is not observable through the frozen seam; that mutation is deferred rather than falsely certified. |
+| `grok/1` | Proposed revert not adopted after checking evidence: accepted baseline Build already initializes `Limits` with HandFinishedLimit, and the excluded-group regression gate remains green. The assertion is a useful green regression, not an unnamed FC-1 red. |
+| `grok/6` | Shallow fixture keeps file-URL depth semantics but opts into `protocol.file.allow=always` only in the test helper; production isolation remains `never`. |
+| `grok/11` | F3-MANIFEST-CUTOFF-STORED, F4-HAND-FINISHED-LIMIT, F4-BUILD-AMENDED-OPTIONS, and F4-ONE-ARTIFACT-INSTANT now use nonempty valid journal corpora. Only F4-CANONICAL-LISTS deliberately uses AllowEmpty. |
+
 ## Residual limitation
 
 New groups are red until FC-JOURNAL / FC-SOURCES / FC-1 replace `ErrNotImplemented`.
 Baseline extraction defects remain visible on the legacy path, as required.
+
+## Correction validation
+
+On the corrected tree, `gofmt` and `git diff --check` are clean; `go build
+./...` and `go vet ./...` pass. The unaffected regression command `go test
+./... -race -skip
+'^(TestFCJournalContract|TestFCSourcesContract|TestFCEvidenceContract|TestFCReferenceCLIContract)$'`
+passes. Each of the four reserved groups exits 1 under `-race` on named
+scaffold/baseline assertions with no panic, fatal runtime error, data race, or
+harness hang. This does not claim that deferred green-path body mutations have
+already been exercised. The parent operator's IP-socket-denied check remains a
+separate independent verification step.

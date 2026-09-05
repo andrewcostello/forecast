@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -149,7 +150,16 @@ func testF3SrcRootEscapes(t *testing.T) {
 	}
 	repo := initGitRepo(t)
 	outside := t.TempDir()
-	writeFileT(t, filepath.Join(outside, "escaped.yaml"), testdataFile(t, "yaml", "valid-tasks.yaml"))
+	const externalKey = "FC-SEALS-EXTERNAL-SYMLINK-PAYLOAD"
+	writeFileT(t, filepath.Join(outside, "escaped.yaml"), `tasks:
+  - key: FC-SEALS-EXTERNAL-SYMLINK-PAYLOAD
+    role: bodies
+    model: must-not-be-read
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:01:00Z'
+    dispatcher_run_id: escaped-run
+`)
 	link := filepath.Join(repo.path, "features", "link.yaml")
 	mustMkdirAllT(t, filepath.Dir(link))
 	if err := os.Symlink(filepath.Join(outside, "escaped.yaml"), link); err != nil {
@@ -162,14 +172,18 @@ func testF3SrcRootEscapes(t *testing.T) {
 		journalSpec("j", runs),
 		liveSpec("live", repo.path, "features"),
 	}, defaultSelection(), ReadBounds{})
-	if err != nil && !errors.Is(err, ErrSourceMissing) && !errors.Is(err, ErrInvalidSourceSpec) && !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("symlink escape = %v", err)
+	if err == nil || (!errors.Is(err, ErrSourceMissing) && !errors.Is(err, ErrInvalidSourceSpec)) {
+		t.Fatalf("symlink escape = %v, want ErrInvalidSourceSpec or ErrSourceMissing", err)
 	}
-	if errors.Is(err, ErrNotImplemented) {
-		t.Fatal(err)
-	}
-	if readings != nil && containPath(readings.Readings, "escaped") {
-		t.Fatal("symlink escaped the declared root")
+	if readings != nil {
+		for _, reading := range readings.Readings {
+			if filepath.Clean(reading.Ref.Path) == filepath.Clean("features/link.yaml") {
+				t.Fatalf("symlink link path was consumed: %+v", reading)
+			}
+			if reading.Identity.Key.Known && reading.Identity.Key.Value == externalKey {
+				t.Fatalf("unique external payload was consumed through the symlink: %+v", reading)
+			}
+		}
 	}
 }
 
@@ -204,6 +218,7 @@ func testF3SrcMalformedPartial(t *testing.T) {
 	writeJournalTree(t, runs, "run-a", "synthetic-utc-offset.jsonl")
 	repo := initGitRepo(t)
 	repo.writeTestdata("features/study/tasks.yaml", "yaml", "malformed-sibling.yaml")
+	repo.writeTestdata("features/study/malformed-document.yaml", "yaml", "malformed-document.yaml")
 	repo.commit("malformed", "features")
 	manifest, readings, err := readContractSources(t, []SourceSpec{
 		journalSpec("j", runs),
@@ -219,6 +234,7 @@ func testF3SrcMalformedPartial(t *testing.T) {
 		t.Fatalf("state = %q, want PARTIAL", manifest.State)
 	}
 	var valid, malformed int
+	var malformedDocument bool
 	for _, r := range readings.Readings {
 		if r.Kind == DocumentTaskRow && r.Err == nil && r.Identity.Key.Value == "VALID" {
 			valid++
@@ -226,11 +242,14 @@ func testF3SrcMalformedPartial(t *testing.T) {
 		if r.Err != nil {
 			malformed++
 		}
+		if r.Kind == DocumentMalformed && r.Ref.Row == 0 && r.Err != nil {
+			malformedDocument = true
+		}
 	}
-	if valid != 1 || malformed == 0 {
-		t.Fatalf("valid=%d malformed=%d readings=%+v", valid, malformed, readings.Readings)
+	if valid != 1 || malformed < 2 || !malformedDocument {
+		t.Fatalf("valid=%d malformed=%d malformed_document=%v readings=%+v", valid, malformed, malformedDocument, readings.Readings)
 	}
-	if manifest.Sources[1].Counts.Malformed < 1 {
+	if manifest.Sources[1].Counts.Malformed < 2 {
 		t.Fatalf("Malformed counter = %+v", manifest.Sources[1].Counts)
 	}
 }
@@ -264,6 +283,14 @@ func testF3ReadingEnvelope(t *testing.T) {
 	}
 	if byKey["TYPED"].Err == nil {
 		t.Fatalf("typed YAML mismatch retained as valid: %+v", byKey["TYPED"])
+	}
+
+	document, err := parseReadings([]byte(testdataFile(t, "yaml", "malformed-document.yaml")), ref)
+	if err != nil {
+		t.Fatalf("ordinary malformed document returned a top-level error: %v", err)
+	}
+	if len(document) != 1 || document[0].Kind != DocumentMalformed || document[0].Ref.Row != 0 || document[0].Err == nil {
+		t.Fatalf("malformed document envelope = %+v", document)
 	}
 }
 
@@ -436,10 +463,7 @@ func testF3GitFullHistory(t *testing.T) {
 	_ = manifest
 	foundSide := false
 	for _, r := range readings.Readings {
-		if r.Identity.Key.Value == "F3-DISPATCHER" {
-			foundSide = true
-		}
-		if strings.Contains(r.Ref.Revision, side[:8]) || r.Ref.Revision == "git:"+side {
+		if r.Ref.Revision == "git:"+side {
 			foundSide = true
 		}
 	}
@@ -489,7 +513,7 @@ func testF3BoundCommits(t *testing.T) {
 			hist = src
 		}
 	}
-	if hist.Counts.Commits > 3 || hist.Counts.BoundsExceeded < 1 {
+	if hist.Counts.Commits != 3 || hist.Counts.BoundsExceeded < 1 {
 		t.Fatalf("commit cap not applied before collection: %+v", hist.Counts)
 	}
 	if err := manifest.ValidateComplete(); !errors.Is(err, ErrBoundExceeded) {
@@ -507,17 +531,76 @@ func testF3BoundBytes(t *testing.T) {
 		journalSpec("j", runs),
 		liveSpec("live", repo.path, "features"),
 	}, defaultSelection(), ReadBounds{MaxBlobBytes: 64})
-	if err != nil && !errors.Is(err, ErrBoundExceeded) && !errors.Is(err, ErrNotImplemented) {
-		t.Fatalf("byte bound = %v", err)
-	}
 	if errors.Is(err, ErrNotImplemented) {
 		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatalf("data bound should retain a PARTIAL diagnostic result with nil read error: %v", err)
 	}
 	if manifest == nil {
 		t.Fatal("nil manifest on byte cap")
 	}
 	if manifest.State != SourcePartial {
 		t.Fatalf("state = %q", manifest.State)
+	}
+	var boundedSource bool
+	for _, source := range manifest.Sources {
+		if source.ID == "live" && source.Counts.BoundsExceeded > 0 {
+			boundedSource = true
+		}
+	}
+	if !boundedSource {
+		t.Fatalf("blob cap did not increment source bound diagnostics: %+v", manifest.Sources)
+	}
+
+	// Drive the mandatory streaming Git seam with a child that writes one
+	// unique byte beyond the blob cap and then deliberately withholds EOF. A
+	// bounded reader must return ErrBoundExceeded without waiting for release;
+	// an implementation that buffers the whole child output cannot do so.
+	marker := filepath.Join(t.TempDir(), "wrote-over-cap")
+	release := filepath.Join(t.TempDir(), "release")
+	t.Setenv("FC_SEALS_OUTPUT_MARKER", marker)
+	t.Setenv("FC_SEALS_OUTPUT_RELEASE", release)
+	installFixtureGitWrapper(t, "printf '"+strings.Repeat("a", 64)+"Z'\n: > \"$FC_SEALS_OUTPUT_MARKER\"\nwhile [ ! -e \"$FC_SEALS_OUTPUT_RELEASE\" ]; do :; done")
+	t.Cleanup(func() { _ = os.WriteFile(release, []byte("release\n"), 0o600) })
+	budget, err := newSourceBudget(ReadBounds{MaxBlobBytes: 64, MaxTotalBytes: 1024, MaxProcesses: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader, err := runSourceGit(context.Background(), t.TempDir(), budget, SourceGitRequest{
+		Args: []string{"cat-file", "blob", strings.Repeat("a", 40)}, Blob: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	type readResult struct {
+		data []byte
+		err  error
+	}
+	readDone := make(chan readResult, 1)
+	go func() {
+		data, readErr := io.ReadAll(reader)
+		readDone <- readResult{data: data, err: readErr}
+	}()
+	if !fixturePathAppears(marker, 3*time.Second) {
+		signalFixturePath(t, release)
+		t.Fatal("controlled Git child never wrote its over-cap marker")
+	}
+	var bounded readResult
+	select {
+	case bounded = <-readDone:
+	case <-time.After(3 * time.Second):
+		signalFixturePath(t, release)
+		<-readDone
+		t.Fatal("blob read waited for EOF after the over-cap probe; output was buffered before bounding")
+	}
+	signalFixturePath(t, release)
+	if !errors.Is(bounded.err, ErrBoundExceeded) {
+		t.Fatalf("bounded blob read = %v, want ErrBoundExceeded", bounded.err)
+	}
+	if len(bounded.data) > 64 || strings.Contains(string(bounded.data), "Z") {
+		t.Fatalf("over-cap byte was retained: len=%d data=%q", len(bounded.data), bounded.data)
 	}
 }
 
@@ -540,6 +623,85 @@ func testF3BoundProcesses(t *testing.T) {
 		if src.Counts.BoundsExceeded != 0 {
 			t.Fatalf("MaxProcesses counted as BoundsExceeded: %+v", src.Counts)
 		}
+	}
+
+	state := t.TempDir()
+	firstStarted := filepath.Join(state, "first-started")
+	secondStarted := filepath.Join(state, "second-started")
+	firstRelease := filepath.Join(state, "first-release")
+	secondRelease := filepath.Join(state, "second-release")
+	t.Setenv("FC_SEALS_PROCESS_STATE", state)
+	installFixtureGitWrapper(t, `if mkdir "$FC_SEALS_PROCESS_STATE/first-claimed" 2>/dev/null; then
+  : > "$FC_SEALS_PROCESS_STATE/first-started"
+  while [ ! -e "$FC_SEALS_PROCESS_STATE/first-release" ]; do :; done
+  printf 'first\n'
+else
+  : > "$FC_SEALS_PROCESS_STATE/second-started"
+  while [ ! -e "$FC_SEALS_PROCESS_STATE/second-release" ]; do :; done
+  printf 'second\n'
+fi`)
+	t.Cleanup(func() {
+		_ = os.WriteFile(firstRelease, []byte("release\n"), 0o600)
+		_ = os.WriteFile(secondRelease, []byte("release\n"), 0o600)
+	})
+	budget, err := newSourceBudget(ReadBounds{MaxProcesses: 1, MaxTotalBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerRepo := t.TempDir()
+	first, err := runSourceGit(context.Background(), runnerRepo, budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	if !fixturePathAppears(firstStarted, 3*time.Second) {
+		t.Fatal("first controlled Git child did not start")
+	}
+	type runnerResult struct {
+		reader io.ReadCloser
+		err    error
+	}
+	secondResult := make(chan runnerResult, 1)
+	go func() {
+		second, runErr := runSourceGit(context.Background(), runnerRepo, budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
+		secondResult <- runnerResult{reader: second, err: runErr}
+	}()
+	select {
+	case early := <-secondResult:
+		if early.reader != nil {
+			_ = early.reader.Close()
+		}
+		t.Fatalf("second runSourceGit did not wait for the per-source slot: %v", early.err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if _, err := os.Stat(secondStarted); err == nil {
+		t.Fatal("second Git child spawned while MaxProcesses=1 slot was occupied")
+	}
+	signalFixturePath(t, firstRelease)
+	firstData, firstErr := io.ReadAll(first)
+	if firstErr != nil || string(firstData) != "first\n" {
+		t.Fatalf("first controlled Git child = %q, %v", firstData, firstErr)
+	}
+	if closeErr := first.Close(); closeErr != nil {
+		t.Fatalf("close first controlled Git child: %v", closeErr)
+	}
+	var second runnerResult
+	select {
+	case second = <-secondResult:
+	case <-time.After(3 * time.Second):
+		t.Fatal("second runSourceGit did not acquire released slot")
+	}
+	if second.err != nil || second.reader == nil {
+		t.Fatalf("second runSourceGit = %v", second.err)
+	}
+	defer second.reader.Close()
+	if !fixturePathAppears(secondStarted, 3*time.Second) {
+		t.Fatal("second controlled Git child never spawned after slot release")
+	}
+	signalFixturePath(t, secondRelease)
+	secondData, secondErr := io.ReadAll(second.reader)
+	if secondErr != nil || string(secondData) != "second\n" {
+		t.Fatalf("second controlled Git child = %q, %v", secondData, secondErr)
 	}
 }
 
@@ -715,28 +877,29 @@ func testF3HoldoutUnmatched(t *testing.T) {
 }
 
 func testF3MissingRevisionTime(t *testing.T) {
-	ref := ReadingRef{SourceID: "live", Path: "features/study/tasks.yaml", Revision: "live"}
+	ref := ReadingRef{SourceID: "live", Repository: "repo", Path: "features/study/tasks.yaml", Revision: "live"}
 	got, err := parseReadings([]byte(testdataFile(t, "yaml", "offset-equivalent.yaml")), ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// parseReadings copies the citation; ReadSources must set Err when RecordedAt is zero.
-	runs := filepath.Join(t.TempDir(), "runs")
-	writeJournalTree(t, runs, "run-offset", "synthetic-utc-offset.jsonl")
-	repo := initGitRepo(t)
-	repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
-	repo.commit("t", "features")
-	manifest, readings := mustReadSources(t, []SourceSpec{
-		journalSpec("j", runs),
-		liveSpec("live", repo.path, "features"),
-	}, defaultSelection(), ReadBounds{})
-	_ = got
-	for _, r := range readings.Readings {
-		if r.Kind == DocumentTaskRow && r.Ref.RecordedAt.IsZero() && r.Err == nil && r.Excluded == "" {
-			t.Fatal("in-sample row with zero RecordedAt not malformed")
-		}
+	if len(got) != 1 || got[0].Kind != DocumentTaskRow || !got[0].Ref.RecordedAt.IsZero() || got[0].Err != nil || got[0].Excluded != "" {
+		t.Fatalf("zero-time parser envelope = %+v", got)
 	}
-	_ = manifest
+	start := mustTime(t, "2026-01-01T00:00:00Z")
+	attempt := journalAttempt("run-offset", "F1-OFFSET", start, 10*time.Minute, "stamp", OutcomeDone)
+	set := attemptSetOf("run-offset", attempt)
+	joined, err := joinContract(t, []AttemptSet{set}, got, defaultSelection(), identityUniverse(set))
+	if errors.Is(err, ErrNotImplemented) {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireDisposition(t, joined, DispositionMalformed, 1)
+	requireDisposition(t, joined, DispositionAfterCutoff, 0)
+	if joined.Recovered != 0 || len(joined.Observations) != 0 || len(joined.Examined) != 1 || !joined.Examined[0].Reading.RecordedAt.IsZero() {
+		t.Fatalf("zero RecordedAt was sampled or lost from malformed audit: %+v", joined)
+	}
 }
 
 func testF3CompleteConsistency(t *testing.T) {
@@ -1031,13 +1194,96 @@ func testF3AllJournalsHeldout(t *testing.T) {
 }
 
 func testF3SourceConcurrency(t *testing.T) {
-	runs, repo := contractSourceTree(t)
-	_, _, err := readContractSources(t, []SourceSpec{
-		{ID: "b-hist", Kind: SourceKindGitHistory, Repository: repo.path, Roots: []string{"features"}},
-		journalSpec("a-j", runs),
-	}, defaultSelection(), ReadBounds{MaxProcesses: 2})
-	if err != nil {
-		t.Fatal(err)
+	runs, firstRepo := contractSourceTree(t)
+	secondRepo := initGitRepo(t)
+	secondRepo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+	secondRepo.commit("second source", "features")
+	state := t.TempDir()
+	firstMarker := filepath.Join(state, "first-source-entered")
+	secondMarker := filepath.Join(state, "second-source-entered")
+	firstRelease := filepath.Join(state, "release-first-source")
+	t.Setenv("FC_SEALS_FIRST_REPO", firstRepo.path)
+	t.Setenv("FC_SEALS_SECOND_REPO", secondRepo.path)
+	t.Setenv("FC_SEALS_FIRST_SOURCE_MARKER", firstMarker)
+	t.Setenv("FC_SEALS_SECOND_SOURCE_MARKER", secondMarker)
+	t.Setenv("FC_SEALS_FIRST_SOURCE_RELEASE", firstRelease)
+	installFixtureGitWrapper(t, `case "$(pwd) $*" in
+  *"$FC_SEALS_FIRST_REPO"*)
+    : > "$FC_SEALS_FIRST_SOURCE_MARKER"
+    while [ ! -e "$FC_SEALS_FIRST_SOURCE_RELEASE" ]; do :; done
+    ;;
+  *"$FC_SEALS_SECOND_REPO"*)
+    : > "$FC_SEALS_SECOND_SOURCE_MARKER"
+    ;;
+esac
+exec "$FC_SEALS_REAL_GIT" "$@"`)
+	t.Cleanup(func() { _ = os.WriteFile(firstRelease, []byte("release\n"), 0o600) })
+	type sourceResult struct {
+		manifest *SourceManifest
+		err      error
+	}
+	result := make(chan sourceResult, 1)
+	go func() {
+		manifest, _, err := ReadSources(context.Background(), []SourceSpec{
+			{ID: "b-history", Kind: SourceKindGitHistory, Repository: secondRepo.path, Roots: []string{"features"}},
+			journalSpec("z-journals", runs),
+			{ID: "a-history", Kind: SourceKindGitHistory, Repository: firstRepo.path, Roots: []string{"features"}},
+		}, defaultSelection(), ReadBounds{MaxProcesses: 2})
+		result <- sourceResult{manifest: manifest, err: err}
+	}()
+	deadline := time.NewTimer(3 * time.Second)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	firstEntered := false
+	for !firstEntered {
+		if _, err := os.Stat(firstMarker); err == nil {
+			firstEntered = true
+			break
+		}
+		select {
+		case early := <-result:
+			ticker.Stop()
+			deadline.Stop()
+			t.Fatalf("ReadSources returned before first source marker: %v", early.err)
+		case <-deadline.C:
+			ticker.Stop()
+			t.Fatal("first SourceID never entered the Git runner")
+		case <-ticker.C:
+		}
+	}
+	ticker.Stop()
+	deadline.Stop()
+	if fixturePathAppears(secondMarker, 300*time.Millisecond) {
+		signalFixturePath(t, firstRelease)
+		<-result
+		t.Fatal("second source entered while the first SourceID was blocked")
+	}
+	signalFixturePath(t, firstRelease)
+	var completed sourceResult
+	select {
+	case completed = <-result:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sequential source read did not complete after release")
+	}
+	if completed.err != nil {
+		t.Fatal(completed.err)
+	}
+	if !fixturePathAppears(secondMarker, time.Second) {
+		t.Fatal("second source never entered after first source completed")
+	}
+	if completed.manifest == nil || completed.manifest.Bounds.MaxProcesses != 2 {
+		t.Fatalf("resolved process bound missing: %+v", completed.manifest)
+	}
+	wantIDs := []string{"a-history", "b-history", "z-journals"}
+	if len(completed.manifest.Sources) != len(wantIDs) {
+		t.Fatalf("source reports = %+v", completed.manifest.Sources)
+	}
+	for i, want := range wantIDs {
+		if completed.manifest.Sources[i].ID != want {
+			t.Fatalf("source report order[%d] = %q, want %q", i, completed.manifest.Sources[i].ID, want)
+		}
+		if completed.manifest.Sources[i].Counts.BoundsExceeded != 0 {
+			t.Fatalf("source/process sequencing changed bound counts: %+v", completed.manifest.Sources[i])
+		}
 	}
 }
 
@@ -1085,13 +1331,29 @@ func testF4ManifestEmptyLists(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{`"reasons"`, `"holdout_run_ids"`} {
-		if !strings.Contains(string(raw), key) {
-			t.Fatalf("manifest omitted %s: %s", key, raw)
-		}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
 	}
-	if strings.Contains(string(raw), `"reasons":null`) || strings.Contains(string(raw), `"holdout_run_ids":null`) {
-		t.Fatalf("null lists: %s", raw)
+	requireJSONArray(t, object, "reasons", 0)
+	requireJSONArray(t, object, "holdout_run_ids", 0)
+	sourcesRaw, ok := object["sources"]
+	if !ok || string(sourcesRaw) == "null" {
+		t.Fatalf("manifest sources omitted/null: %s", raw)
+	}
+	var sources []map[string]json.RawMessage
+	if err := json.Unmarshal(sourcesRaw, &sources); err != nil {
+		t.Fatalf("manifest sources missing/not array: %s (%v)", raw, err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("manifest source count = %d, want 1", len(sources))
+	}
+	for _, source := range sources {
+		requireJSONArray(t, source, "reasons", 0)
+		if string(source["kind"]) == `"journals"` {
+			requireJSONArray(t, source, "roots", 0)
+			requireJSONArray(t, source, "resolved_refs", 0)
+		}
 	}
 }
 

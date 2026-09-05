@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,8 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F4-AGGREGATE-REASON", testF4AggregateReason)
 	t.Run("F4-PROJECTION-MAPPING", testF4ProjectionMapping)
 	t.Run("F4-ARTIFACT-HOLDOUT", testF4ArtifactHoldout)
+	t.Run("F4-ARTIFACT-CUTOFF", testF4ArtifactCutoff)
+	t.Run("F4-ARTIFACT-CELL", testF4ArtifactCell)
 	t.Run("F4-STRUCTURED-THIN-CELL", testF4StructuredThinCell)
 	t.Run("F4-CELL-EMPTY-N0", testF4CellEmptyN0)
 }
@@ -135,15 +138,28 @@ func testF1EVMergePermutation(t *testing.T) {
 	start := mustTime(t, "2026-01-01T00:00:00Z")
 	att := journalAttempt("run-a", "K", start, 10*time.Minute, "stamp", OutcomeDone)
 	att.TerminalAt = start.Add(10 * time.Minute)
+	costRef := att.Start
+	costRef.Type = EventTaskSpawnFinished
+	costRef.At = start.Add(5 * time.Minute)
+	costRef.Seq = 2
+	costRef.Line = 3
+	att.CostUSD = Known(1.0)
+	att.CostEvents = []EventRef{costRef}
+	att.Evidence.Cost = FieldEvidence{Source: EvidenceJournal, Event: costRef}
 	set := attemptSetOf("run-a", att)
-	yaml := syntheticReading("run-a", "K", start, 1, "features/study/tasks.yaml")
-	yaml.CompletedAt = Known(start.Add(12 * time.Minute))
-	yaml.Snapshot.Status = "Done"
+	a := syntheticReading("run-a", "K", start, 2, "features/z/tasks.yaml")
+	a.CompletedAt = Known(start.Add(12 * time.Minute))
+	a.Snapshot.Status = "Done"
+	b := a
+	b.Ref.Path = "features/a/tasks.yaml"
+	b.Ref.Row = 1
+	b.Ref.Revision = "git:" + strings.Repeat("ab", 20)
+	b.Ref.RecordedAt = start.Add(time.Minute)
 	var encoded [][]byte
-	for _, order := range [][]Reading{{yaml}, {yaml}} {
+	for _, order := range [][]Reading{{a, b}, {b, a}} {
 		got := mustJoin(t, []AttemptSet{set}, order, defaultSelection(), identityUniverse(set))
-		if got.Recovered != 1 {
-			t.Fatal("merge failed")
+		if got.Recovered != 1 || len(got.Observations) != 1 {
+			t.Fatalf("merge failed: %+v", got)
 		}
 		obs := got.Observations[0]
 		if obs.Attempt.Elapsed != 10*time.Minute {
@@ -152,34 +168,58 @@ func testF1EVMergePermutation(t *testing.T) {
 		if obs.Attempt.Evidence.Terminal.Source != EvidenceJournal {
 			t.Fatalf("terminal source = %q, want journal (atomic with elapsed)", obs.Attempt.Evidence.Terminal.Source)
 		}
-		encoded = append(encoded, encodeJSON(t, obs.Attempt.Evidence.Terminal))
+		if obs.Attempt.Evidence.Elapsed.Event != att.Evidence.Elapsed.Event || obs.Attempt.Evidence.Terminal.Event != att.Evidence.Terminal.Event {
+			t.Fatalf("journal terminal tuple lost its citations: %+v", obs.Attempt.Evidence)
+		}
+		requireKnown(t, obs.Attempt.CostUSD, 1.0, "journal cost")
+		if obs.Attempt.Evidence.Cost.Source != EvidenceJournal || obs.Attempt.Evidence.Cost.Event != costRef || len(obs.Attempt.CostEvents) != 1 || obs.Attempt.CostEvents[0] != costRef {
+			t.Fatalf("journal cost/provenance split: evidence=%+v events=%+v", obs.Attempt.Evidence.Cost, obs.Attempt.CostEvents)
+		}
+		if len(obs.Readings) != 2 || obs.Attempt.Evidence.Role.Source != EvidenceYAML || obs.Attempt.Evidence.Role.Reading.Path != b.Ref.Path {
+			t.Fatalf("YAML tie did not retain both readings and least role citation: %+v", obs)
+		}
+		encoded = append(encoded, encodeJSON(t, got))
 	}
 	if !bytes.Equal(encoded[0], encoded[1]) {
-		t.Fatal("terminal selection was permutation-dependent")
+		t.Fatal("complete selected row/audit was permutation-dependent")
 	}
 }
 
 func testF1EVNoManufacturedRow(t *testing.T) {
 	start := mustTime(t, "2026-01-01T00:00:00Z")
 	att := journalAttempt("run-a", "K", start, 10*time.Minute, "stamp", OutcomeDone)
+	costRef := att.Start
+	costRef.Type = EventTaskSpawnFinished
+	costRef.At = start.Add(5 * time.Minute)
+	costRef.Seq = 2
+	costRef.Line = 3
 	att.CostUSD = Known(1.0)
-	att.CostEvents = []EventRef{att.Start}
-	att.Evidence.Cost = FieldEvidence{Source: EvidenceJournal, Event: att.Start}
+	att.CostEvents = []EventRef{costRef}
+	att.Evidence.Cost = FieldEvidence{Source: EvidenceJournal, Event: costRef}
 	set := attemptSetOf("run-a", att)
 	x := syntheticReading("run-a", "K", start, 1, "features/a.yaml")
+	x.Snapshot.Status = "In Progress"
+	x.CompletedAt = Measured[time.Time]{}
 	y := syntheticReading("run-a", "K", start, 1, "features/b.yaml")
 	y.Ref.Revision = "git:" + strings.Repeat("cc", 20)
 	y.CompletedAt = Known(start.Add(12 * time.Minute))
 	got := mustJoin(t, []AttemptSet{set}, []Reading{x, y}, defaultSelection(), identityUniverse(set))
+	if len(got.Observations) != 1 {
+		t.Fatalf("observations = %d, want one joint row", len(got.Observations))
+	}
 	obs := got.Observations[0]
 	if obs.Attempt.Elapsed != 10*time.Minute {
 		t.Fatalf("elapsed took an independent max: %s", obs.Attempt.Elapsed)
 	}
 	requireKnown(t, obs.Attempt.CostUSD, 1.0, "cost")
-	if obs.Attempt.Evidence.Elapsed.Reading.Path != "" && obs.Attempt.Evidence.Cost.Reading.Path != "" &&
-		obs.Attempt.Evidence.Elapsed.Reading.Path != obs.Attempt.Evidence.Cost.Reading.Path &&
-		obs.Attempt.Evidence.Elapsed.Source == EvidenceYAML {
-		t.Fatal("elapsed and cost attributed to independent YAML maxima")
+	if obs.Attempt.Evidence.Elapsed.Source != EvidenceJournal || obs.Attempt.Evidence.Elapsed.Event != att.Evidence.Elapsed.Event {
+		t.Fatalf("elapsed/citation did not remain on the journal terminal candidate: %+v", obs.Attempt.Evidence.Elapsed)
+	}
+	if obs.Attempt.Evidence.Cost.Source != EvidenceJournal || obs.Attempt.Evidence.Cost.Event != costRef || obs.Attempt.Evidence.Cost.Reading != (ReadingRef{}) {
+		t.Fatalf("cost was manufactured from a YAML reading: %+v", obs.Attempt.Evidence.Cost)
+	}
+	if len(obs.Attempt.CostEvents) != 1 || obs.Attempt.CostEvents[0] != costRef || len(obs.Readings) != 2 {
+		t.Fatalf("joint provenance lost: cost=%+v readings=%+v", obs.Attempt.CostEvents, obs.Readings)
 	}
 }
 
@@ -265,8 +305,30 @@ func testF1RoleCitation(t *testing.T) {
 	if errors.Is(err, ErrNotImplemented) {
 		t.Fatal(err)
 	}
-	if err == nil && dispositionCount(got, DispositionConflictingEvidence) != 2 && got.Recovered != 0 {
+	requireSentinel(t, err, ErrEvidenceConflict)
+	if got.Recovered != 0 || len(got.Observations) != 0 {
 		t.Fatalf("conflicting roles recovered: %+v", got)
+	}
+	requireDisposition(t, got, DispositionConflictingEvidence, 2)
+	if len(got.Examined) != 2 {
+		t.Fatalf("conflicting citations omitted from audit: %+v", got.Examined)
+	}
+	rows := map[int]bool{}
+	for _, examined := range got.Examined {
+		if examined.Disposition != DispositionConflictingEvidence {
+			t.Fatalf("conflicting reading disposition = %s", examined.Disposition)
+		}
+		rows[examined.Reading.Row] = true
+	}
+	if !rows[1] || !rows[2] {
+		t.Fatalf("conflict audit citations = %+v, want rows 1 and 2", got.Examined)
+	}
+	if len(got.Conflicts) != 1 {
+		t.Fatalf("portable role conflicts = %+v", got.Conflicts)
+	}
+	conflictRows := map[int]bool{got.Conflicts[0].A.Reading.Row: true, got.Conflicts[0].B.Reading.Row: true}
+	if !conflictRows[1] || !conflictRows[2] {
+		t.Fatalf("conflict sides omitted role citations: %+v", got.Conflicts[0])
 	}
 }
 
@@ -312,21 +374,20 @@ func testF3DispositionEverySnapshot(t *testing.T) {
 		t.Fatalf("examined = %d, readings = %d", len(got.Examined), len(readings))
 	}
 	sum := 0
-	seen := map[Disposition]bool{}
 	for _, d := range got.Dispositions {
 		sum += d.Count
-		seen[d.Disposition] = true
 	}
 	if sum != len(got.Examined) {
 		t.Fatalf("disposition counts %d != examined %d", sum, len(got.Examined))
 	}
-	for _, want := range Dispositions() {
-		if !seen[want] && dispositionCount(got, want) != 0 {
-			t.Fatalf("missing declared disposition %s", want)
-		}
+	wantDispositions := Dispositions()
+	if len(got.Dispositions) != len(wantDispositions) {
+		t.Fatalf("Dispositions length = %d, want every declared value including zeros (%d)", len(got.Dispositions), len(wantDispositions))
 	}
-	if len(got.Dispositions) != len(Dispositions()) {
-		t.Fatalf("Dispositions length = %d, want every declared value including zeros (%d)", len(got.Dispositions), len(Dispositions()))
+	for i, want := range wantDispositions {
+		if got.Dispositions[i].Disposition != want {
+			t.Fatalf("Dispositions[%d] = %s, want canonical %s", i, got.Dispositions[i].Disposition, want)
+		}
 	}
 }
 
@@ -379,17 +440,19 @@ func testF3LostNotHidden(t *testing.T) {
 }
 
 func testF3ManifestCutoffStored(t *testing.T) {
+	specs := nonEmptyJournalSpecs(t, "run-offset", "synthetic-utc-offset.jsonl")
 	result, err := Build(context.Background(), amendedBuildOpts(
-		[]SourceSpec{journalSpec("j", t.TempDir())}, defaultSelection(), ReadBounds{}))
-	if err != nil && !errors.Is(err, ErrNotImplemented) && !errors.Is(err, ErrSourceEmpty) && !errors.Is(err, ErrSourceMissing) {
-		t.Fatalf("Build = %v", err)
-	}
+		specs, defaultSelection(), ReadBounds{}))
 	if errors.Is(err, ErrNotImplemented) {
+		t.Fatal(err)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if result == nil || result.Artifact.SourceManifest == nil || result.Artifact.SourceManifest.Cutoff.IsZero() {
 		t.Fatal("amended Build omitted SourceManifest.Cutoff")
 	}
+	requireInstant(t, result.Artifact.SourceManifest.Cutoff, contractCutoff(), "SourceManifest.Cutoff")
 }
 
 func testF3DirectHoldout(t *testing.T) {
@@ -512,6 +575,13 @@ func recoveredArtifact(n int) Artifact {
 	return schema4Artifact(completeManifest(SourceComplete), ev)
 }
 
+func nonEmptyJournalSpecs(t *testing.T, run, fixture string) []SourceSpec {
+	t.Helper()
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, run, fixture)
+	return []SourceSpec{journalSpec("journals", runs)}
+}
+
 func testF4TargetMalformed(t *testing.T) {
 	art := recoveredArtifact(2)
 	_, err := PredictionEligibility(art, []TargetRow{{Key: "T1", Role: Role("nope"), Model: "stamp"}}, 2, true)
@@ -567,8 +637,11 @@ func testF4NotEligiblePartial(t *testing.T) {
 
 func testF4HandFinishedLimit(t *testing.T) {
 	result, err := Build(context.Background(), amendedBuildOpts(
-		[]SourceSpec{journalSpec("j", t.TempDir())}, defaultSelection(), ReadBounds{}))
+		nonEmptyJournalSpecs(t, "run-offset", "synthetic-utc-offset.jsonl"), defaultSelection(), ReadBounds{}))
 	if errors.Is(err, ErrNotImplemented) {
+		t.Fatal(err)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if result == nil {
@@ -592,18 +665,24 @@ func testF4HandFinishedLimit(t *testing.T) {
 
 func testF4BuildAmendedOptions(t *testing.T) {
 	result, err := Build(context.Background(), amendedBuildOpts(
-		[]SourceSpec{journalSpec("j", t.TempDir())},
+		nonEmptyJournalSpecs(t, "held", "synthetic-utc-offset.jsonl"),
 		Selection{Cutoff: contractCutoff(), HoldoutRunIDs: []string{"held"}},
 		ReadBounds{},
 	))
 	if errors.Is(err, ErrNotImplemented) {
 		t.Fatal(err)
 	}
-	if err == nil && result != nil && result.Artifact.SchemaVersion == BaselineSchemaVersion {
-		t.Fatal("amended Sources/holdout/cutoff silently ran the legacy builder")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if result != nil && result.Artifact.SchemaVersion == AmendedEvidenceSchemaVersion && result.Artifact.SourceManifest == nil {
-		t.Fatal("schema 4 artifact missing SourceManifest")
+	if result == nil {
+		t.Fatal("amended Build returned nil result")
+	}
+	if result.Artifact.SchemaVersion != AmendedEvidenceSchemaVersion {
+		t.Fatalf("amended Sources/holdout/cutoff emitted schema %d, want %d", result.Artifact.SchemaVersion, AmendedEvidenceSchemaVersion)
+	}
+	if result.Artifact.SourceManifest == nil || result.Artifact.Evidence == nil {
+		t.Fatal("schema 4 artifact missing SourceManifest/Evidence")
 	}
 }
 
@@ -643,8 +722,36 @@ func testF4SchemaRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(raw, []byte(`"observations":null`)) {
-		t.Fatalf("null observations: %s", raw)
+	var artifactObject map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &artifactObject); err != nil {
+		t.Fatal(err)
+	}
+	evidenceRaw, ok := artifactObject["evidence"]
+	if !ok || bytes.Equal(bytes.TrimSpace(evidenceRaw), []byte("null")) {
+		t.Fatalf("artifact omitted evidence: %s", raw)
+	}
+	var evidenceObject map[string]json.RawMessage
+	if err := json.Unmarshal(evidenceRaw, &evidenceObject); err != nil {
+		t.Fatal(err)
+	}
+	requireJSONArray(t, evidenceObject, "observations", 1)
+}
+
+func requireJSONArray(t *testing.T, object map[string]json.RawMessage, key string, wantLen int) {
+	t.Helper()
+	raw, ok := object[key]
+	if !ok {
+		t.Fatalf("JSON object omitted required %q key", key)
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		t.Fatalf("JSON key %q is null", key)
+	}
+	var values []json.RawMessage
+	if err := json.Unmarshal(raw, &values); err != nil {
+		t.Fatalf("JSON key %q is not an array: %s (%v)", key, raw, err)
+	}
+	if len(values) != wantLen {
+		t.Fatalf("JSON key %q array length = %d, want %d: %s", key, len(values), wantLen, raw)
 	}
 }
 
@@ -709,10 +816,12 @@ func testF4CanonicalLists(t *testing.T) {
 	if mErr != nil {
 		t.Fatal(mErr)
 	}
-	for _, key := range []string{"observations", "examined", "lost_attempts", "excluded_journals", "conflicts", "ambiguous"} {
-		if strings.Contains(string(raw), `"`+key+`":null`) {
-			t.Fatalf("%s serialized as null: %s", key, raw)
-		}
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"observations", "examined", "dispositions", "lost_attempts", "excluded_journals", "conflicts", "ambiguous"} {
+		requireJSONArray(t, object, key, 0)
 	}
 }
 
@@ -720,11 +829,14 @@ func testF4OneArtifactInstant(t *testing.T) {
 	cutoff := mustTime(t, "2026-02-01T00:00:00Z")
 	now := mustTime(t, "2026-03-01T00:00:00Z")
 	result, err := Build(context.Background(), BuildOptions{
-		Sources:   []SourceSpec{journalSpec("j", t.TempDir())},
+		Sources:   nonEmptyJournalSpecs(t, "run-offset", "synthetic-utc-offset.jsonl"),
 		Selection: Selection{Cutoff: cutoff},
 		Now:       now,
 	})
 	if errors.Is(err, ErrNotImplemented) {
+		t.Fatal(err)
+	}
+	if err != nil {
 		t.Fatal(err)
 	}
 	if result == nil {
@@ -736,48 +848,132 @@ func testF4OneArtifactInstant(t *testing.T) {
 }
 
 func testF4AggregateReason(t *testing.T) {
-	// Two journal sources with the same run ID: join/reduce error with retained PARTIAL reasons.
-	a := filepath.Join(t.TempDir(), "a")
-	b := filepath.Join(t.TempDir(), "b")
-	// directories only; ReadSources may fail; we assert Build reasons if it returns an artifact
-	result, err := Build(context.Background(), amendedBuildOpts([]SourceSpec{
-		journalSpec("j1", a), journalSpec("j2", b),
-	}, defaultSelection(), ReadBounds{}))
+	t.Run("reduce", func(t *testing.T) {
+		runs := filepath.Join(t.TempDir(), "runs")
+		writeJournalData(t, runs, "run-reversed", strings.Join([]string{
+			journalLine(0, EventRunStarted, "", "2026-01-01T00:00:00Z", map[string]any{"dispatcher_version": ProducerDispatcherV0_1_0}),
+			journalLine(1, EventTaskStarted, "R", "2026-01-01T00:10:00Z", map[string]any{}),
+			journalLine(2, EventTaskSpawnFinished, "R", "2026-01-01T00:11:00Z", map[string]any{"spawn_kind": SpawnKindImplementer, "model": "stamp", "duration_ms": 60000, "cost_usd": 1, "input_tokens": 1, "output_tokens": 1}),
+			journalLine(3, EventTaskDone, "R", "2026-01-01T00:05:00Z", map[string]any{}),
+		}, "\n")+"\n")
+		result, err := Build(context.Background(), amendedBuildOpts(
+			[]SourceSpec{journalSpec("journals", runs)}, defaultSelection(), ReadBounds{}))
+		requireBuildAggregateReason(t, result, err, ErrReversedInterval, "reduce: ErrReversedInterval: ")
+	})
+
+	t.Run("join", func(t *testing.T) {
+		runs := filepath.Join(t.TempDir(), "runs")
+		writeJournalData(t, runs, "run-role", strings.Join([]string{
+			journalLine(0, EventRunStarted, "", "2026-01-01T00:00:00Z", map[string]any{"dispatcher_version": ProducerDispatcherV0_1_0}),
+			journalLine(1, EventTaskStarted, "F1-ROLE", "2026-01-01T00:00:00Z", map[string]any{}),
+			journalLine(2, EventTaskSpawnFinished, "F1-ROLE", "2026-01-01T00:09:00Z", map[string]any{"spawn_kind": SpawnKindImplementer, "model": "stamp", "duration_ms": 60000, "cost_usd": 1, "input_tokens": 1, "output_tokens": 1}),
+			journalLine(3, EventTaskDone, "F1-ROLE", "2026-01-01T00:10:00Z", map[string]any{}),
+		}, "\n")+"\n")
+		repo := t.TempDir()
+		writeFileT(t, filepath.Join(repo, "features", "study", "tasks.yaml"), `tasks:
+  - key: F1-ROLE
+    role: bodies
+    model: authored
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:10:00Z'
+    dispatcher_run_id: run-role
+  - key: F1-ROLE
+    role: seals
+    model: authored
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:10:00Z'
+    dispatcher_run_id: run-role
+`)
+		result, err := Build(context.Background(), amendedBuildOpts([]SourceSpec{
+			journalSpec("journals", runs), liveSpec("yaml", repo, "features"),
+		}, defaultSelection(), ReadBounds{}))
+		requireBuildAggregateReason(t, result, err, ErrEvidenceConflict, "join: ErrEvidenceConflict: ")
+	})
+}
+
+func requireBuildAggregateReason(t *testing.T, result *BuildResult, err, sentinel error, prefix string) {
+	t.Helper()
 	if errors.Is(err, ErrNotImplemented) {
 		t.Fatal(err)
 	}
-	if result != nil && result.Artifact.SourceManifest != nil {
-		raw, _ := json.Marshal(result.Artifact.SourceManifest)
-		if result.Artifact.SourceManifest.State == SourcePartial && strings.Contains(string(raw), `"reasons":null`) {
-			t.Fatalf("null reasons: %s", raw)
+	requireSentinel(t, err, sentinel)
+	if result == nil || result.Artifact.SourceManifest == nil {
+		t.Fatal("Build did not retain a diagnostic result/manifest")
+	}
+	manifest := result.Artifact.SourceManifest
+	if manifest.State != SourcePartial {
+		t.Fatalf("aggregate state = %s, want PARTIAL", manifest.State)
+	}
+	for _, source := range manifest.Sources {
+		if source.State != SourceComplete || len(source.Reasons) != 0 {
+			t.Fatalf("successful source read was falsified by aggregate failure: %+v", source)
 		}
 	}
+	if len(manifest.Reasons) == 0 || !sort.StringsAreSorted(manifest.Reasons) {
+		t.Fatalf("aggregate reasons not populated/canonical: %v", manifest.Reasons)
+	}
+	seen := make(map[string]bool, len(manifest.Reasons))
+	found := false
+	for _, reason := range manifest.Reasons {
+		if seen[reason] {
+			t.Fatalf("duplicate aggregate reason %q", reason)
+		}
+		seen[reason] = true
+		if !strings.HasPrefix(reason, prefix) {
+			t.Fatalf("aggregate reason %q does not describe the induced %q failure", reason, prefix)
+		}
+		if strings.TrimSpace(strings.TrimPrefix(reason, prefix)) == "" {
+			t.Fatalf("aggregate reason omits detail after %q: %q", prefix, reason)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("no %q aggregate reason in %v", prefix, manifest.Reasons)
+	}
+	raw, marshalErr := json.Marshal(manifest)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	var object map[string]json.RawMessage
+	if unmarshalErr := json.Unmarshal(raw, &object); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	requireJSONArray(t, object, "reasons", len(manifest.Reasons))
 }
 
 func testF4ProjectionMapping(t *testing.T) {
-	start := mustTime(t, "2026-01-01T00:00:00Z")
-	att := journalAttempt("run-a", "K", start, 10*time.Minute, "stamp", OutcomeDone)
-	att.Corrections = 2
-	att.Reviews = 3
-	set := attemptSetOf("run-a", att)
-	reading := syntheticReading("run-a", "K", start, 1, "features/study/tasks.yaml")
-	got := mustJoin(t, []AttemptSet{set}, []Reading{reading}, defaultSelection(), identityUniverse(set))
-	obs := got.Observations[0]
-	if obs.Attempt.Corrections != 2 {
-		t.Fatalf("corrections = %d", obs.Attempt.Corrections)
-	}
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-kinds", "synthetic-all-kinds.jsonl")
+	repo := t.TempDir()
+	writeFileT(t, filepath.Join(repo, "features", "study", "tasks.yaml"), `tasks:
+  - key: F2-KINDS
+    role: bodies
+    model: authored
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:30:00Z'
+    dispatcher_run_id: run-kinds
+`)
 	result, err := Build(context.Background(), amendedBuildOpts(
-		[]SourceSpec{journalSpec("j", t.TempDir())}, defaultSelection(), ReadBounds{}))
+		[]SourceSpec{journalSpec("journals", runs), liveSpec("yaml", repo, "features")}, defaultSelection(), ReadBounds{}))
 	if errors.Is(err, ErrNotImplemented) {
 		t.Fatal(err)
 	}
-	_ = obs
-	if result != nil {
-		for _, row := range result.Artifact.Observations {
-			if row.TerminalEvidence == "none" && row.Outcome == "done" {
-				t.Fatal("legacy none projected from a done row without mapping EvidenceNone")
-			}
-		}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Artifact.Evidence == nil || len(result.Artifact.Evidence.Observations) != 1 || len(result.Artifact.Observations) != 1 {
+		t.Fatalf("Build did not project one recovered attempt: %+v", result)
+	}
+	joint := result.Artifact.Evidence.Observations[0].Attempt
+	flat := result.Artifact.Observations[0]
+	if joint.Corrections != 6 || joint.Reviews != 0 || joint.Outcome != OutcomeDone || joint.Evidence.Terminal.Source != EvidenceJournal {
+		t.Fatalf("joint attempt = corrections %d reviews %d outcome %s terminal %q", joint.Corrections, joint.Reviews, joint.Outcome, joint.Evidence.Terminal.Source)
+	}
+	if flat.Rounds != joint.Corrections || flat.Rounds != 6 || flat.Outcome != "done" || flat.TerminalEvidence != terminalEvidenceJournal {
+		t.Fatalf("projection = rounds %d outcome %q terminal %q, joint corrections=%d", flat.Rounds, flat.Outcome, flat.TerminalEvidence, joint.Corrections)
 	}
 }
 
@@ -787,6 +983,24 @@ func testF4ArtifactHoldout(t *testing.T) {
 	_, err := PredictionEligibility(art, eligibleTargets(), 2, true)
 	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) {
 		t.Fatalf("held-out observations in artifact = %v", err)
+	}
+}
+
+func testF4ArtifactCutoff(t *testing.T) {
+	art := recoveredArtifact(2)
+	art.Evidence.Observations[0].Attempt.Cutoff = contractCutoff().Add(-time.Minute)
+	got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
+	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) || got.Eligible {
+		t.Fatalf("mismatched attempt/manifest cutoff = eligibility %+v, error %v", got, err)
+	}
+}
+
+func testF4ArtifactCell(t *testing.T) {
+	art := recoveredArtifact(2)
+	art.Evidence.Observations[0].Cell.Model = "contradicts-stamp"
+	got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
+	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) || got.Eligible {
+		t.Fatalf("cell/model contradiction = eligibility %+v, error %v", got, err)
 	}
 }
 

@@ -8,8 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,23 +165,64 @@ func commandFixtureTime() time.Time {
 	return time.Date(2025, 12, 1, 0, 0, 0, 0, time.UTC)
 }
 
+type commandFixtureGitClock struct {
+	path     string
+	identity os.FileInfo
+	sequence uint64
+}
+
+var commandFixtureGitClocks = struct {
+	sync.Mutex
+	clocks []commandFixtureGitClock
+}{}
+
 func commandFixtureGitEnv(repo string) []string {
-	count := 0
-	cmd := exec.Command("git", "-C", repo, "rev-list", "--count", "--all")
-	if out, err := cmd.Output(); err == nil {
-		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(out))); parseErr == nil {
-			count = parsed
+	key := filepath.Clean(repo)
+	identity, _ := os.Stat(filepath.Join(key, ".git"))
+	commandFixtureGitClocks.Lock()
+	clockIndex := -1
+	for i := range commandFixtureGitClocks.clocks {
+		clock := &commandFixtureGitClocks.clocks[i]
+		if identity != nil && clock.identity != nil && os.SameFile(identity, clock.identity) {
+			clockIndex = i
+			break
+		}
+		if clock.path == key {
+			clockIndex = i
 		}
 	}
-	when := commandFixtureTime().Add(time.Duration(count) * time.Minute).Format(time.RFC3339)
-	env := make([]string, 0, len(os.Environ())+2)
+	if clockIndex < 0 {
+		commandFixtureGitClocks.clocks = append(commandFixtureGitClocks.clocks, commandFixtureGitClock{path: key, identity: identity})
+		clockIndex = len(commandFixtureGitClocks.clocks) - 1
+	}
+	clock := &commandFixtureGitClocks.clocks[clockIndex]
+	clock.path = key
+	if identity != nil {
+		clock.identity = identity
+	}
+	sequence := clock.sequence
+	clock.sequence++
+	commandFixtureGitClocks.Unlock()
+	when := commandFixtureTime().Add(time.Duration(sequence) * time.Minute).Format(time.RFC3339)
+	return commandFixtureGitIsolatedEnv("GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+}
+
+func commandFixtureGitIsolatedEnv(extra ...string) []string {
+	env := make([]string, 0, len(os.Environ())+len(extra)+4)
 	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "GIT_AUTHOR_DATE=") || strings.HasPrefix(item, "GIT_COMMITTER_DATE=") {
+		key, _, ok := strings.Cut(item, "=")
+		if ok && strings.HasPrefix(key, "GIT_") {
 			continue
 		}
 		env = append(env, item)
 	}
-	return append(env, "GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+	env = append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return append(env, extra...)
 }
 
 func runCommandFixtureGit(t *testing.T, repo string, args ...string) {
@@ -192,19 +233,56 @@ func runCommandFixtureGit(t *testing.T, repo string, args ...string) {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
 	}
 	if len(args) > 0 && args[0] == "commit" {
-		show := exec.Command("git", "-C", repo, "show", "-s", "--format=%aI%n%cI", "HEAD")
-		out, err := show.Output()
-		if err != nil {
-			t.Fatalf("read command fixture commit dates: %v", err)
+		revisions := commandFixtureGitOutput(t, repo, "rev-list", "--parents", "-n", "1", "HEAD")
+		fields := strings.Fields(revisions)
+		if len(fields) == 0 {
+			t.Fatal("command fixture HEAD did not resolve")
 		}
+		headTimes := commandFixtureCommitTimes(t, repo, fields[0])
 		cutoff := time.Date(2026, 9, 5, 0, 0, 0, 0, time.UTC)
-		for _, raw := range strings.Fields(string(out)) {
-			when, parseErr := time.Parse(time.RFC3339, raw)
-			if parseErr != nil || !when.Before(cutoff) {
-				t.Fatalf("command fixture commit date %q is not before cutoff %s: %v", raw, cutoff, parseErr)
+		for _, when := range headTimes {
+			if !when.Before(cutoff) {
+				t.Fatalf("command fixture commit date %s is not before cutoff %s", when, cutoff)
+			}
+		}
+		for _, parent := range fields[1:] {
+			for _, parentWhen := range commandFixtureCommitTimes(t, repo, parent) {
+				for _, headWhen := range headTimes {
+					if !headWhen.After(parentWhen) {
+						t.Fatalf("command fixture commit time %s is not strictly later than parent %s time %s", headWhen, parent, parentWhen)
+					}
+				}
 			}
 		}
 	}
+}
+
+func commandFixtureGitOutput(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = commandFixtureGitIsolatedEnv()
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, out)
+	}
+	return string(out)
+}
+
+func commandFixtureCommitTimes(t *testing.T, repo, revision string) []time.Time {
+	t.Helper()
+	rawTimes := strings.Fields(commandFixtureGitOutput(t, repo, "show", "-s", "--format=%aI%n%cI", revision))
+	if len(rawTimes) != 2 {
+		t.Fatalf("command fixture commit %s dates = %v, want author and committer", revision, rawTimes)
+	}
+	times := make([]time.Time, 0, len(rawTimes))
+	for _, raw := range rawTimes {
+		when, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			t.Fatalf("parse command fixture commit date %q: %v", raw, err)
+		}
+		times = append(times, when)
+	}
+	return times
 }
 
 // newCommandFixture builds the smallest tree the command can be pointed at:
@@ -222,7 +300,7 @@ func newCommandFixture(t *testing.T) commandFixture {
 	mustMkdirAll(t, filepath.Dir(yamlPath))
 	mustMkdirAll(t, filepath.Join(fixture.runs, "run"))
 	for _, args := range [][]string{
-		{"init", "-q"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "T"},
+		{"init", "-q", "--initial-branch=main"}, {"config", "user.email", "t@example.com"}, {"config", "user.name", "T"},
 	} {
 		runCommandFixtureGit(t, fixture.repo, args...)
 	}

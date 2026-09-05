@@ -8,7 +8,7 @@ no hostnames, no prompts, no credentials. Event types, spawn_kind values,
 duration_ms, token split (uncached vs cache_*), and the adjacency
 task_spawn_finished(panel-iterate) THEN panel_iterate are preserved.
 
-These files are recorded/sanitized, not live network captures.
-The sole recorded/sanitized fixture is recorded-panel-iterate.jsonl. Synthetic
-companions use the synthetic- filename prefix and are enumerated in
+recorded-panel-iterate.jsonl is the sole recorded/sanitized fixture and is not
+a live network capture. Every synthetic-*.jsonl companion is wholly synthetic;
+the fixture classes are enumerated in
 features/dispatched-forecasting/notes/FC-SEALS.md.

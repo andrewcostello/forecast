@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,6 +12,101 @@ import (
 	"testing"
 	"time"
 )
+
+const fixtureHarnessWait = 3 * time.Second
+
+type fixtureGitResult struct {
+	reader io.ReadCloser
+	err    error
+}
+
+type fixtureReadResult struct {
+	data []byte
+	err  error
+}
+
+func startFixtureGit(ctx context.Context, repo string, budget *sourceBudget, request SourceGitRequest) <-chan fixtureGitResult {
+	result := make(chan fixtureGitResult, 1)
+	go func() {
+		reader, err := runSourceGit(ctx, repo, budget, request)
+		result <- fixtureGitResult{reader: reader, err: err}
+	}()
+	return result
+}
+
+func waitFixtureGit(result <-chan fixtureGitResult, within time.Duration) (fixtureGitResult, bool) {
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case got := <-result:
+		return got, true
+	case <-timer.C:
+		return fixtureGitResult{}, false
+	}
+}
+
+func startFixtureRead(reader io.Reader) <-chan fixtureReadResult {
+	result := make(chan fixtureReadResult, 1)
+	go func() {
+		data, err := io.ReadAll(reader)
+		result <- fixtureReadResult{data: data, err: err}
+	}()
+	return result
+}
+
+func waitFixtureRead(result <-chan fixtureReadResult, within time.Duration) (fixtureReadResult, bool) {
+	timer := time.NewTimer(within)
+	defer timer.Stop()
+	select {
+	case got := <-result:
+		return got, true
+	case <-timer.C:
+		return fixtureReadResult{}, false
+	}
+}
+
+func closeFixtureReader(t *testing.T, reader io.ReadCloser, label string) {
+	t.Helper()
+	closed := make(chan error, 1)
+	go func() { closed <- reader.Close() }()
+	timer := time.NewTimer(fixtureHarnessWait)
+	defer timer.Stop()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("close %s: %v", label, err)
+		}
+	case <-timer.C:
+		t.Errorf("close %s did not return within %s", label, fixtureHarnessWait)
+	}
+}
+
+func releaseFixturePath(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("released\n"), 0o600); err != nil {
+		t.Errorf("release controlled child %s: %v", path, err)
+	}
+}
+
+func cleanupFixtureGit(t *testing.T, cancel context.CancelFunc, releases []string, result <-chan fixtureGitResult, pending *bool, reader *io.ReadCloser, label string) {
+	t.Helper()
+	for _, release := range releases {
+		releaseFixturePath(t, release)
+	}
+	cancel()
+	if *pending {
+		if completed, ok := waitFixtureGit(result, fixtureHarnessWait); ok {
+			*pending = false
+			*reader = completed.reader
+		} else {
+			t.Errorf("%s invocation did not stop during bounded cleanup", label)
+		}
+	}
+	if *reader != nil {
+		closeFixtureReader(t, *reader, label)
+		*reader = nil
+	}
+}
 
 // TestFCSourcesContract is the reserved FC-SOURCES group.
 func TestFCSourcesContract(t *testing.T) {
@@ -557,45 +653,53 @@ func testF3BoundBytes(t *testing.T) {
 	// unique byte beyond the blob cap and then deliberately withholds EOF. A
 	// bounded reader must return ErrBoundExceeded without waiting for release;
 	// an implementation that buffers the whole child output cannot do so.
-	marker := filepath.Join(t.TempDir(), "wrote-over-cap")
-	release := filepath.Join(t.TempDir(), "release")
-	t.Setenv("FC_SEALS_OUTPUT_MARKER", marker)
-	t.Setenv("FC_SEALS_OUTPUT_RELEASE", release)
-	installFixtureGitWrapper(t, "printf '"+strings.Repeat("a", 64)+"Z'\n: > \"$FC_SEALS_OUTPUT_MARKER\"\nwhile [ ! -e \"$FC_SEALS_OUTPUT_RELEASE\" ]; do :; done")
-	t.Cleanup(func() { _ = os.WriteFile(release, []byte("release\n"), 0o600) })
+	state := t.TempDir()
+	marker := filepath.Join(state, "wrote-over-cap")
+	release := filepath.Join(state, "release")
+	installFixtureGitWrapper(t, fmt.Sprintf(
+		"printf '%%s\\n' %s\n: > %s\nwhile [ ! -e %s ]; do sleep 0.01; done",
+		shellQuote(strings.Repeat("a", 64)+"Z"), shellQuote(marker), shellQuote(release),
+	))
 	budget, err := newSourceBudget(ReadBounds{MaxBlobBytes: 64, MaxTotalBytes: 1024, MaxProcesses: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := runSourceGit(context.Background(), t.TempDir(), budget, SourceGitRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	call := startFixtureGit(ctx, t.TempDir(), budget, SourceGitRequest{
 		Args: []string{"cat-file", "blob", strings.Repeat("a", 40)}, Blob: true,
 	})
-	if err != nil {
-		t.Fatal(err)
+	pending := true
+	var reader io.ReadCloser
+	t.Cleanup(func() {
+		cleanupFixtureGit(t, cancel, []string{release}, call, &pending, &reader, "bounded blob reader")
+	})
+	started, ok := waitFixtureGit(call, fixtureHarnessWait)
+	if !ok {
+		t.Fatal("runSourceGit did not return a streaming reader within the harness bound")
 	}
-	defer reader.Close()
-	type readResult struct {
-		data []byte
-		err  error
+	pending = false
+	reader = started.reader
+	if started.err != nil {
+		t.Fatal(started.err)
 	}
-	readDone := make(chan readResult, 1)
-	go func() {
-		data, readErr := io.ReadAll(reader)
-		readDone <- readResult{data: data, err: readErr}
-	}()
+	if reader == nil {
+		t.Fatal("runSourceGit returned a nil streaming reader")
+	}
+	readDone := startFixtureRead(reader)
 	if !fixturePathAppears(marker, 3*time.Second) {
-		signalFixturePath(t, release)
 		t.Fatal("controlled Git child never wrote its over-cap marker")
 	}
-	var bounded readResult
-	select {
-	case bounded = <-readDone:
-	case <-time.After(3 * time.Second):
-		signalFixturePath(t, release)
-		<-readDone
+	bounded, ok := waitFixtureRead(readDone, fixtureHarnessWait)
+	if !ok {
+		releaseFixturePath(t, release)
+		cancel()
+		_, _ = waitFixtureRead(readDone, fixtureHarnessWait)
 		t.Fatal("blob read waited for EOF after the over-cap probe; output was buffered before bounding")
 	}
-	signalFixturePath(t, release)
+	releaseFixturePath(t, release)
+	cancel()
+	closeFixtureReader(t, reader, "bounded blob reader")
+	reader = nil
 	if !errors.Is(bounded.err, ErrBoundExceeded) {
 		t.Fatalf("bounded blob read = %v, want ErrBoundExceeded", bounded.err)
 	}
@@ -630,78 +734,104 @@ func testF3BoundProcesses(t *testing.T) {
 	secondStarted := filepath.Join(state, "second-started")
 	firstRelease := filepath.Join(state, "first-release")
 	secondRelease := filepath.Join(state, "second-release")
-	t.Setenv("FC_SEALS_PROCESS_STATE", state)
-	installFixtureGitWrapper(t, `if mkdir "$FC_SEALS_PROCESS_STATE/first-claimed" 2>/dev/null; then
-  : > "$FC_SEALS_PROCESS_STATE/first-started"
-  while [ ! -e "$FC_SEALS_PROCESS_STATE/first-release" ]; do :; done
+	overlap := filepath.Join(state, "children-overlapped")
+	installFixtureGitWrapper(t, fmt.Sprintf(`if mkdir %s 2>/dev/null; then
+  : > %s
+  while [ ! -e %s ]; do sleep 0.01; done
   printf 'first\n'
 else
-  : > "$FC_SEALS_PROCESS_STATE/second-started"
-  while [ ! -e "$FC_SEALS_PROCESS_STATE/second-release" ]; do :; done
+  : > %s
+  if [ ! -e %s ]; then : > %s; fi
+  while [ ! -e %s ]; do sleep 0.01; done
   printf 'second\n'
-fi`)
-	t.Cleanup(func() {
-		_ = os.WriteFile(firstRelease, []byte("release\n"), 0o600)
-		_ = os.WriteFile(secondRelease, []byte("release\n"), 0o600)
-	})
+fi`,
+		shellQuote(filepath.Join(state, "first-claimed")),
+		shellQuote(firstStarted), shellQuote(firstRelease),
+		shellQuote(secondStarted), shellQuote(firstRelease), shellQuote(overlap), shellQuote(secondRelease),
+	))
 	budget, err := newSourceBudget(ReadBounds{MaxProcesses: 1, MaxTotalBytes: 1024})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runnerRepo := t.TempDir()
-	first, err := runSourceGit(context.Background(), runnerRepo, budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
-	if err != nil {
-		t.Fatal(err)
+	firstCtx, firstCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	firstCall := startFixtureGit(firstCtx, runnerRepo, budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
+	firstPending := true
+	var first io.ReadCloser
+	t.Cleanup(func() {
+		cleanupFixtureGit(t, firstCancel, []string{firstRelease, secondRelease}, firstCall, &firstPending, &first, "first controlled Git child")
+	})
+	firstResult, ok := waitFixtureGit(firstCall, fixtureHarnessWait)
+	if !ok {
+		t.Fatal("first runSourceGit call did not return a reader within the harness bound")
 	}
-	defer first.Close()
-	if !fixturePathAppears(firstStarted, 3*time.Second) {
+	firstPending = false
+	first = firstResult.reader
+	if firstResult.err != nil {
+		t.Fatal(firstResult.err)
+	}
+	if first == nil {
+		t.Fatal("first runSourceGit returned a nil reader")
+	}
+	if !fixturePathAppears(firstStarted, fixtureHarnessWait) {
 		t.Fatal("first controlled Git child did not start")
 	}
-	type runnerResult struct {
-		reader io.ReadCloser
-		err    error
+	secondCtx, secondCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	secondCall := startFixtureGit(secondCtx, runnerRepo, budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
+	secondPending := true
+	var second io.ReadCloser
+	t.Cleanup(func() {
+		cleanupFixtureGit(t, secondCancel, []string{firstRelease, secondRelease}, secondCall, &secondPending, &second, "second controlled Git child")
+	})
+
+	// The frozen seam has no hook at slot-acquisition attempt. Releasing after
+	// the second call is launched lets us reject an overlap if it is actually
+	// observed, but absence of that marker is not proof under arbitrary
+	// goroutine scheduling; that mutation remains a body-review obligation.
+	releaseFixturePath(t, firstRelease)
+	firstRead := startFixtureRead(first)
+	firstCompleted, ok := waitFixtureRead(firstRead, fixtureHarnessWait)
+	if !ok {
+		t.Fatal("first controlled Git child did not drain within the harness bound")
 	}
-	secondResult := make(chan runnerResult, 1)
-	go func() {
-		second, runErr := runSourceGit(context.Background(), runnerRepo, budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
-		secondResult <- runnerResult{reader: second, err: runErr}
-	}()
-	select {
-	case early := <-secondResult:
-		if early.reader != nil {
-			_ = early.reader.Close()
-		}
-		t.Fatalf("second runSourceGit did not wait for the per-source slot: %v", early.err)
-	case <-time.After(300 * time.Millisecond):
-	}
-	if _, err := os.Stat(secondStarted); err == nil {
-		t.Fatal("second Git child spawned while MaxProcesses=1 slot was occupied")
-	}
-	signalFixturePath(t, firstRelease)
-	firstData, firstErr := io.ReadAll(first)
+	firstData, firstErr := firstCompleted.data, firstCompleted.err
 	if firstErr != nil || string(firstData) != "first\n" {
 		t.Fatalf("first controlled Git child = %q, %v", firstData, firstErr)
 	}
-	if closeErr := first.Close(); closeErr != nil {
-		t.Fatalf("close first controlled Git child: %v", closeErr)
-	}
-	var second runnerResult
-	select {
-	case second = <-secondResult:
-	case <-time.After(3 * time.Second):
+	firstCancel()
+	closeFixtureReader(t, first, "first controlled Git child")
+	first = nil
+
+	secondResult, ok := waitFixtureGit(secondCall, fixtureHarnessWait)
+	if !ok {
 		t.Fatal("second runSourceGit did not acquire released slot")
 	}
-	if second.err != nil || second.reader == nil {
-		t.Fatalf("second runSourceGit = %v", second.err)
+	secondPending = false
+	second = secondResult.reader
+	if secondResult.err != nil || second == nil {
+		t.Fatalf("second runSourceGit = %v", secondResult.err)
 	}
-	defer second.reader.Close()
-	if !fixturePathAppears(secondStarted, 3*time.Second) {
+	if !fixturePathAppears(secondStarted, fixtureHarnessWait) {
 		t.Fatal("second controlled Git child never spawned after slot release")
 	}
-	signalFixturePath(t, secondRelease)
-	secondData, secondErr := io.ReadAll(second.reader)
+	_, overlapErr := os.Stat(overlap)
+	releaseFixturePath(t, secondRelease)
+	secondRead := startFixtureRead(second)
+	secondCompleted, ok := waitFixtureRead(secondRead, fixtureHarnessWait)
+	if !ok {
+		t.Fatal("second controlled Git child did not drain within the harness bound")
+	}
+	secondData, secondErr := secondCompleted.data, secondCompleted.err
+	secondCancel()
+	closeFixtureReader(t, second, "second controlled Git child")
+	second = nil
 	if secondErr != nil || string(secondData) != "second\n" {
 		t.Fatalf("second controlled Git child = %q, %v", secondData, secondErr)
+	}
+	if overlapErr == nil {
+		t.Fatal("observed two controlled Git children in flight before the first release")
+	} else if !os.IsNotExist(overlapErr) {
+		t.Fatalf("inspect controlled-child overlap marker: %v", overlapErr)
 	}
 }
 
@@ -1202,36 +1332,66 @@ func testF3SourceConcurrency(t *testing.T) {
 	firstMarker := filepath.Join(state, "first-source-entered")
 	secondMarker := filepath.Join(state, "second-source-entered")
 	firstRelease := filepath.Join(state, "release-first-source")
-	t.Setenv("FC_SEALS_FIRST_REPO", firstRepo.path)
-	t.Setenv("FC_SEALS_SECOND_REPO", secondRepo.path)
-	t.Setenv("FC_SEALS_FIRST_SOURCE_MARKER", firstMarker)
-	t.Setenv("FC_SEALS_SECOND_SOURCE_MARKER", secondMarker)
-	t.Setenv("FC_SEALS_FIRST_SOURCE_RELEASE", firstRelease)
-	installFixtureGitWrapper(t, `case "$(pwd) $*" in
-  *"$FC_SEALS_FIRST_REPO"*)
-    : > "$FC_SEALS_FIRST_SOURCE_MARKER"
-    while [ ! -e "$FC_SEALS_FIRST_SOURCE_RELEASE" ]; do :; done
+	entryClaim := filepath.Join(state, "first-entry-claimed")
+	firstWasFirst := filepath.Join(state, "first-source-was-first")
+	secondWasFirst := filepath.Join(state, "second-source-was-first")
+	overlap := filepath.Join(state, "git-sources-overlapped")
+	installFixtureGitWrapper(t, fmt.Sprintf(`first_repo=%s
+second_repo=%s
+first_marker=%s
+second_marker=%s
+first_release=%s
+entry_claim=%s
+first_was_first=%s
+second_was_first=%s
+overlap=%s
+case "$(pwd) $*" in
+  *"$first_repo"*)
+    if mkdir "$entry_claim" 2>/dev/null; then : > "$first_was_first"; fi
+    : > "$first_marker"
+    while [ ! -e "$first_release" ]; do sleep 0.01; done
     ;;
-  *"$FC_SEALS_SECOND_REPO"*)
-    : > "$FC_SEALS_SECOND_SOURCE_MARKER"
+  *"$second_repo"*)
+    if mkdir "$entry_claim" 2>/dev/null; then : > "$second_was_first"; fi
+    : > "$second_marker"
+    if [ ! -e "$first_release" ]; then : > "$overlap"; fi
     ;;
 esac
-exec "$FC_SEALS_REAL_GIT" "$@"`)
-	t.Cleanup(func() { _ = os.WriteFile(firstRelease, []byte("release\n"), 0o600) })
+exec "$real_git" "$@"`,
+		shellQuote(firstRepo.path), shellQuote(secondRepo.path),
+		shellQuote(firstMarker), shellQuote(secondMarker), shellQuote(firstRelease),
+		shellQuote(entryClaim), shellQuote(firstWasFirst), shellQuote(secondWasFirst), shellQuote(overlap),
+	))
 	type sourceResult struct {
 		manifest *SourceManifest
 		err      error
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
 	result := make(chan sourceResult, 1)
 	go func() {
-		manifest, _, err := ReadSources(context.Background(), []SourceSpec{
+		manifest, _, err := ReadSources(ctx, []SourceSpec{
 			{ID: "b-history", Kind: SourceKindGitHistory, Repository: secondRepo.path, Roots: []string{"features"}},
 			journalSpec("z-journals", runs),
 			{ID: "a-history", Kind: SourceKindGitHistory, Repository: firstRepo.path, Roots: []string{"features"}},
 		}, defaultSelection(), ReadBounds{MaxProcesses: 2})
 		result <- sourceResult{manifest: manifest, err: err}
 	}()
-	deadline := time.NewTimer(3 * time.Second)
+	pending := true
+	t.Cleanup(func() {
+		releaseFixturePath(t, firstRelease)
+		cancel()
+		if pending {
+			timer := time.NewTimer(fixtureHarnessWait)
+			defer timer.Stop()
+			select {
+			case <-result:
+				pending = false
+			case <-timer.C:
+				t.Errorf("ReadSources did not stop during bounded cleanup")
+			}
+		}
+	})
+	deadline := time.NewTimer(fixtureHarnessWait)
 	ticker := time.NewTicker(5 * time.Millisecond)
 	firstEntered := false
 	for !firstEntered {
@@ -1241,9 +1401,15 @@ exec "$FC_SEALS_REAL_GIT" "$@"`)
 		}
 		select {
 		case early := <-result:
+			pending = false
 			ticker.Stop()
 			deadline.Stop()
-			t.Fatalf("ReadSources returned before first source marker: %v", early.err)
+			releaseFixturePath(t, firstRelease)
+			cancel()
+			if early.err != nil {
+				t.Fatal(early.err)
+			}
+			t.Fatal("ReadSources returned before the first Git source entered")
 		case <-deadline.C:
 			ticker.Stop()
 			t.Fatal("first SourceID never entered the Git runner")
@@ -1252,23 +1418,41 @@ exec "$FC_SEALS_REAL_GIT" "$@"`)
 	}
 	ticker.Stop()
 	deadline.Stop()
-	if fixturePathAppears(secondMarker, 300*time.Millisecond) {
-		signalFixturePath(t, firstRelease)
-		<-result
-		t.Fatal("second source entered while the first SourceID was blocked")
-	}
-	signalFixturePath(t, firstRelease)
+
+	// Only Git entry is visible at the frozen seam. An actual second-repository
+	// entry before release is a conclusive ordering/fan-out violation, but no
+	// quiet window can prove another goroutine or the journal source attempted
+	// acquisition. Full all-kind fan-out proof stays with body review/mutation.
+	releaseFixturePath(t, firstRelease)
+	timer := time.NewTimer(5 * time.Second)
 	var completed sourceResult
 	select {
 	case completed = <-result:
-	case <-time.After(5 * time.Second):
+		pending = false
+	case <-timer.C:
+		timer.Stop()
 		t.Fatal("sequential source read did not complete after release")
 	}
+	timer.Stop()
+	cancel()
 	if completed.err != nil {
 		t.Fatal(completed.err)
 	}
-	if !fixturePathAppears(secondMarker, time.Second) {
+	if !fixturePathAppears(secondMarker, fixtureHarnessWait) {
 		t.Fatal("second source never entered after first source completed")
+	}
+	if _, err := os.Stat(firstWasFirst); err != nil {
+		t.Fatalf("first Git entry was not the lowest SourceID: %v", err)
+	}
+	if _, err := os.Stat(secondWasFirst); err == nil {
+		t.Fatal("observed the second Git repository enter before the lowest SourceID")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("inspect second-source ordering marker: %v", err)
+	}
+	if _, err := os.Stat(overlap); err == nil {
+		t.Fatal("observed the second Git repository enter before the first release")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("inspect source-overlap marker: %v", err)
 	}
 	if completed.manifest == nil || completed.manifest.Bounds.MaxProcesses != 2 {
 		t.Fatalf("resolved process bound missing: %+v", completed.manifest)

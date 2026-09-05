@@ -9,8 +9,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -56,14 +56,7 @@ func freezeFixtureTree(t *testing.T, root string) {
 			return filepath.SkipDir
 		}
 		if entry.Type().IsRegular() {
-			data, readErr := os.ReadFile(path)
-			if readErr != nil {
-				return readErr
-			}
-			hash := fnv.New32a()
-			_, _ = hash.Write(data)
-			when := fixtureRecordedAt().Add(time.Duration(hash.Sum32()%2_000_000) * time.Second)
-			return os.Chtimes(path, when, when)
+			setFixtureMTime(t, path)
 		}
 		return nil
 	}); err != nil {
@@ -71,44 +64,120 @@ func freezeFixtureTree(t *testing.T, root string) {
 	}
 }
 
-// fixtureGitEnv gives topology-ordered commits deterministic author and
-// committer instants. Counting all reachable commits handles branch/merge
-// fixtures without relying on the host clock.
+type fixtureGitClock struct {
+	path     string
+	identity os.FileInfo
+	sequence uint64
+}
+
+var fixtureGitClocks = struct {
+	sync.Mutex
+	clocks []fixtureGitClock
+}{}
+
+// fixtureGitEnv advances an explicit clock for each fixture repository. It is
+// independent of reachable refs, deleted branches, grafts, and replacements.
+// Every fixture Git invocation advances the clock, so a commit-producing
+// invocation is strictly later than every earlier parent-producing invocation.
 func fixtureGitEnv(repo string) []string {
-	count := 0
-	cmd := exec.Command("git", "-C", repo, "rev-list", "--count", "--all")
-	if out, err := cmd.Output(); err == nil {
-		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(string(out))); parseErr == nil {
-			count = parsed
+	key := filepath.Clean(repo)
+	identity, _ := os.Stat(filepath.Join(key, ".git"))
+	fixtureGitClocks.Lock()
+	clockIndex := -1
+	for i := range fixtureGitClocks.clocks {
+		clock := &fixtureGitClocks.clocks[i]
+		if identity != nil && clock.identity != nil && os.SameFile(identity, clock.identity) {
+			clockIndex = i
+			break
+		}
+		if clock.path == key {
+			clockIndex = i
 		}
 	}
-	when := fixtureRecordedAt().Add(time.Duration(count) * time.Minute).Format(time.RFC3339)
-	env := make([]string, 0, len(os.Environ())+2)
+	if clockIndex < 0 {
+		fixtureGitClocks.clocks = append(fixtureGitClocks.clocks, fixtureGitClock{path: key, identity: identity})
+		clockIndex = len(fixtureGitClocks.clocks) - 1
+	}
+	clock := &fixtureGitClocks.clocks[clockIndex]
+	clock.path = key
+	if identity != nil {
+		clock.identity = identity
+	}
+	sequence := clock.sequence
+	clock.sequence++
+	fixtureGitClocks.Unlock()
+	when := fixtureRecordedAt().Add(time.Duration(sequence) * time.Minute).Format(time.RFC3339)
+	return fixtureGitIsolatedEnv("GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+}
+
+func fixtureGitIsolatedEnv(extra ...string) []string {
+	env := make([]string, 0, len(os.Environ())+len(extra)+4)
 	for _, item := range os.Environ() {
-		if strings.HasPrefix(item, "GIT_AUTHOR_DATE=") || strings.HasPrefix(item, "GIT_COMMITTER_DATE=") {
+		key, _, ok := strings.Cut(item, "=")
+		if ok && strings.HasPrefix(key, "GIT_") {
 			continue
 		}
 		env = append(env, item)
 	}
-	return append(env, "GIT_AUTHOR_DATE="+when, "GIT_COMMITTER_DATE="+when)
+	env = append(env,
+		"GIT_CONFIG_NOSYSTEM=1",
+		"GIT_CONFIG_SYSTEM=/dev/null",
+		"GIT_CONFIG_GLOBAL=/dev/null",
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return append(env, extra...)
 }
 
 func requireFixtureCommitBeforeCutoff(t *testing.T, repo string) {
 	t.Helper()
-	cmd := exec.Command("git", "-C", repo, "show", "-s", "--format=%aI%n%cI", "HEAD")
+	cmd := exec.Command("git", "-C", repo, "rev-list", "--parents", "-n", "1", "HEAD")
+	cmd.Env = fixtureGitIsolatedEnv()
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("read fixture commit dates: %v", err)
+		t.Fatalf("read fixture commit and parents: %v", err)
 	}
-	for _, raw := range strings.Fields(string(out)) {
-		when, parseErr := time.Parse(time.RFC3339, raw)
-		if parseErr != nil {
-			t.Fatalf("parse fixture commit date %q: %v", raw, parseErr)
-		}
+	revisions := strings.Fields(string(out))
+	if len(revisions) == 0 {
+		t.Fatal("fixture HEAD did not resolve")
+	}
+	headTimes := fixtureCommitTimes(t, repo, revisions[0])
+	for _, when := range headTimes {
 		if !when.Before(contractCutoff()) {
 			t.Fatalf("fixture commit date %s is not before cutoff %s", when, contractCutoff())
 		}
 	}
+	for _, parent := range revisions[1:] {
+		for _, parentWhen := range fixtureCommitTimes(t, repo, parent) {
+			for _, headWhen := range headTimes {
+				if !headWhen.After(parentWhen) {
+					t.Fatalf("fixture commit time %s is not strictly later than parent %s time %s", headWhen, parent, parentWhen)
+				}
+			}
+		}
+	}
+}
+
+func fixtureCommitTimes(t *testing.T, repo, revision string) []time.Time {
+	t.Helper()
+	cmd := exec.Command("git", "-C", repo, "show", "-s", "--format=%aI%n%cI", revision)
+	cmd.Env = fixtureGitIsolatedEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("read fixture commit dates for %s: %v", revision, err)
+	}
+	rawTimes := strings.Fields(string(out))
+	if len(rawTimes) != 2 {
+		t.Fatalf("fixture commit %s dates = %q, want author and committer", revision, out)
+	}
+	times := make([]time.Time, 0, len(rawTimes))
+	for _, raw := range rawTimes {
+		when, parseErr := time.Parse(time.RFC3339, raw)
+		if parseErr != nil {
+			t.Fatalf("parse fixture commit date %q: %v", raw, parseErr)
+		}
+		times = append(times, when)
+	}
+	return times
 }
 
 func testdataFile(t *testing.T, parts ...string) string {
@@ -276,7 +345,7 @@ func initGitRepo(t *testing.T) gitRepo {
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	runGit(t, path, "init", "-q")
+	runGit(t, path, "init", "-q", "--initial-branch=main")
 	runGit(t, path, "config", "user.email", "seals@example.com")
 	runGit(t, path, "config", "user.name", "FC-SEALS")
 	runGit(t, path, "config", "commit.gpgsign", "false")
@@ -304,7 +373,9 @@ func (g gitRepo) commit(message string, paths ...string) string {
 	args := append([]string{"add"}, paths...)
 	runGit(g.t, g.path, args...)
 	runGit(g.t, g.path, "commit", "-q", "-m", message)
-	out, err := exec.Command("git", "-C", g.path, "rev-parse", "HEAD").Output()
+	cmd := exec.Command("git", "-C", g.path, "rev-parse", "HEAD")
+	cmd.Env = fixtureGitIsolatedEnv()
+	out, err := cmd.Output()
 	if err != nil {
 		g.t.Fatal(err)
 	}
@@ -575,6 +646,7 @@ func shallowClone(t *testing.T, src string) string {
 func gitOutput(t *testing.T, repo string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = fixtureGitIsolatedEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
@@ -588,14 +660,21 @@ func installFixtureGitWrapper(t *testing.T, body string) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	realGit, err = filepath.Abs(realGit)
+	if err != nil {
+		t.Fatalf("resolve absolute Git path: %v", err)
+	}
 	bin := t.TempDir()
 	wrapper := filepath.Join(bin, "git")
-	writeFileT(t, wrapper, "#!/bin/sh\nset -eu\n"+body+"\n")
+	writeFileT(t, wrapper, "#!/bin/sh\nset -eu\nreal_git="+shellQuote(realGit)+"\n"+body+"\n")
 	if err := os.Chmod(wrapper, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("FC_SEALS_REAL_GIT", realGit)
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func fixturePathAppears(path string, within time.Duration) bool {
@@ -613,11 +692,6 @@ func fixturePathAppears(path string, within time.Duration) bool {
 		case <-ticker.C:
 		}
 	}
-}
-
-func signalFixturePath(t *testing.T, path string) {
-	t.Helper()
-	writeFileT(t, path, "released\n")
 }
 
 func containPath(readings []Reading, fragment string) bool {

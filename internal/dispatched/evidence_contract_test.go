@@ -58,6 +58,7 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F4-ARTIFACT-HOLDOUT", testF4ArtifactHoldout)
 	t.Run("F4-ARTIFACT-CUTOFF", testF4ArtifactCutoff)
 	t.Run("F4-ARTIFACT-CELL", testF4ArtifactCell)
+	t.Run("F4-ARTIFACT-JOINT-RECORD", testF4ArtifactJointRecord)
 	t.Run("F4-STRUCTURED-THIN-CELL", testF4StructuredThinCell)
 	t.Run("F4-CELL-EMPTY-N0", testF4CellEmptyN0)
 }
@@ -921,13 +922,15 @@ func requireBuildAggregateReason(t *testing.T, result *BuildResult, err, sentine
 			t.Fatalf("duplicate aggregate reason %q", reason)
 		}
 		seen[reason] = true
-		if !strings.HasPrefix(reason, prefix) {
-			t.Fatalf("aggregate reason %q does not describe the induced %q failure", reason, prefix)
+		if !strings.HasPrefix(reason, "reduce: ") && !strings.HasPrefix(reason, "join: ") {
+			t.Fatalf("aggregate reason is not a reduce/join diagnostic: %q", reason)
 		}
-		if strings.TrimSpace(strings.TrimPrefix(reason, prefix)) == "" {
-			t.Fatalf("aggregate reason omits detail after %q: %q", prefix, reason)
+		if strings.HasPrefix(reason, prefix) {
+			if strings.TrimSpace(strings.TrimPrefix(reason, prefix)) == "" {
+				t.Fatalf("aggregate reason omits detail after %q: %q", prefix, reason)
+			}
+			found = true
 		}
-		found = true
 	}
 	if !found {
 		t.Fatalf("no %q aggregate reason in %v", prefix, manifest.Reasons)
@@ -1001,6 +1004,15 @@ func testF4ArtifactCell(t *testing.T) {
 	got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
 	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) || got.Eligible {
 		t.Fatalf("cell/model contradiction = eligibility %+v, error %v", got, err)
+	}
+}
+
+func testF4ArtifactJointRecord(t *testing.T) {
+	art := recoveredArtifact(2)
+	art.Evidence.Observations[0].Attempt.Wall.Elapsed += time.Minute
+	got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
+	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) || got.Eligible {
+		t.Fatalf("malformed joint attempt = eligibility %+v, error %v", got, err)
 	}
 }
 

@@ -1,0 +1,8 @@
+tasks:
+  - key: F3-DISPATCHER
+    role: scaffold
+    model: stamp
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:10:00Z'
+    dispatcher_run_id: run-root

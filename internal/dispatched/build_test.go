@@ -582,13 +582,37 @@ func TestUnrecordedCostSerializesAsNull(t *testing.T) {
 	}
 }
 
-// Edge case 9. The limit is stated, not modelled around.
+// Edge case 9. The limit is stated, not modelled around. Codex-3: the
+// formatter fixture is not enough; Build itself must populate Limits.
 func TestCoverageStatesHandFinishedLimit(t *testing.T) {
 	artifact := Artifact{Limits: []string{HandFinishedLimit}}
 	var out bytes.Buffer
 	WriteCoverage(&out, artifact)
 	if !strings.Contains(out.String(), "Hand-finished rows have no identifying field") {
 		t.Fatalf("coverage report omitted hand-finished limit:\n%s", out.String())
+	}
+	fixture := newBuildFixture(t)
+	start := "2026-01-01T00:00:00Z"
+	fixture.writeLive(tasksYAML(taskYAML("A", "bodies", "pin", "Done", start, "2026-01-01T00:10:00Z", "run")))
+	writeJournal(t, fixture.runs, "run",
+		event("task_started", "A", start, map[string]any{"model": "planned"}),
+		spawnEvent("A", "2026-01-01T00:10:00Z", "implementer", "stamp", 1, 1, 1),
+		event("task_done", "A", "2026-01-01T00:10:00Z", nil),
+	)
+	result := fixture.build(t)
+	found := false
+	for _, limit := range result.Artifact.Limits {
+		if limit == HandFinishedLimit {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("Build omitted HandFinishedLimit: %v", result.Artifact.Limits)
+	}
+	out.Reset()
+	WriteCoverage(&out, result.Artifact)
+	if !strings.Contains(out.String(), "Hand-finished rows have no identifying field") {
+		t.Fatalf("Build report omitted hand-finished limit:\n%s", out.String())
 	}
 }
 
@@ -684,13 +708,16 @@ func (f *buildFixture) writeLive(data string) {
 	if err := os.WriteFile(f.yamlPath, []byte(data), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
+	setFixtureMTime(f.t, f.yamlPath)
 }
 
 func (f *buildFixture) writeSibling(name, data string) {
 	f.t.Helper()
-	if err := os.WriteFile(filepath.Join(filepath.Dir(f.yamlPath), name), []byte(data), 0o644); err != nil {
+	path := filepath.Join(filepath.Dir(f.yamlPath), name)
+	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
+	setFixtureMTime(f.t, path)
 }
 
 func (f *buildFixture) commitYAML(data string) {
@@ -705,6 +732,7 @@ func (f *buildFixture) writeTarget(data string) {
 	if err := os.WriteFile(f.target, []byte(data), 0o644); err != nil {
 		f.t.Fatal(err)
 	}
+	setFixtureMTime(f.t, f.target)
 }
 
 func (f *buildFixture) build(t *testing.T) *BuildResult {
@@ -767,9 +795,11 @@ func writeJournal(t *testing.T, runs, run string, events ...string) {
 	t.Helper()
 	dir := filepath.Join(runs, run)
 	mustMkdir(t, dir)
-	if err := os.WriteFile(filepath.Join(dir, "journal.jsonl"), []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
+	path := filepath.Join(dir, "journal.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Join(events, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	setFixtureMTime(t, path)
 }
 
 func mustMkdir(t *testing.T, path string) {
@@ -782,7 +812,16 @@ func mustMkdir(t *testing.T, path string) {
 func runGit(t *testing.T, repo string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", repo}, args...)...)
+	cmd.Env = fixtureGitEnv(repo)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, out)
 	}
+	if len(args) > 0 && (args[0] == "commit" || args[0] == "merge") {
+		requireFixtureCommitBeforeCutoff(t, repo)
+	}
+	// checkout, merge and clone can replace a worktree file after its original
+	// write helper froze the mtime. Re-freeze every regular fixture worktree
+	// file after Git operations; explicit after-cutoff evidence lives in the
+	// fixture payload/ReadingRef and is not rewritten here.
+	freezeFixtureTree(t, repo)
 }

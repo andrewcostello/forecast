@@ -42,9 +42,12 @@ import (
 // and task_blocked. agent_fallback records a cascade. task_started carries
 // the PLANNED model, never the stamp.
 const (
-	// ProducerDispatcherV0_1_0 names the journal producer whose sequences the
-	// fixtures freeze. Read from run_started.payload.dispatcher_version.
-	ProducerDispatcherV0_1_0 = "dispatcher 0.1.0"
+	// ProducerDispatcherV0_1_0 is the exact wire value of
+	// run_started.payload.dispatcher_version for the producer whose sequences
+	// the fixtures freeze. JournalIdentity.Producer carries the raw value as
+	// read, with no prefix or normalisation, so a real journal compares equal
+	// to this constant.
+	ProducerDispatcherV0_1_0 = "0.1.0"
 
 	EventRunStarted           = "run_started"
 	EventTaskStarted          = "task_started"
@@ -66,8 +69,11 @@ const (
 )
 
 // JournalIdentity names one journal file: the run it belongs to, the source
-// it was read from and its path there. Producer is the dispatcher version
-// recorded in run_started, empty when the journal has none.
+// it was read from and its path there. Producer is the raw
+// run_started.payload.dispatcher_version as read from the journal, empty
+// when the journal has none; ParseEvents fills it and returns the resolved
+// identity in ParsedJournal.Journal, and stamps that identity on every
+// EventRef it emits.
 type JournalIdentity struct {
 	RunID    string
 	SourceID string
@@ -84,6 +90,12 @@ type EventRef struct {
 	Line    int
 	Type    string
 	At      time.Time
+}
+
+// Equal compares references by content, with At compared by instant.
+func (r EventRef) Equal(other EventRef) bool {
+	return r.Journal == other.Journal && r.Seq == other.Seq && r.Line == other.Line &&
+		r.Type == other.Type && r.At.Equal(other.At)
 }
 
 // EventPayload is the subset of a journal payload the reducer reads. Every
@@ -112,6 +124,16 @@ type Event struct {
 	Payload EventPayload
 }
 
+// ParsedJournal is what ParseEvents yields for one journal: the identity
+// with Producer resolved from run_started (so a journal holding run_started
+// and no task events still exposes its producer), the task events in file
+// order, and the diagnostics. It is the unit ReduceAttempts consumes.
+type ParsedJournal struct {
+	Journal     JournalIdentity
+	Events      []Event
+	Diagnostics JournalDiagnostics
+}
+
 // JournalDiagnostics counts what a journal could not yield. Every count is
 // reported; none is a reason to drop the rest of the journal.
 type JournalDiagnostics struct {
@@ -132,18 +154,19 @@ type Attempt struct {
 	// Model is the final recorded implementing stamp: the model on the last
 	// implementer or panel-iterate task_spawn_finished. Unknown when no such
 	// spawn carried a model (DispositionAbsentStamp); never the planned
-	// model from task_started nor the authored YAML model.
-	Model         Measured[string]
-	ModelEvidence FieldEvidence
+	// model from task_started nor the authored YAML model. Its evidence is
+	// Evidence.Model; there is no second copy.
+	Model Measured[string]
 	// Cascades counts agent_fallback events; a cascaded attempt is disclosed,
-	// and Model describes the closing model only.
+	// and Model describes the closing model only. Evidence.Cascades cites
+	// the least agent_fallback event, or EvidenceNone when Cascades is 0.
 	Cascades int
 
 	// Outcome is OutcomeDone/OutcomeBlocked on a terminal event, else
 	// OutcomeUnfinished with Elapsed measured to Cutoff. Blocked and
-	// unfinished elapsed are right-censored lower bounds.
+	// unfinished elapsed are right-censored lower bounds. The terminal
+	// event is Evidence.Terminal; there is no second copy.
 	Outcome    Outcome
-	Terminal   FieldEvidence
 	TerminalAt time.Time
 	Cutoff     time.Time
 	Elapsed    time.Duration
@@ -155,16 +178,29 @@ type Attempt struct {
 	Reviews       int
 	Verifications int
 
-	// Tokens and Cost are summed once over implementing spawn payloads;
-	// CostEvents and TokenEvents list exactly the events summed, so no
-	// event is summed twice. Absent cost is Unknown, measured zero is
-	// Known(0).
-	InputTokens  Measured[int64]
-	OutputTokens Measured[int64]
-	CostUSD      Measured[float64]
-	CostEvents   []EventRef
-	TokenEvents  []EventRef
-	Evidence     ObservationEvidence
+	// Tokens and Cost are summed once over implementing spawn payloads.
+	// CostEvents, InputTokenEvents and OutputTokenEvents list exactly the
+	// events summed into the matching Measured value, so no event is summed
+	// twice and each optional measurement is cited independently: a spawn
+	// that records output tokens but not input tokens appears in
+	// OutputTokenEvents only. Absent cost is Unknown, measured zero is
+	// Known(0). An Unknown measurement has an empty event list.
+	InputTokens       Measured[int64]
+	OutputTokens      Measured[int64]
+	CostUSD           Measured[float64]
+	CostEvents        []EventRef
+	InputTokenEvents  []EventRef
+	OutputTokenEvents []EventRef
+
+	// Evidence is the single per-field provenance record of the attempt.
+	// Invariants: Evidence.Model.Source is EvidenceJournal iff Model.Known;
+	// Evidence.Terminal.Source is EvidenceJournal iff Outcome is terminal
+	// from a journal event (EvidenceNone when censored to Cutoff);
+	// Evidence.Start is the task_started event; Evidence.Elapsed equals
+	// Evidence.Terminal; the summed fields cite the least EventRef of their
+	// event list under eventRefLess. Observation.Evidence is copied from
+	// here and then joined with YAML evidence by JoinEvidence.
+	Evidence ObservationEvidence
 }
 
 // Censored reports whether Elapsed is a lower bound.
@@ -202,30 +238,34 @@ type AttemptConflict struct {
 	Err   error
 }
 
-// ParseEvents decodes one journal stream into Events, in file order, bounded
-// by bounds.MaxLineBytes. It never guesses: an undecodable line, an
-// unparseable timestamp and an over-bound line are counted in the
-// diagnostics and skipped; a read failure or cancellation is an error
-// wrapping ErrJournalSource or ErrSourceCancelled.
+// ParseEvents decodes one journal stream into a ParsedJournal, events in
+// file order, bounded by bounds.MaxLineBytes. The returned Journal is the
+// input identity with Producer filled from run_started (Diagnostics.
+// MissingProducer when there is none), and every Event.Ref.Journal is that
+// resolved identity. It never guesses: an undecodable line, an unparseable
+// timestamp and an over-bound line are counted in the diagnostics and
+// skipped; a read failure or cancellation is an error wrapping
+// ErrJournalSource or ErrSourceCancelled.
 //
 // FC-JOURNAL body. Parameters are named so the body can use them; the
 // scaffold returns ErrNotImplemented and reads none of them.
-func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader, bounds ReadBounds) ([]Event, JournalDiagnostics, error) {
-	return nil, JournalDiagnostics{}, fmt.Errorf("%w: ParseEvents(%s)", ErrNotImplemented, journal.Path)
+func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader, bounds ReadBounds) (ParsedJournal, error) {
+	return ParsedJournal{Journal: journal}, fmt.Errorf("%w: ParseEvents(%s)", ErrNotImplemented, journal.Path)
 }
 
-// ReduceAttempts folds a journal's events into attempts under the F1/F2
+// ReduceAttempts folds one parsed journal into attempts under the F1/F2
 // rules: one Attempt per unambiguous AttemptID; identical triples excluded
 // as ambiguous; elapsed to the terminal event or to cutoff; a validated
 // disjoint WallBreakdown with Complete false when phase data is missing;
 // corrections separate from reviews; cost and tokens summed once with their
-// EventRefs; implementing stamp with cascade count. The result is
+// EventRefs; implementing stamp with cascade count; AttemptSet.Journal and
+// AttemptSet.Diagnostics carried over from parsed. The result is
 // deterministic under permutations of events that share a timestamp.
 //
 // FC-JOURNAL body. Parameters are named so the body can use them; the
 // scaffold returns ErrNotImplemented and reads none of them.
-func ReduceAttempts(journal JournalIdentity, events []Event, cutoff time.Time) (AttemptSet, error) {
-	return AttemptSet{}, fmt.Errorf("%w: ReduceAttempts(%s)", ErrNotImplemented, journal.Path)
+func ReduceAttempts(parsed ParsedJournal, cutoff time.Time) (AttemptSet, error) {
+	return AttemptSet{Journal: parsed.Journal}, fmt.Errorf("%w: ReduceAttempts(%s)", ErrNotImplemented, parsed.Journal.Path)
 }
 
 // ---------------------------------------------------------------------------

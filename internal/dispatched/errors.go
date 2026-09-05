@@ -106,8 +106,9 @@ var (
 	// replaced, so reachable history cannot be enumerated in full.
 	ErrShallowHistory = errors.New("dispatched: git history is shallow, grafted or replaced")
 
-	// ErrBoundExceeded (F3): a commit, byte, line or process bound stopped a
-	// read before the source was exhausted.
+	// ErrBoundExceeded (F3): a commit, byte or line bound stopped a read
+	// before the source was exhausted. ReadBounds.MaxProcesses never raises
+	// it: the process cap serialises git children, it does not stop reads.
 	ErrBoundExceeded = errors.New("dispatched: read bound exceeded")
 
 	// ErrSourceCancelled (F3): the context ended while a source was being
@@ -116,7 +117,9 @@ var (
 	ErrSourceCancelled = errors.New("dispatched: source read cancelled")
 
 	// ErrInvalidSelection (F3/F6): a cutoff or holdout selection is malformed:
-	// a blank held-out run ID, a duplicate, or a holdout that names no run.
+	// a blank or whitespace-padded held-out run ID, a duplicate
+	// (Selection.Validate), or a holdout that names no discovered run
+	// (Selection.UnmatchedHoldouts, called by ReadSources).
 	ErrInvalidSelection = errors.New("dispatched: cutoff or holdout selection is invalid")
 
 	// ErrInvalidTarget (F4): a target row lacks a key, a valid role or a

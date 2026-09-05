@@ -49,6 +49,84 @@ func (s taskSnapshot) Ref() ReadingRef {
 	return ReadingRef{SourceID: s.SourceID, Repository: s.Repository, Path: s.Path, Revision: s.Revision}
 }
 
+// RowFields records which join-key fields were PRESENT (non-empty) in the
+// raw YAML row, independently of whether they parsed. It lets the join tell
+// a missing started_at (DispositionMissingJoinKeys) from a malformed one
+// (DispositionMalformed), which collapse to the same zero time.Time on a
+// parsed snapshot.
+type RowFields struct {
+	Key       bool
+	RunID     bool
+	StartedAt bool
+}
+
+// Complete reports whether every join key was present.
+func (f RowFields) Complete() bool { return f.Key && f.RunID && f.StartedAt }
+
+// Reading is the envelope for one discovered tasks-YAML row, whether or not
+// it parsed (F3: every examined snapshot receives a Disposition). Ref names
+// the reading; Row is the 1-based position in the document's tasks sequence,
+// 0 when the document itself did not decode; Present is raw-field presence;
+// Snapshot is usable only when Err is nil. Err is the parse failure for a
+// row or document that could not be decoded; it is never a read failure,
+// which is counted on the source instead.
+//
+// JoinEvidence classifies from the envelope alone: Err != nil is
+// DispositionMalformed; Err == nil and !Present.Complete() is
+// DispositionMissingJoinKeys; otherwise the snapshot is joined.
+type Reading struct {
+	Ref      ReadingRef
+	Row      int
+	Present  RowFields
+	Snapshot taskSnapshot
+	Err      error
+}
+
+// parseReadings reads one YAML document into one Reading per row, keeping
+// malformed rows and an undecodable document as envelopes with Err set so
+// the join can count them. It is the amended counterpart of parseSnapshots,
+// which the baseline path keeps; ReadSources (FC-SOURCES) calls this one.
+// Selection exclusions are not applied here.
+func parseReadings(data []byte, ref ReadingRef) []Reading {
+	doc, err := decodeTaskDocument(data)
+	if err != nil {
+		return []Reading{{Ref: ref, Err: fmt.Errorf("document: %w", err)}}
+	}
+	out := make([]Reading, 0, len(doc.Tasks))
+	for i, task := range doc.Tasks {
+		reading := Reading{
+			Ref: ref, Row: i + 1,
+			Present: RowFields{Key: task.Key != "", RunID: task.DispatcherRunID != "", StartedAt: task.StartedAt != ""},
+			Snapshot: taskSnapshot{
+				Key: task.Key, Role: task.Role, AuthoredModel: task.Model,
+				Status: task.Status, IterationCount: task.IterationCount,
+				DispatcherRunID: task.DispatcherRunID, Revision: ref.Revision,
+				Repository: ref.Repository, Path: ref.Path, SourceID: ref.SourceID,
+			},
+		}
+		if task.StartedAt != "" {
+			started, err := time.Parse(time.RFC3339Nano, task.StartedAt)
+			if err != nil {
+				reading.Err = fmt.Errorf("row %d started_at %q: %w", i+1, task.StartedAt, err)
+				out = append(out, reading)
+				continue
+			}
+			reading.Snapshot.StartedAt = started
+		}
+		if task.CompletedAt != "" {
+			completed, err := time.Parse(time.RFC3339Nano, task.CompletedAt)
+			if err != nil {
+				reading.Err = fmt.Errorf("row %d completed_at %q: %w", i+1, task.CompletedAt, err)
+				out = append(out, reading)
+				continue
+			}
+			reading.Snapshot.CompletedAt = completed
+		}
+		out = append(out, reading)
+	}
+	return out
+}
+
 // yamlSources is what one YAML source yielded, plus what it could not yield.
 // A document that is not a task list, and a row with an unreadable timestamp,
 // are counted and skipped: features/ holds YAML that is not a tasks file, and

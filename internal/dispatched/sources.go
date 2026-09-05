@@ -27,9 +27,15 @@ import (
 // Frozen contract (F3, with the F6 selection inputs).
 // ---------------------------------------------------------------------------
 
-// Read bounds. Every bound is applied BEFORE the bounded quantity is
-// collected, so a cap stops a read rather than trimming its result. A read
-// that hits a bound is PARTIAL, never COMPLETE.
+// Read bounds. The commit, line, blob and total-byte caps are applied BEFORE
+// the bounded quantity is collected, so a cap stops a read rather than
+// trimming its result; a read that hits one of them is PARTIAL, never
+// COMPLETE, and is counted in SourceCounts.BoundsExceeded. MaxProcesses is
+// different in kind: it is a serializer, not a cap on the data. It limits
+// how many git children are in flight per source, a read that would exceed
+// it waits for a slot rather than spawning, and it never stops a read, never
+// sets BoundsExceeded, never wraps ErrBoundExceeded and never changes counts,
+// order or SourceState.
 const (
 	// defaultMaxHistoryCommits bounds the history walk. The walk is linear in
 	// commits and, after blob de-duplication, in distinct file contents; the
@@ -44,12 +50,16 @@ const (
 	// DefaultMaxTotalBytes caps the bytes of YAML content read from one
 	// source across all blobs and files.
 	DefaultMaxTotalBytes = 512 * 1024 * 1024
-	// DefaultMaxProcesses caps concurrently running git children per source.
+	// DefaultMaxProcesses is the serializer width: the largest number of git
+	// children in flight per source at one instant. Excess reads wait.
 	DefaultMaxProcesses = 2
 )
 
 // ReadBounds are the explicit, repeatable caps for one extraction. Zero
 // means the default above. A negative value is ErrInvalidSourceSpec.
+// MaxCommits, MaxLineBytes, MaxBlobBytes and MaxTotalBytes stop a read and
+// mark the source PARTIAL; MaxProcesses only serialises git children (see
+// the block comment above) and never affects the manifest.
 type ReadBounds struct {
 	MaxCommits    int   `json:"max_commits"`
 	MaxLineBytes  int   `json:"max_line_bytes"`
@@ -172,17 +182,19 @@ const (
 
 // SourceCounts are the per-source tallies the manifest stores.
 type SourceCounts struct {
-	Files          int   `json:"files"`
-	Journals       int   `json:"journals"`
-	Commits        int   `json:"commits"`
-	Blobs          int   `json:"blobs"`
-	Bytes          int64 `json:"bytes"`
-	Records        int   `json:"records"`
-	Malformed      int   `json:"malformed"`
-	Unreadable     int   `json:"unreadable"`
-	ExcludedByRun  int   `json:"excluded_by_holdout"`
-	AfterCutoff    int   `json:"excluded_after_cutoff"`
-	BoundsExceeded int   `json:"bounds_exceeded"`
+	Files         int   `json:"files"`
+	Journals      int   `json:"journals"`
+	Commits       int   `json:"commits"`
+	Blobs         int   `json:"blobs"`
+	Bytes         int64 `json:"bytes"`
+	Records       int   `json:"records"`
+	Malformed     int   `json:"malformed"`
+	Unreadable    int   `json:"unreadable"`
+	ExcludedByRun int   `json:"excluded_by_holdout"`
+	AfterCutoff   int   `json:"excluded_after_cutoff"`
+	// BoundsExceeded counts the commit, line, blob and total-byte caps that
+	// stopped a read of this source. MaxProcesses never contributes to it.
+	BoundsExceeded int `json:"bounds_exceeded"`
 }
 
 // SourceReport is one source's identity, what was asked for, what was
@@ -215,12 +227,20 @@ type Selection struct {
 	AllowEmpty    bool
 }
 
-// Validate wraps ErrInvalidSelection for a blank or duplicate held-out run ID.
+// Validate wraps ErrInvalidSelection for a held-out run ID that is blank,
+// that differs from its whitespace-trimmed form, or that is listed twice.
+// Rejecting an untrimmed ID (rather than trimming it) keeps the stored list
+// identical to the compared one, so a holdout can never pass validation and
+// then fail to match the run it names.
 func (s Selection) Validate() error {
 	seen := make(map[string]bool, len(s.HoldoutRunIDs))
 	for _, id := range s.HoldoutRunIDs {
-		if strings.TrimSpace(id) == "" {
+		trimmed := strings.TrimSpace(id)
+		if trimmed == "" {
 			return fmt.Errorf("%w: blank held-out run ID", ErrInvalidSelection)
+		}
+		if trimmed != id {
+			return fmt.Errorf("%w: held-out run ID %q has surrounding whitespace", ErrInvalidSelection, id)
 		}
 		if seen[id] {
 			return fmt.Errorf("%w: held-out run %q listed twice", ErrInvalidSelection, id)
@@ -230,14 +250,44 @@ func (s Selection) Validate() error {
 	return nil
 }
 
-// HeldOut reports whether runID is excluded by the selection.
+// HeldOut reports whether runID is excluded by the selection. Both sides are
+// compared in whitespace-trimmed form so a caller that skipped Validate
+// still cannot leak a padded holdout into the corpus.
 func (s Selection) HeldOut(runID string) bool {
+	want := strings.TrimSpace(runID)
+	if want == "" {
+		return false
+	}
 	for _, id := range s.HoldoutRunIDs {
-		if id == runID {
+		if strings.TrimSpace(id) == want {
 			return true
 		}
 	}
 	return false
+}
+
+// UnmatchedHoldouts wraps ErrInvalidSelection when any held-out run ID names
+// no run in discoveredRunIDs, the run IDs of every journal found across all
+// journal sources BEFORE exclusion. A holdout that matches nothing is a
+// misspelling, and silently ignoring it would put the run it meant to hold
+// out into the corpus the artifact is then used to predict. ReadSources
+// calls this once discovery is complete (F3-HOLDOUT-UNMATCHED); it is a pure
+// check so seals can exercise it directly.
+func (s Selection) UnmatchedHoldouts(discoveredRunIDs []string) error {
+	discovered := make(map[string]bool, len(discoveredRunIDs))
+	for _, id := range discoveredRunIDs {
+		discovered[strings.TrimSpace(id)] = true
+	}
+	var missing []string
+	for _, id := range s.HoldoutRunIDs {
+		if !discovered[strings.TrimSpace(id)] {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("%w: held-out run IDs match no discovered run: %q", ErrInvalidSelection, missing)
+	}
+	return nil
 }
 
 // SourceManifest is the record of every source supplied to one extraction.
@@ -294,12 +344,16 @@ func (r ReadingRef) String() string {
 	return r.SourceID + ":" + r.Repository + "/" + r.Path + "@" + r.Revision.String()
 }
 
-// SourceReadings is everything ReadSources recovered: journal events keyed
-// by journal, and YAML snapshots with their reading references. Selection
-// exclusions have already been applied and counted per source.
+// SourceReadings is everything ReadSources recovered: every parsed journal
+// (with its resolved identity, events and diagnostics), ordered by
+// JournalIdentity, and every discovered tasks-YAML row as a Reading envelope,
+// ordered by ReadingRef then row. Readings that failed to parse are present
+// with Err set so the join can give each one its Disposition; selection
+// exclusions (holdout, cutoff) have already been applied and counted per
+// source and those readings are NOT present here.
 type SourceReadings struct {
-	Journals  map[JournalIdentity][]Event
-	Snapshots []taskSnapshot
+	Journals []ParsedJournal
+	Readings []Reading
 }
 
 // gitEnvironmentOverrides are the variables that redirect git away from the
@@ -339,8 +393,11 @@ func gitEnvironment(parent []string) []string {
 // PARTIAL (or ErrShallowHistory when the caller demands complete history);
 // cancellation is ErrSourceCancelled with the partial manifest returned
 // beside it; held-out runs and post-cutoff records are excluded at this
-// boundary and counted; git runs with gitEnvironment; history enumeration
-// uses --full-history over the roots and includes deleted and renamed paths.
+// boundary and counted; a held-out run ID that matches no discovered journal
+// is ErrInvalidSelection via Selection.UnmatchedHoldouts; MaxProcesses only
+// serialises git children and never marks a source PARTIAL; git runs with
+// gitEnvironment; history enumeration uses --full-history over the roots and
+// includes deleted and renamed paths.
 //
 // FC-SOURCES body. Parameters are named so the body can use them; the
 // scaffold returns ErrNotImplemented and reads none of them.

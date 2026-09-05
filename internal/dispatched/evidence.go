@@ -31,9 +31,12 @@ const (
 	// DispositionDuplicateReading: a further reading of an attempt that
 	// already had one from the same reading reference. Counted, not sampled.
 	DispositionDuplicateReading Disposition = "duplicate_reading"
-	// DispositionMissingJoinKeys: no key, run ID or started_at.
+	// DispositionMissingJoinKeys: no key, run ID or started_at in the raw
+	// row (Reading.Present incomplete) while the row otherwise parsed.
 	DispositionMissingJoinKeys Disposition = "missing_join_keys"
-	// DispositionMalformed: a timestamp or field that would not parse.
+	// DispositionMalformed: a timestamp or field that would not parse, or a
+	// document that would not decode (Reading.Err != nil). Distinct from
+	// DispositionMissingJoinKeys: a malformed started_at was present.
 	DispositionMalformed Disposition = "malformed"
 	// DispositionNoMatchingRun: no journal has that (run ID, key).
 	DispositionNoMatchingRun Disposition = "no_matching_run_key"
@@ -79,10 +82,13 @@ func (d Disposition) Valid() bool {
 	return false
 }
 
-// Examined is one snapshot's disposition with the identity it was matched
+// Examined is one reading's disposition with the identity it was matched
 // to (zero when no attempt could be named) and a reason a human can act on.
+// Row is the reading's row in its document, so two rows of one file are two
+// Examined entries.
 type Examined struct {
 	Reading     ReadingRef
+	Row         int
 	Attempt     AttemptID
 	Disposition Disposition
 	Reason      string
@@ -158,13 +164,16 @@ func eventRefLess(a, b EventRef) bool {
 // implementer stamp outrank YAML; a YAML-only terminal is labeled; unknown
 // stays unknown; within-attempt conflicts of equal authority are excluded
 // as ErrEvidenceConflict; no row is manufactured from independent maxima
-// of incompatible readings; every snapshot receives a Disposition; held-out
-// runs and post-cutoff attempts are excluded before joining; the result is
-// identical under any permutation of attempts and readings.
+// of incompatible readings; every Reading receives exactly one Disposition
+// (Err → DispositionMalformed, incomplete Present → DispositionMissingJoinKeys,
+// then the match outcome); held-out runs and post-cutoff attempts are
+// excluded before joining; every field of each Observation carries its
+// FieldEvidence; the result is identical under any permutation of attempts
+// and readings.
 //
 // FC-1 body. Parameters are named so the body can use them; the scaffold
 // returns ErrNotImplemented and reads none of them.
-func JoinEvidence(attempts []AttemptSet, readings []taskSnapshot, selection Selection, now time.Time) (EvidenceJoin, error) {
+func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection, now time.Time) (EvidenceJoin, error) {
 	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d journals, %d readings)", ErrNotImplemented, len(attempts), len(readings))
 }
 
@@ -281,6 +290,9 @@ func sortExamined(items []Examined) {
 	sort.SliceStable(items, func(i, j int) bool {
 		if items[i].Reading != items[j].Reading {
 			return items[i].Reading.Less(items[j].Reading)
+		}
+		if items[i].Row != items[j].Row {
+			return items[i].Row < items[j].Row
 		}
 		return items[i].Attempt.Less(items[j].Attempt)
 	})

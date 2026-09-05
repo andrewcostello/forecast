@@ -111,6 +111,10 @@ func (t *Table) Declare(cell Cell) error {
 //     CostUSD each keep the greater value; CostKnown is the disjunction.
 //   - Provenance keeps the least under: SourceLive before SourceGit, then
 //     Commit, then RunID.
+//   - Evidence joins field by field under preferEvidence; when the joined
+//     Terminal evidence is not EvidenceNone, TerminalEvidence is its name.
+//   - Wall: nil is the identity; two equal breakdowns keep one; two
+//     different breakdowns wrap ErrStampConflict (and ErrEvidenceConflict).
 //   - A different Cell wraps ErrStampConflict: one row has one stamp.
 //
 // A rejected reading changes nothing.
@@ -143,9 +147,15 @@ func (o Outcome) rank() int {
 	return 0
 }
 
-// merge joins two readings of one row. Each field is combined by a
-// commutative, associative operation on a totally ordered value, so a fold
-// over any permutation of readings yields the same row.
+// merge joins two readings of one row. Every field is combined by a
+// commutative, associative operation (a max under a total order, a
+// disjunction, or an equality join whose only other outcome is an error),
+// so a fold over any permutation of readings yields the same row or the
+// same refusal. The amended fields are included (F1-EV-MERGE-PERMUTATION):
+// Evidence joins per field under preferEvidence, and Wall joins by content
+// equality with nil as identity. Two different non-nil breakdowns cannot be
+// readings of one attempt, so they are refused rather than resolved by
+// arrival order; no field is ever taken from "whichever came first".
 func merge(a, b Observation) (Observation, error) {
 	when := a.StartedAt.Format(time.RFC3339)
 	if a.Cell != b.Cell {
@@ -156,7 +166,14 @@ func merge(a, b Observation) (Observation, error) {
 		return Observation{}, fmt.Errorf("%w: row %s at %s is %s from %s and %s from %s",
 			ErrStampConflict, a.Key, when, a.Outcome, describe(a.Provenance), b.Outcome, describe(b.Provenance))
 	}
+	wall, err := mergeWall(a.Wall, b.Wall)
+	if err != nil {
+		return Observation{}, fmt.Errorf("%w: %w: row %s at %s from %s and %s: %v",
+			ErrStampConflict, ErrEvidenceConflict, a.Key, when, describe(a.Provenance), describe(b.Provenance), err)
+	}
 	out := a
+	out.Wall = wall
+	out.Evidence = a.Evidence.merge(b.Evidence)
 	if ra, rb := a.Outcome.rank(), b.Outcome.rank(); rb > ra || (rb == ra && b.Elapsed > a.Elapsed) {
 		out.Outcome, out.Elapsed, out.TerminalEvidence = b.Outcome, b.Elapsed, b.TerminalEvidence
 	}
@@ -171,7 +188,28 @@ func merge(a, b Observation) (Observation, error) {
 	if provenanceLess(b.Provenance, a.Provenance) {
 		out.Provenance = b.Provenance
 	}
+	if out.Evidence.Terminal.Source != EvidenceNone {
+		// The structured terminal evidence is the amended record; keep the
+		// baseline string in step with it so the two never disagree.
+		out.TerminalEvidence = out.Evidence.Terminal.Source.String()
+	}
 	return out, nil
+}
+
+// mergeWall joins two breakdowns: nil is the identity, equal content keeps
+// one, different content is an error. The outcome of a fold is therefore
+// "error iff the readings carry two different breakdowns", independent of
+// order, which a preference for the first or the Complete one would not be.
+func mergeWall(a, b *WallBreakdown) (*WallBreakdown, error) {
+	switch {
+	case a == nil:
+		return b, nil
+	case b == nil:
+		return a, nil
+	case a.Equal(*b):
+		return a, nil
+	}
+	return nil, fmt.Errorf("two different wall breakdowns (complete %v and %v)", a.Complete, b.Complete)
 }
 
 // describe names a provenance in an error a human has to act on: which run

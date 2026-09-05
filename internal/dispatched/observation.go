@@ -189,8 +189,37 @@ type Observation struct {
 	// per-field provenance beside the single baseline Provenance. Validate
 	// does not inspect either; Wall.Validate is applied by the reducer that
 	// produces it.
+	//
+	// Wall is a pointer because WallBreakdown holds a slice, and Observation
+	// must stay usable with == by the baseline table. Row equality is
+	// therefore defined by Equal, which compares Wall by content; == on two
+	// rows compares Wall by pointer identity and is not the contract
+	// (F1-ROW-EQUALITY-BY-CONTENT). merge joins Wall and Evidence
+	// order-independently (F1-EV-MERGE-PERMUTATION).
 	Wall     *WallBreakdown
 	Evidence ObservationEvidence
+}
+
+// Equal reports whether two rows are the same by content: every comparable
+// field with ==, StartedAt by instant, and Wall by WallBreakdown.Equal (nil
+// equals only nil). Seals compare rows with this, never with ==.
+func (o Observation) Equal(other Observation) bool {
+	if !o.StartedAt.Equal(other.StartedAt) {
+		return false
+	}
+	a, b := o, other
+	a.StartedAt, b.StartedAt = time.Time{}, time.Time{}
+	a.Wall, b.Wall = nil, nil
+	if a != b {
+		return false
+	}
+	switch {
+	case o.Wall == nil && other.Wall == nil:
+		return true
+	case o.Wall == nil || other.Wall == nil:
+		return false
+	}
+	return o.Wall.Equal(*other.Wall)
 }
 
 // Censored reports whether Elapsed is a lower bound rather than a duration.
@@ -383,6 +412,21 @@ type Interval struct {
 // be summed.
 func (iv Interval) Duration() time.Duration { return iv.End.Sub(iv.Start) }
 
+// Equal compares intervals by content: phase, instants, the Inferred flag
+// and the cited events in order.
+func (iv Interval) Equal(other Interval) bool {
+	if iv.Phase != other.Phase || iv.Inferred != other.Inferred ||
+		!iv.Start.Equal(other.Start) || !iv.End.Equal(other.End) || len(iv.Evidence) != len(other.Evidence) {
+		return false
+	}
+	for i := range iv.Evidence {
+		if !iv.Evidence[i].Equal(other.Evidence[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 // Validate wraps ErrInvalidOutcome for an undeclared phase and
 // ErrReversedInterval when End precedes Start.
 func (iv Interval) Validate() error {
@@ -407,6 +451,21 @@ type WallBreakdown struct {
 	Elapsed   time.Duration
 	Intervals []Interval
 	Complete  bool
+}
+
+// Equal compares breakdowns by content: start instant, elapsed, the
+// Complete flag and the intervals in slice order.
+func (w WallBreakdown) Equal(other WallBreakdown) bool {
+	if w.Complete != other.Complete || w.Elapsed != other.Elapsed ||
+		!w.StartedAt.Equal(other.StartedAt) || len(w.Intervals) != len(other.Intervals) {
+		return false
+	}
+	for i := range w.Intervals {
+		if !w.Intervals[i].Equal(other.Intervals[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // Classified sums the intervals by phase. Unclassified residual is reported
@@ -488,7 +547,9 @@ func (s EvidenceSource) String() string {
 
 // FieldEvidence records what one field of an observation rests on: the
 // source class, the journal event (when Source is EvidenceJournal) and the
-// reading (when Source is EvidenceYAML). Unknown stays EvidenceNone.
+// reading (when Source is EvidenceYAML). Unknown stays EvidenceNone. For a
+// field summed over several events (tokens, cost) Event is the least of the
+// summed events under eventRefLess and the full list is on Attempt.
 type FieldEvidence struct {
 	Source  EvidenceSource
 	Event   EventRef
@@ -496,11 +557,54 @@ type FieldEvidence struct {
 }
 
 // ObservationEvidence is the per-field provenance the amended row carries
-// beside the baseline single Provenance. Model is the implementing stamp
-// (journal spawn payload) or none; Terminal is the terminal outcome's
-// evidence. It is comparable, so Observation stays comparable; the events
-// summed for cost and tokens are listed on Attempt, not here.
+// beside the baseline single Provenance: one FieldEvidence for every value
+// the row derives (F1-EV-PROVENANCE-KEPT). It is comparable, so Observation
+// stays comparable; the event lists behind the summed fields live on
+// Attempt.
+//
+//   - Model: the implementing stamp (journal spawn payload) or none.
+//   - Start: the task_started event, or the YAML started_at reading when the
+//     row is YAML-only.
+//   - Terminal: the terminal outcome. Elapsed: the instant Elapsed is
+//     measured to, which is Terminal when terminal and EvidenceNone when
+//     censored to cutoff or extraction time.
+//   - Wall: the journal whose events bound the classified intervals; none
+//     while Observation.Wall is nil.
+//   - Rounds, Cascades, Reviews: the least counted event (panel_iterate,
+//     agent_fallback, panel_started) or the YAML reading of iteration_count.
+//   - InputTokens, OutputTokens, Cost: the least summed spawn event; none
+//     when the measurement is unknown. Input and output tokens are cited
+//     separately because either can be absent on its own.
+//
+// merge joins each field with preferEvidence (F1-EV-MERGE-PERMUTATION).
 type ObservationEvidence struct {
-	Model    FieldEvidence
-	Terminal FieldEvidence
+	Model        FieldEvidence
+	Start        FieldEvidence
+	Terminal     FieldEvidence
+	Elapsed      FieldEvidence
+	Wall         FieldEvidence
+	Rounds       FieldEvidence
+	Cascades     FieldEvidence
+	Reviews      FieldEvidence
+	InputTokens  FieldEvidence
+	OutputTokens FieldEvidence
+	Cost         FieldEvidence
+}
+
+// merge joins two evidence records field by field with preferEvidence, so
+// the result is the same under any permutation of readings.
+func (e ObservationEvidence) merge(other ObservationEvidence) ObservationEvidence {
+	return ObservationEvidence{
+		Model:        preferEvidence(e.Model, other.Model),
+		Start:        preferEvidence(e.Start, other.Start),
+		Terminal:     preferEvidence(e.Terminal, other.Terminal),
+		Elapsed:      preferEvidence(e.Elapsed, other.Elapsed),
+		Wall:         preferEvidence(e.Wall, other.Wall),
+		Rounds:       preferEvidence(e.Rounds, other.Rounds),
+		Cascades:     preferEvidence(e.Cascades, other.Cascades),
+		Reviews:      preferEvidence(e.Reviews, other.Reviews),
+		InputTokens:  preferEvidence(e.InputTokens, other.InputTokens),
+		OutputTokens: preferEvidence(e.OutputTokens, other.OutputTokens),
+		Cost:         preferEvidence(e.Cost, other.Cost),
+	}
 }

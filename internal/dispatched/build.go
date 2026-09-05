@@ -45,7 +45,8 @@ type BuildOptions struct {
 	// the byte/commit/process caps. Until FC-1 wires ReadSources and
 	// JoinEvidence into Build, setting any of them makes Build return
 	// ErrNotImplemented rather than silently ignoring an input; the legacy
-	// shape (all three zero) runs the baseline unchanged.
+	// shape (nil Sources, zero cutoff, nil holdouts, false AllowEmpty and zero
+	// Bounds) runs the baseline unchanged.
 	Sources   []SourceSpec
 	Selection Selection
 	Bounds    ReadBounds
@@ -281,18 +282,9 @@ type Conflict struct {
 	Reason    string    `json:"reason"`
 }
 
-// The amended FC-1 Build captures one instant (Selection.Cutoff, else opts.Now,
-// else a single clock read), freezes it into Selection before ReadSources, and
-// uses it for reduction/join/manifest. Mixing any legacy location/history option
-// (RunsDir, FeaturesRepo, nonnil FeaturesRepos, nonzero MaxHistoryCommits) with
-// amended Sources/Selection/Bounds wraps ErrInvalidSourceSpec; never ignore them.
-// CLI FC-1 translates legacy flag spellings into explicit Sources/Bounds first,
-// clears compatibility fields, and preserves command argv. It parses target rows before aggregation,
-// maps target errors to ErrInvalidTarget, and calls PredictionEligibility with
-// those rows. On source error it returns a nonnil diagnostic BuildResult whenever
-// a manifest exists, preserving PARTIAL metadata beside the error; reduction
-// or reconciliation errors also force PARTIAL with a named reason. The CLI must
-// write/report that artifact before returning the data error without usage spam.
+// The amended FC-1 Build is frozen in notes/FC-SCAFFOLD.md "Entry-point
+// contracts" (Build / serialization) and F4-MIXED-OPTIONS.
+
 // Build constructs the union reference class. The stamped journal model is
 // the only model used for attribution; the authored YAML model is retained
 // only to count disagreements.

@@ -137,27 +137,32 @@ const (
 	// hit, history is shallow/grafted/replaced, a record was unreadable or
 	// malformed, or the read was cancelled. Valid records are retained.
 	SourcePartial SourceState = "PARTIAL"
-	// SourceEmpty: the source was read successfully and yielded zero
-	// journals in explicit AllowEmpty diagnostic mode. A YAML source with no
-	// task rows can be COMPLETE. An EMPTY manifest is never prediction-eligible.
+	// SourceEmpty: aggregate discovery successfully found zero journal files
+	// in AllowEmpty diagnostic mode. Source reports themselves are COMPLETE/PARTIAL;
+	// zero-record sources can be COMPLETE. An EMPTY manifest is never eligible.
 	SourceEmpty SourceState = "EMPTY"
 )
 
 // SourceCounts are the per-source tallies the manifest stores.
+// Journals counts discovered journal files BEFORE holdout exclusion, not parsed
+// or in-sample journals. JournalsExcludedByHoldout counts the held-out files;
+// ExcludedByHoldout counts YAML envelopes only. All-held-out discovery can be
+// COMPLETE; eligibility then fails for thin cells, not incomplete sources.
 type SourceCounts struct {
-	Files               int   `json:"files"`
-	Journals            int   `json:"journals"`
-	Commits             int   `json:"commits"`
-	Blobs               int   `json:"blobs"`
-	Bytes               int64 `json:"bytes"`
-	Records             int   `json:"records"`
-	NonTaskDocuments    int   `json:"non_task_documents"`
-	MalformedExcluded   int   `json:"malformed_excluded"`
-	UnreadableExcluded  int   `json:"unreadable_excluded"`
-	Malformed           int   `json:"malformed"`
-	Unreadable          int   `json:"unreadable"`
-	ExcludedByHoldout   int   `json:"excluded_by_holdout"`
-	ExcludedAfterCutoff int   `json:"excluded_after_cutoff"`
+	JournalsExcludedByHoldout int   `json:"journals_excluded_by_holdout"`
+	Files                     int   `json:"files"`
+	Journals                  int   `json:"journals"`
+	Commits                   int   `json:"commits"`
+	Blobs                     int   `json:"blobs"`
+	Bytes                     int64 `json:"bytes"`
+	Records                   int   `json:"records"`
+	NonTaskDocuments          int   `json:"non_task_documents"`
+	MalformedExcluded         int   `json:"malformed_excluded"`
+	UnreadableExcluded        int   `json:"unreadable_excluded"`
+	Malformed                 int   `json:"malformed"`
+	Unreadable                int   `json:"unreadable"`
+	ExcludedByHoldout         int   `json:"excluded_by_holdout"`
+	ExcludedAfterCutoff       int   `json:"excluded_after_cutoff"`
 	// BoundsExceeded counts the commit, line, blob and total-byte caps that
 	// stopped a read of this source. MaxProcesses never contributes to it.
 	BoundsExceeded int `json:"bounds_exceeded"`
@@ -176,12 +181,12 @@ type SourceReport struct {
 	ID           string        `json:"id"`
 	Kind         SourceKind    `json:"kind"`
 	Repository   string        `json:"repository"`
-	Roots        []string      `json:"roots,omitempty"`
+	Roots        []string      `json:"roots"`
 	RequestedRef string        `json:"requested_ref,omitempty"`
 	ResolvedRef  string        `json:"resolved_ref,omitempty"`
-	ResolvedRefs []ResolvedRef `json:"resolved_refs,omitempty"`
+	ResolvedRefs []ResolvedRef `json:"resolved_refs"`
 	State        SourceState   `json:"state"`
-	Reasons      []string      `json:"reasons,omitempty"`
+	Reasons      []string      `json:"reasons"`
 	Shallow      bool          `json:"shallow"`
 	Cancelled    bool          `json:"cancelled"`
 	Counts       SourceCounts  `json:"counts"`
@@ -229,7 +234,7 @@ type SourceManifest struct {
 	Reasons       []string       `json:"reasons"`
 	Sources       []SourceReport `json:"sources"`
 	Cutoff        time.Time      `json:"cutoff"`
-	HoldoutRunIDs []string       `json:"holdout_run_ids,omitempty"`
+	HoldoutRunIDs []string       `json:"holdout_run_ids"`
 	AllowEmpty    bool           `json:"allow_empty"`
 	// Bounds stores effective positive values, never unresolved zero defaults.
 	Bounds ReadBounds  `json:"bounds"`
@@ -249,6 +254,11 @@ func (m *SourceManifest) ValidateComplete() error {
 // envelopes). RecordedAt is the UTC Git committer instant for a historical
 // revision or observed file mtime for live input. It is required by amended
 // selection; it is recorded metadata, not a guarantee against forged clocks.
+// Canonical order is SourceID, Repository, Path, Revision (bytewise strings),
+// Row (numeric), then RecordedAt (UTC instant without monotonic state). Identical
+// refs compare equal; indistinguishable duplicate envelopes yield one recovered
+// and remaining duplicate dispositions, sorted by disposition to avoid input-order
+// dependence. This order governs recovery selection, reading lists and YAML ties.
 type ReadingRef struct {
 	Row        int       `json:"row"`
 	RecordedAt time.Time `json:"recorded_at"`
@@ -261,8 +271,8 @@ type ReadingRef struct {
 // SourceReadings retains every YAML envelope, including non-task documents
 // and excluded rows. ReadSources marks Excluded before joining and counts it;
 // excluded envelopes carry identity/citation only, never predictive values.
-// Journals from held-out runs have no task events here; their identities are
-// retained in ExcludedJournals. ReduceAttempts ignores events after cutoff.
+// Journals contains only in-sample ParsedJournal values. Held-out identities
+// occur only in ExcludedJournals, never even as an empty ParsedJournal in Journals. ReduceAttempts ignores events after cutoff.
 // JoinEvidence rechecks selection, emits one audit disposition per envelope,
 // and never contributes excluded rows to observations.
 type SourceReadings struct {

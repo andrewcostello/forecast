@@ -177,7 +177,10 @@ type Attempt struct {
 	TerminalAt time.Time     `json:"terminal_at"`
 	Cutoff     time.Time     `json:"cutoff"`
 	Elapsed    time.Duration `json:"elapsed_ns"`
-	Wall       WallBreakdown `json:"wall"`
+	// Wall.StartedAt must equal ID.StartedAt as an instant and Wall.Elapsed must
+	// equal Elapsed. ReduceAttempts, Attempt JSON methods and JoinEvidence refuse
+	// mismatches with ErrEvidenceConflict; never repair one copy by taking a max.
+	Wall WallBreakdown `json:"wall"`
 	// Corrections counts panel_iterate + verification_iterate markers plus
 	// test-fix-retry/commit-retry/push-retry/summary-recovery finishes, each once. Reviews counts only
 	// invocation-shaped panel_started; Verifications counts verification_started
@@ -333,7 +336,7 @@ func ReduceAttempts(parsed ParsedJournal, cutoff time.Time) (AttemptSet, error) 
 // overflow wraps ErrMeasurementOverflow (checked, never saturating). Complete is
 // copied from WallBreakdown so missing phases remain distinguishable. Unclassified is elapsed
 // minus classified time. No duration is returned on error.
-// FC-JOURNAL implements this after TestFCJournalContract is authored.
+// FC-JOURNAL body; authoritative behavior is in the handoff F2 rows.
 func SummarizeWall(w WallBreakdown) (WallSummary, error) {
 	return WallSummary{}, fmt.Errorf("%w: SummarizeWall", ErrNotImplemented)
 }

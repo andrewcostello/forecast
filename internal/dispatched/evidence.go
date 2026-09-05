@@ -57,7 +57,8 @@ const (
 	// equal authority (ErrEvidenceConflict).
 	DispositionConflictingEvidence Disposition = "conflicting_evidence"
 	// DispositionUnrecoverable: the joined row failed Validate for a reason
-	// other than attribution (negative value, invalid outcome, revision).
+	// other than attribution (negative normalized measurement or invalid outcome).
+	// Missing/invalid ReadingRef revision or RecordedAt is Malformed, not this case.
 	DispositionUnrecoverable Disposition = "unrecoverable"
 	// DispositionHeldOut: the run is in Selection.HoldoutRunIDs.
 	DispositionHeldOut Disposition = "held_out"
@@ -125,6 +126,7 @@ type RecoveredAttempt struct {
 // separately; LostAttempts are started attempts with no recovered reading,
 // listed individually so a recovered sibling cannot hide them.
 type EvidenceJoin struct {
+	ExcludedJournals  []JournalIdentity
 	StartsAfterCutoff int
 	Observations      []RecoveredAttempt
 	Examined          []Examined
@@ -141,13 +143,15 @@ type EvidenceJoin struct {
 
 // JoinEvidence reconciles attempts/readings under a validated Selection. Journals
 // is the full discovered identity set INCLUDING excluded journals; every supplied
-// AttemptSet must belong to it. Unmatched holdouts and inconsistent markers wrap
+// AttemptSet must belong to it. Any supplied held-out AttemptSet/Attempt is
+// refused with ErrInvalidSelection, before it can contribute observations or
+// LostAttempts; run identities must also agree between each set, attempt and start. Unmatched holdouts and inconsistent markers wrap
 // ErrInvalidSelection before reconciliation. Full exclusions, deterministic audit
 // and error rules are authoritative in notes/FC-SCAFFOLD.md "Entry-point contracts"
 // and F1/F3 rows. FC-1 body; ReadSources supplies the universe via Journals plus
 // ExcludedJournals, so valid held-out runs remain checkable after event removal.
 func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection, journals []JournalIdentity) (EvidenceJoin, error) {
-	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d journals, %d readings)", ErrNotImplemented, len(attempts), len(readings))
+	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d attempt sets, %d readings, %d journals)", ErrNotImplemented, len(attempts), len(readings), len(journals))
 }
 
 // ---------------------------------------------------------------------------

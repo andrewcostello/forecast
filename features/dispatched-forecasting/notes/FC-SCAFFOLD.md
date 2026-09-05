@@ -115,7 +115,7 @@ row explicitly amends a legacy expectation under the revised contracts.
 | F1-MODEL-ABSENT-STAMP | No implementing spawn carries a model; YAML `model: opus` | `Model=Unknown`, `DispositionAbsentStamp`; authored model never substituted. | `ErrUnattributable` | FC-JOURNAL / FC-1 |
 | F2-ELAPSED-TERMINAL | start T0, `task_done` T1 | `Elapsed=T1−T0`, not censored. | `Attempt` | FC-JOURNAL |
 | F2-ELAPSED-CUTOFF | start T0, no terminal, cutoff C | `Elapsed=C−T0`, censored; never in a duration mean. | `Attempt.Censored` | FC-JOURNAL |
-| F2-ELAPSED-BLOCKED-CENSORED | `task_blocked` | Censored lower bound; excluded from completed samples; counted in `NBlocked`. | `Observation.Duration` | FC-JOURNAL / FC-1 |
+| F2-ELAPSED-BLOCKED-CENSORED | `task_blocked` | Censored lower bound; excluded from completed samples; counted in `NBlocked`. | Attempt.Elapsed and Attempt.Censored | FC-JOURNAL / FC-1 |
 | F2-ELAPSED-SURVIVES-UNKNOWN-PHASES | Terminal present, no panel events | `Elapsed` known, `Wall.Complete=false`, `Wall.Intervals` empty, `WallSummary.Unclassified=Elapsed, WallSummary.Complete=false`. | `WallBreakdown` | FC-JOURNAL |
 | F2-PHASES-DISJOINT | Production order above | Intervals disjoint, contained, classified sum ≤ `Elapsed`; residual `Unclassified`, never development. | `SummarizeWall` | FC-JOURNAL |
 | F2-PHASES-PANEL-WALL | Three reviewer seats in one panel | One panel_review interval from invocation-shaped panel_started to panel_verdict; path-classification gate records never open a review interval. | `Interval` | FC-JOURNAL |
@@ -135,7 +135,7 @@ row explicitly amends a legacy expectation under the revised contracts.
 | F3-SRC-MALFORMED-PARTIAL | One unreadable YAML among valid ones | Valid retained, `Counts.Malformed=1`, `SourcePartial`; the malformed row is present in `SourceReadings.Readings` with `Err` set. | `SourceCounts`, `Reading.Err` | FC-SOURCES |
 | F3-READING-ENVELOPE | Valid row, missing start, invalid timestamp, typed YAML field mismatch | Four independent envelopes; invalid rows retain their own Err and do not erase valid siblings. Non-task documents have DocumentNotTasks; malformed syntax has DocumentMalformed. | parseReadings, Reading | FC-SOURCES |
 | F3-SRC-RESOLVED-REF | `Ref: main` | `ResolvedRef` = commit SHA. | `SourceReport` | FC-SOURCES |
-| F3-GIT-ENV-STRIPPED | GIT_DIR or GIT_CONFIG_GLOBAL/COUNT/KEY_n/VALUE_n redirects location/config/helper | Strip inherited Git overrides, ignore global/system config, pin repository, invoke no configured helper; bounded enumeration stays in selected repository. | ReadSources | FC-SOURCES |
+| F3-GIT-ENV-STRIPPED | GIT_DIR or GIT_CONFIG_GLOBAL/COUNT/KEY_n/VALUE_n redirects location/config/helper | Clear the named override list in Entry-point contracts; preserve PATH/GIT_EXEC_PATH, ignore global/system config, pin repository, invoke no configured helper; bounded enumeration stays in selected repository. | ReadSources | FC-SOURCES |
 | F3-GIT-SHALLOW | Shallow/grafted/replaced clone | Shallow=true, PARTIAL, named reason; nil read error solely for this condition; no fetching. Eligibility refuses. | SourceReport | FC-SOURCES / FC-1 |
 | F3-GIT-FULL-HISTORY | Side branch superseded at merge, ref deleted | Its blob enumerated and read. | `ReadSources` | FC-SOURCES |
 | F3-GIT-DELETED-RENAMED | File deleted or renamed in history | Old content still read. | `ReadSources` | FC-SOURCES |
@@ -337,13 +337,24 @@ unchanged baseline behavior. No downstream row may amend these rules casually.
   contributions make the quantity unknown. Checked duration/count/token/cost
   overflow returns ErrMeasurementOverflow with retained valid data; reversed
   attempt elapsed returns ErrReversedInterval. Propagate added diagnostics to
-  PARTIAL during Build. No saturation and no implicit clock read.
-- **ReadSources:** validate SourceSpecs and unique IDs, Selection, bounds and roots
+  PARTIAL during Build. No saturation and no implicit clock read. Attempt.Wall.StartedAt must equal
+  Attempt.ID.StartedAt and Wall.Elapsed must equal Attempt.Elapsed. Reduction,
+  Attempt JSON encode/decode and joining reject a mismatch with ErrEvidenceConflict;
+  the standalone wall validator only checks the wall it receives.
+- **ReadSources:** validate a nonempty SourceSpec list including at least one journal-kind source,
+  unique IDs, Selection, bounds and roots
   before IO. Resolve zero bounds to positive defaults stored on SourceManifest.
   Require cutoff; validate all named holdouts against the full discovered run-ID
   universe before exclusion. Missing/unreadable requested repository/root/runs-dir
-  is ErrSourceMissing; zero journals is ErrSourceEmpty unless AllowEmpty (EMPTY,
-  never eligible). Successfully scanned YAML with zero task rows can be COMPLETE.
+  is ErrSourceMissing; zero discovered journal files across all journal-kind sources is ErrSourceEmpty
+  unless AllowEmpty (aggregate EMPTY, never eligible). Counts.Journals is discovery
+  BEFORE exclusion; JournalsExcludedByHoldout counts held-out files separately,
+  while ExcludedByHoldout counts only YAML envelopes. Holding out every discovered
+  run remains COMPLETE if quality permits; the gate then refuses thin cells only.
+  SourceReport states are COMPLETE/PARTIAL, including a zero-record source. EMPTY
+  is the aggregate zero-journal diagnostic state. Partial/failed enumeration is
+  never called successful zero discovery. Successfully scanned YAML with zero
+  task rows can be COMPLETE.
   Decode string-tagged identity scalars (no numeric/bool coercion) and temporal
   selection nodes independently before typed predictive
   fields, preserving valid siblings and Reading.Identity despite unrelated errors.
@@ -362,22 +373,37 @@ unchanged baseline behavior. No downstream row may amend these rules casually.
   parents/deletions/renames under explicit roots. Enforce streamed metadata,
   line/blob/total-byte/commit caps before collection; caps/shallow/grafted/replaced
   history are PARTIAL with reasons, not read errors solely for incompleteness.
-  Process bounds serialize per-source children, never truncate data. All amended
-  Git commands use sourceGitCommand: strip inherited GIT_* location/config and
-  alternate-object overrides, ignore global/system config, disable helpers,
-  detect/report replace/graft before disabling interpretation, pin the selected
-  repository and never fetch. Refs resolve before traversal; all-ref tips are
+  Process bounds serialize per-source children, never truncate data. Sources execute sequentially (in SourceID order), with per-source child slots
+  only queueing work; no cross-source fan-out. Metadata/blobs stream under byte
+  caps before buffering. Legacy gitLines/gitCatFileBatch reuse is prohibited.
+  All amended Git commands use sourceGitCommand. Clear GIT_DIR, GIT_WORK_TREE,
+  GIT_COMMON_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES,
+  GIT_INDEX_FILE, GIT_CEILING_DIRECTORIES, GIT_DISCOVERY_ACROSS_FILESYSTEM,
+  GIT_PREFIX, GIT_REPLACE_REF_BASE, all GIT_CONFIG* variables and inherited
+  pathspec overrides (GIT_LITERAL_PATHSPECS, GIT_GLOB_PATHSPECS,
+  GIT_NOGLOB_PATHSPECS, GIT_ICASE_PATHSPECS). Preserve PATH/GIT_EXEC_PATH for the
+  selected Git installation. Explicitly disable system/global config, configured
+  fsmonitor/credential/diff/filter helpers and network protocols; no lazy fetch.
+  Pin the repository and use literal root pathspecs with fixed read-only Git
+  subcommands. Detect/report raw replace/graft metadata while disabling their
+  interpretation; do not hide that evidence by merely disabling replacements. Refs resolve before traversal; all-ref tips are
   sorted and recorded. ValidateReadingRevision accepts only live or git:<full
   lowercase 40/64-hex object ID>; RecordedAt separately carries commit time/mtime.
   Cancellation returns retained data/PARTIAL plus ErrSourceCancelled and ctx.Err().
 - **ValidateComplete:** nil/empty manifest, zero cutoff, invalid/duplicate source
   identities, nonpositive resolved bounds, non-COMPLETE aggregate/source states,
   shallow/replaced/grafted history, cancellation, positive IN-SAMPLE malformed,
-  unreadable or data-bound counters, invalid/negative counters, or no read journal
-  wrap ErrSourceIncomplete. Excluded-quality counters do not degrade completeness.
+  unreadable or data-bound counters, invalid/negative counters, or no discovered journal across journal-kind sources
+  wrap ErrSourceIncomplete. Counts.Journals is pre-exclusion, so all held out is
+  still complete when quality permits. Excluded-quality counters do not degrade completeness.
   Shallow and data-bound facts additionally wrap ErrShallowHistory/ErrBoundExceeded.
 - **JoinEvidence:** receive the full discovered JournalIdentity universe, including
-  excluded journals. Validate every AttemptSet belongs to it, validate Selection
+  excluded journals. Refuse ANY supplied AttemptSet or individual Attempt naming a
+  held-out run with ErrInvalidSelection before reconciliation; return no observations
+  or LostAttempts. Every Attempt.ID.RunID and start-event journal/run must agree with
+  its AttemptSet.Journal, also ErrInvalidSelection on mismatch. ReadSources.Journals
+  contains only in-sample journals; excluded identities occur solely in ExcludedJournals.
+  Validate every AttemptSet belongs to the universe, validate Selection
   and UnmatchedHoldouts at this entry point, and require each attempt cutoff to
   equal Selection.Cutoff. Marker mismatches or invalid universe wrap
   ErrInvalidSelection before reconciliation. Use independently valid Reading.Identity
@@ -387,15 +413,26 @@ unchanged baseline behavior. No downstream row may amend these rules casually.
   remains usable for cutoff even if an unrelated predictive field failed. Honor existing exclusions;
   rechecks may add exclusions but never remove them. Match exact IDs, no proximity;
   precedence, atomic terminal tuple, role/model conflicts and canonical output are
-  frozen in F1 rows. Every envelope gets one disposition. Least compatible citation
+  frozen in F1 rows. EvidenceJoin.ExcludedJournals contains the full canonical excluded identities
+  from the validated universe; Build copies that list into ArtifactEvidence
+  without reducing it to HeldOutRuns strings. Every envelope gets one disposition. Least compatible citation
   is Recovered; remaining compatible envelopes for the attempt are duplicates,
   including exact repeated envelopes. Excluded payload never contributes. Unknown
   stays unknown; invalid outcomes/roles/citations/measurements are not sampled.
+  Missing/invalid ReadingRef revision or RecordedAt is Malformed (including direct
+  inputs), not Unrecoverable. In-sample malformed citation evidence makes the build
+  PARTIAL. Unrecoverable is reserved for normalized-attempt measurement/outcome errors.
   Overflow returns ErrMeasurementOverflow; noncanonical input submitted to wall
   validation returns ErrNonCanonicalEvidence. Full portable conflicts include both
-  values and citations. EvidenceNone and compatibility projection mapping follow
+  values and citations. Canonical ReadingRef order is SourceID, Repository, Path,
+  Revision (bytewise strings), Row (numeric), RecordedAt (UTC instant). It controls
+  recovered envelope choice, reading lists and YAML FieldEvidence ties. Identical
+  refs compare equal; indistinguishable repeated envelopes still yield one recovered
+  and remaining duplicate dispositions, with canonical audit ordering including
+  disposition so input order cannot choose the serialized output. EvidenceNone and compatibility projection mapping follow
   F4-PROJECTION-MAPPING. Full event lists include the least ref, never just the rest.
-- **Build / serialization:** resolve one extraction instant and reject mixed legacy
+- **Build / serialization:** resolve one extraction instant, set BOTH Artifact.GeneratedAt and
+  SourceManifest.Cutoff to its Round(0).UTC() value, and reject mixed legacy
   and amended location/history options as already frozen. Retain diagnostic results
   on source/reducer/join errors; aggregate SourceManifest.Reasons is sorted unique
   text formatted "reduce: <sentinel-name>: <detail>" / "join: <sentinel-name>: <detail>"
@@ -444,3 +481,61 @@ unchanged baseline behavior. No downstream row may amend these rules casually.
 | grok-4 | Explicit projection mapping. |
 | grok-5 | Existing ParseRevision retained; strict ValidateReadingRevision seam adds canonical full-ID grammar. |
 | grok-6 | ForcedByPathClassification constant; named shape contract in F2-PRODUCER-SHAPES. |
+
+### Fourth-panel refinements
+
+| Name | Input | Expected | Owner |
+|---|---|---|---|
+| F3-DIRECT-HOLDOUT-ATTEMPTS | Correctly named holdout supplied as any AttemptSet/Attempt | ErrInvalidSelection before reconciliation; no observations and no LostAttempts. Full journal universe may contain the held-out identity, but attempt sets may not. | FC-1 |
+| F1-ATTEMPT-RUN-CONSISTENCY | Attempt/start run ID disagrees with its AttemptSet.Journal | ErrInvalidSelection before matching; cannot disguise held-out events under a different run. | FC-1 |
+| F2-WALL-PARENT-CONSISTENCY | Wall start/elapsed differs from parent Attempt | ErrEvidenceConflict from reducer, Attempt JSON methods and join; standalone SummarizeWall validates only its input. | FC-JOURNAL / FC-1 |
+| F1-READING-TOTAL-ORDER | Permuted refs differing in each member; exact duplicate refs | Compare SourceID, Repository, Path, Revision bytes; Row numeric; UTC RecordedAt. Equal refs compare equal. Recovered/duplicate audit output is canonical including disposition for otherwise identical envelopes. | FC-1 |
+| F4-MANIFEST-EMPTY-LISTS | Empty manifest roots/reasons/refs/holdouts | [] keys retained, not omitted; bodies initialize nonnil lists. | FC-SOURCES / FC-1 |
+
+Fourth-panel dispositions: Claude-1 direct attempt-side holdout refusal and run
+consistency; Claude-2 wall/attempt agreement; Claude-3 amended Build prose reduced
+to a pointer; Claude-4 carrier corrected to Attempt (the legacy Duration method
+exists, but the new seal should target Attempt); Claude-5 stub counts correctly
+labeled; Claude-6 points to F2 rather than a test symbol (the test group IS already
+reserved by the operator in known-red.yaml, but the seam need not duplicate it).
+Codex-1 exact reading order restored in the carrier and authoritative handoff;
+Codex-2 manifest list omitempty tags removed; Codex-3 citation errors explicitly
+Malformed rather than Unrecoverable.
+
+| Name | Input | Expected | Owner |
+|---|---|---|---|
+| F3-ALL-JOURNALS-HELDOUT | One discovered journal, that run held out, otherwise valid sources | Journals=1, JournalsExcludedByHoldout=1; COMPLETE manifest. No samples; prediction refuses thin cells with ErrNotEligible, not ErrSourceIncomplete. | FC-SOURCES / FC-1 |
+| F4-ONE-ARTIFACT-INSTANT | Explicit cutoff differs from opts.Now | GeneratedAt==manifest.Cutoff==captured UTC instant without monotonic data. opts.Now is fallback only. | FC-1 |
+| F3-SOURCE-CONCURRENCY | Multiple sources, MaxProcesses=2 | Sources execute sequentially in SourceID order; at most two git children within the current source. No cross-source fan-out and no legacy buffered helper reuse. | FC-SOURCES |
+| F3-EXCLUDED-JOURNAL-AUDIT | Held-out journal has path/source/producer but no events | Full identity survives universe→EvidenceJoin.ExcludedJournals→ArtifactEvidence.ExcludedJournals. | FC-1 |
+| F3-GIT-INSTALLATION-ENV | Custom PATH/GIT_EXEC_PATH with poisoned location/config vars | Installation vars remain; named location/config/pathspec overrides are cleared, explicit no-helper/no-network settings apply. | FC-SOURCES |
+
+Remaining fourth-panel Grok dispositions: grok-1 discovery-before-exclusion
+journal count and all-heldout COMPLETE rule; grok-2 canonical manifest list tags;
+grok-3 one artifact/manifest instant; grok-4 sequential sources and streamed
+amended readers; grok-5 full excluded identity on EvidenceJoin; grok-6 correct
+stub count labels; grok-7 exact five-field amended predicate wording; grok-8
+explicit cleared override list with installation environment preserved.
+
+### Canonical reconciliation totals and list order
+
+Counted attempt IDs are the distinct IDs in the in-sample AttemptSet.Attempts,
+Ambiguous and Conflicts collections; after-cutoff starts and held-out runs are
+excluded. Attempts is that set's size; UniqueRows is its distinct (run,key)
+count. Recovered is len(Observations), one per recovered ID. LostAttempts is the
+sorted counted-ID set minus recovered IDs, including ambiguous/conflicting IDs;
+Ambiguous.Starts separately preserves how many distinct starts shared an ID.
+A stale/unmatched YAML identity never increases the journal attempt denominator.
+Dispositions includes every declared value, including zero, in Dispositions()
+report order; counts sum to len(Examined), with one recovered envelope per sample.
+
+Attempt IDs sort by RunID, Key, UTC start. Observations/LostAttempts/Ambiguous sort
+by ID. Reading lists use ReadingRef's exact order. Examined sorts by ReadingRef,
+AttemptID, disposition string, then reason. Conflict sides are ordered by complete
+FieldEvidence (source then the corresponding canonical event/reading citation),
+then Kind and canonical candidate JSON bytes for equal citations. Conflicts sort
+by ID, field and the ordered candidates. Journal identities sort by run/source/
+path/producer; held-out run IDs and aggregate reasons sort lexically. Canonical
+strings compare bytewise; timestamps compare UTC instants without monotonic data.
+No nonfinite measurement may enter candidate JSON. These rules apply to portable
+output; they do not give input slice order evidentiary authority.

@@ -58,6 +58,15 @@ type RowFields struct {
 // Complete reports whether every join key was present.
 func (f RowFields) Complete() bool { return f.Key && f.RunID && f.StartedAt }
 
+// DocumentKind distinguishes a task row, unrelated YAML, and malformed document.
+type DocumentKind string
+
+const (
+	DocumentTaskRow   DocumentKind = "task_row"
+	DocumentNotTasks  DocumentKind = "not_tasks"
+	DocumentMalformed DocumentKind = "malformed_document"
+)
+
 // Reading is the envelope for one discovered tasks-YAML row, whether or not
 // it parsed (F3: every examined snapshot receives a Disposition). Ref names
 // the reading; Ref.Row is the 1-based position in the document's tasks sequence,
@@ -68,16 +77,6 @@ func (f RowFields) Complete() bool { return f.Key && f.RunID && f.StartedAt }
 //
 // JoinEvidence classifies DocumentNotTasks before field/parse errors. A
 // task row with Err set is malformed; absent join keys are counted separately.
-// DocumentKind distinguishes a task row from an unrelated YAML document or
-// a malformed document. Non-task documents receive their own disposition.
-type DocumentKind string
-
-const (
-	DocumentTaskRow   DocumentKind = "task_row"
-	DocumentNotTasks  DocumentKind = "not_tasks"
-	DocumentMalformed DocumentKind = "malformed_document"
-)
-
 type Reading struct {
 	Kind DocumentKind
 	// Excluded is empty, DispositionHeldOut, or DispositionAfterCutoff. Such an

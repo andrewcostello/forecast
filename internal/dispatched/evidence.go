@@ -61,7 +61,10 @@ const (
 	DispositionUnrecoverable Disposition = "unrecoverable"
 	// DispositionHeldOut: the run is in Selection.HoldoutRunIDs.
 	DispositionHeldOut Disposition = "held_out"
-	// DispositionAfterCutoff: the reading's attempt started after Cutoff.
+	// DispositionAfterCutoff: RecordedAt OR YAML started_at OR completed_at
+	// exceeds Selection.Cutoff. HeldOut wins if both apply. Live mtime and Git
+	// committer time supply the same RecordedAt predicate. Such envelopes are
+	// identity-only, with the marker retained after predictive fields are erased.
 	DispositionAfterCutoff Disposition = "after_cutoff"
 )
 
@@ -107,7 +110,9 @@ type DispositionCount struct {
 
 // RecoveredAttempt is the amended joint sample and portable record. Cell.Model
 // equals Attempt.Model.Value (which must be known); Cell.Role comes from matching
-// YAML evidence. Readings lists every contributing tasks-YAML citation. No
+// YAML evidence, cited by Attempt.Evidence.Role. Differing valid YAML roles at
+// equal authority are ErrEvidenceConflict, not separate samples. Readings lists
+// every contributing tasks-YAML citation. No
 // legacy Table.Add/merge operation is used to reconcile this record.
 type RecoveredAttempt struct {
 	Attempt  Attempt      `json:"attempt"`
@@ -120,17 +125,18 @@ type RecoveredAttempt struct {
 // separately; LostAttempts are started attempts with no recovered reading,
 // listed individually so a recovered sibling cannot hide them.
 type EvidenceJoin struct {
-	Observations  []RecoveredAttempt
-	Examined      []Examined
-	Dispositions  []DispositionCount
-	Conflicts     []AttemptConflict
-	UniqueRows    int
-	Attempts      int
-	Recovered     int
-	LostAttempts  []AttemptID
-	Ambiguous     []AmbiguousAttempt
-	HeldOutRuns   []string
-	CutoffApplied time.Time
+	StartsAfterCutoff int
+	Observations      []RecoveredAttempt
+	Examined          []Examined
+	Dispositions      []DispositionCount
+	Conflicts         []AttemptConflict
+	UniqueRows        int
+	Attempts          int
+	Recovered         int
+	LostAttempts      []AttemptID
+	Ambiguous         []AmbiguousAttempt
+	HeldOutRuns       []string
+	CutoffApplied     time.Time
 }
 
 // JoinEvidence joins attempts with readings under F1/F3: readings bind to
@@ -151,17 +157,24 @@ type EvidenceJoin struct {
 // returns ErrNotImplemented and reads none of them.
 // Values and citations are selected atomically, with the terminal outcome,
 // terminal time and elapsed treated as one unit. Canonicalize all instants to
-// UTC without monotonic components. Equal-source citation ties compare the
-// complete journal identity (including Producer), sequence, line, type, instant,
-// then ReadingRef source ID/repository/path/revision source/commit/row/RecordedAt. A tie never justifies choosing incompatible
-// values. Full event lists and verification counts remain in RecoveredAttempt.
+// UTC without monotonic components. Event citation ties use WallBreakdown's
+// canonical EventRef order; YAML ties compare ReadingRef source ID, repository,
+// path, revision string, row, RecordedAt. A tie never chooses incompatible values.
+// Full event lists and verification counts remain in RecoveredAttempt.
 // Selection.Validate is mandatory. All Attempt.Cutoff values must equal the
 // nonzero Selection.Cutoff or return ErrInvalidSelection; unfinished elapsed is
 // always measured to that instant. Recheck Ref.RecordedAt and YAML start/terminal
-// against cutoff, rejecting missing recorded times as unrecoverable. A YAML-only
+// against cutoff. Missing recorded time is malformed (including direct inputs
+// without Reading.Err), never unrecoverable. HeldOut wins over cutoff, then
+// malformed, then missing keys. Honor source AfterCutoff markers after erased
+// fields; rechecking may add exclusions but never remove a source exclusion.
+// A HeldOut marker inconsistent with Selection wraps ErrInvalidSelection. A YAML-only
 // terminal can contribute only from a revision and terminal at/before cutoff.
 // Invalid roles, outcomes, negative/non-finite measurements, overflow or invalid
 // citations are unrecoverable; no invalid joint record enters Observations.
+// Arithmetic overflow wraps ErrMeasurementOverflow; invalid canonical evidence
+// supplied to validation wraps ErrNonCanonicalEvidence. Build retains diagnostic
+// data but marks the artifact PARTIAL on these reconciliation errors.
 func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection) (EvidenceJoin, error) {
 	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d journals, %d readings)", ErrNotImplemented, len(attempts), len(readings))
 }
@@ -208,7 +221,8 @@ func joinReadings(rows []Observation) (Observation, error) {
 // Terminal evidence values. A journal terminal event is the dispatcher's own
 // record; a YAML status is a mutable file a human may have edited, and edge
 // case 9 says a hand-finished row is indistinguishable from an agent one.
-// They are the String values of EvidenceJournal, EvidenceYAML, EvidenceNone.
+// Legacy none is the string "none"; amended EvidenceNone is deliberately "".
+// The other two source strings agree. Do not rewrite baseline output to match.
 const (
 	terminalEvidenceJournal = "journal"
 	terminalEvidenceYAML    = "yaml"

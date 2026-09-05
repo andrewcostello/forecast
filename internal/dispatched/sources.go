@@ -167,7 +167,9 @@ type ResolvedRef struct {
 }
 
 // SourceReport is one source's identity, what was asked for, what was
-// actually resolved and how the read ended.
+// actually resolved and how the read ended. For explicit Ref, ResolvedRef is
+// its commit and ResolvedRefs contains that single name/commit pair. For --all,
+// ResolvedRef is empty and ResolvedRefs is the sorted complete ref-tip list.
 type SourceReport struct {
 	ID           string        `json:"id"`
 	Kind         SourceKind    `json:"kind"`
@@ -234,7 +236,9 @@ type SourceManifest struct {
 // matching task rows alone do not make a successfully enumerated YAML source
 // incomplete. Require nonzero cutoff, valid unique source identities and positive
 // resolved bounds; at least one journal must have been read across the manifest.
-// All completed-body refusals wrap ErrSourceIncomplete. Until FC-SOURCES
+// All completed-body refusals wrap ErrSourceIncomplete. Shallow facts additionally
+// wrap ErrShallowHistory; exceeded data bounds additionally wrap ErrBoundExceeded.
+// These causes belong to validation errors, never a nil diagnostic read error. Until FC-SOURCES
 // lands, this nil-safe seam returns ErrNotImplemented for every input.
 func (m *SourceManifest) ValidateComplete() error {
 	return fmt.Errorf("%w: SourceManifest.ValidateComplete", ErrNotImplemented)
@@ -251,7 +255,7 @@ type ReadingRef struct {
 	SourceID   string    `json:"source_id"`
 	Repository string    `json:"repository"`
 	Path       string    `json:"path"`
-	Revision   Revision  `json:"revision"`
+	Revision   string    `json:"revision"`
 }
 
 // SourceReadings retains every YAML envelope, including non-task documents
@@ -274,7 +278,12 @@ type SourceReadings struct {
 // A reading with RecordedAt, started_at or completed_at after Cutoff is an
 // identity-only AfterCutoff envelope. YAML identity/role/outcome/cost fields from
 // later revisions cannot enter amended reconciliation. Missing revision time
-// is malformed/PARTIAL, not permission to ignore cutoff. See F3-CUTOFF-REPLAY.
+// sets Reading.Err and increments Malformed/PARTIAL, not permission to ignore cutoff.
+// The common disposition precedence is DocumentNotTasks, then HeldOut, then
+// AfterCutoff, then malformed, then missing join keys, then matching outcomes.
+// HeldOut wins over cutoff and malformed. Missing RecordedAt on an otherwise
+// in-sample row is malformed; never classify it as merely unrecoverable.
+// All source quality counters retain malformed facts even on excluded envelopes. See F3-CUTOFF-REPLAY.
 // Each missing/unreadable requested source returns ErrSourceMissing. Zero
 // discovered journals returns ErrSourceEmpty unless AllowEmpty; a valid YAML
 // source with zero task rows is complete, not a discovery failure. Non-task
@@ -290,6 +299,7 @@ type SourceReadings struct {
 // PARTIAL manifest beside an error wrapping ErrSourceCancelled and ctx.Err().
 // Every named holdout must match a discovered journal run before exclusion.
 // SourceReadings preserves excluded audit envelopes as documented above.
+// Excluded markers retain the classification after predictive fields are erased.
 // Git uses full reachable history, including superseded/deleted/renamed blobs,
 // with bounded streamed metadata/content and a per-source process semaphore.
 // Strip GIT_DIR/WORK_TREE/COMMON_DIR/OBJECT_DIRECTORY and all inherited GIT_*

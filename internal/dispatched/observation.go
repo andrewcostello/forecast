@@ -316,12 +316,12 @@ type Interval struct {
 	Start    time.Time  `json:"start"`
 	End      time.Time  `json:"end"`
 	Inferred bool       `json:"inferred"`
-	Evidence []EventRef `json:"evidence,omitempty"`
+	Evidence []EventRef `json:"evidence"`
 }
 
-// WallBreakdown holds classified intervals in ascending (Start, End, Phase)
-// order, with event citations in ascending journal/run/source/path/producer,
-// sequence, line, type, UTC-instant order. All timestamps are normalized to UTC
+// WallBreakdown holds classified intervals in ascending (Start, End, Phase,
+// Inferred false-first, lexicographic Evidence-list) order, with event citations in ascending journal/run/source/path/producer,
+// HasSeq (false first), sequence, line, type, UTC-instant, Hash, PrevHash order. All timestamps are normalized to UTC
 // without monotonic components. Unclassified time is residual only; it is not
 // an interval. Missing phase attribution means Complete=false.
 type WallBreakdown struct {
@@ -363,6 +363,7 @@ type FieldEvidence struct {
 // terminal instant, elapsed and their citations form one selection unit.
 // Equal-authority incompatible values are conflicts, never independent maxima.
 type ObservationEvidence struct {
+	Role          FieldEvidence `json:"role"`
 	Model         FieldEvidence `json:"model"`
 	Start         FieldEvidence `json:"start"`
 	Terminal      FieldEvidence `json:"terminal"`

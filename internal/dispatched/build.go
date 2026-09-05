@@ -88,17 +88,23 @@ const EvidenceSchemaVersion = 4
 // ArtifactEvidence is the complete serializable join audit and joint sample.
 // A nil payload means unavailable (legacy version 3); all counters inside a version 4
 // payload are present, including zero. Durations on Attempt use nanoseconds.
+// FC-1 initializes every list in version 4 evidence (including nested lists) to
+// [] rather than null. Canonical JSON-value equality includes that distinction.
+// Reading revisions use stable strings; Cell retains legacy Role/Model JSON keys.
+// Limits must disclose recorded_task_spawns cost scope, excluded cache tokens,
+// and that unrecorded reviewer/operator spend is not total-process cost.
 type ArtifactEvidence struct {
-	Observations     []RecoveredAttempt `json:"observations"`
-	Examined         []Examined         `json:"examined"`
-	Dispositions     []DispositionCount `json:"dispositions"`
-	Conflicts        []AttemptConflict  `json:"conflicts"`
-	Ambiguous        []AmbiguousAttempt `json:"ambiguous"`
-	UniqueRows       int                `json:"unique_rows"`
-	Attempts         int                `json:"attempts"`
-	Recovered        int                `json:"recovered"`
-	LostAttempts     []AttemptID        `json:"lost_attempts"`
-	ExcludedJournals []JournalIdentity  `json:"excluded_journals"`
+	StartsAfterCutoff int                `json:"starts_after_cutoff"`
+	Observations      []RecoveredAttempt `json:"observations"`
+	Examined          []Examined         `json:"examined"`
+	Dispositions      []DispositionCount `json:"dispositions"`
+	Conflicts         []AttemptConflict  `json:"conflicts"`
+	Ambiguous         []AmbiguousAttempt `json:"ambiguous"`
+	UniqueRows        int                `json:"unique_rows"`
+	Attempts          int                `json:"attempts"`
+	Recovered         int                `json:"recovered"`
+	LostAttempts      []AttemptID        `json:"lost_attempts"`
+	ExcludedJournals  []JournalIdentity  `json:"excluded_journals"`
 }
 
 // Eligibility is the F4 prediction gate result. Eligible is true only when
@@ -270,10 +276,15 @@ type Conflict struct {
 
 // The amended FC-1 Build captures one instant (Selection.Cutoff, else opts.Now,
 // else a single clock read), freezes it into Selection before ReadSources, and
-// uses it for reduction/join/manifest. It parses target rows before aggregation,
+// uses it for reduction/join/manifest. Mixing any legacy location/history option
+// (RunsDir, FeaturesRepo, nonnil FeaturesRepos, nonzero MaxHistoryCommits) with
+// amended Sources/Selection/Bounds wraps ErrInvalidSourceSpec; never ignore them.
+// CLI FC-1 translates legacy flag spellings into explicit Sources/Bounds first,
+// clears compatibility fields, and preserves command argv. It parses target rows before aggregation,
 // maps target errors to ErrInvalidTarget, and calls PredictionEligibility with
 // those rows. On source error it returns a nonnil diagnostic BuildResult whenever
-// a manifest exists, preserving PARTIAL metadata beside the error; the CLI must
+// a manifest exists, preserving PARTIAL metadata beside the error; reduction
+// or reconciliation errors also force PARTIAL with a named reason. The CLI must
 // write/report that artifact before returning the data error without usage spam.
 // Build constructs the union reference class. The stamped journal model is
 // the only model used for attribution; the authored YAML model is retained

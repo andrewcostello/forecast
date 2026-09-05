@@ -23,24 +23,15 @@ import (
 // Frozen contract (F1/F2).
 // ---------------------------------------------------------------------------
 
-// Producer semantics of the measured dispatcher journal, frozen so fixtures
-// and the reducer agree on what an event means. Recorded from real journals
-// on 2026-09-04 (dispatcher_version 0.1.0); a fixture states the producer
-// revision it was captured from.
-//
-// Per corrective round the producer emits, in this order:
-//
-//	task_spawn_finished{spawn_kind: panel-iterate}   corrective spawn returned
-//	panel_iterate{iteration: n}                       emitted AFTER the spawn returns
-//	panel_started{iteration: n}
-//	panel_verdict
-//
-// The first review of an attempt is panel_started/panel_verdict with no
-// preceding panel_iterate: a first review is not a correction round.
-// Verification is verification_started/verification_verdict around a
-// task_spawn_finished{spawn_kind: verifier}. Terminal events are task_done
-// and task_blocked. agent_fallback records a cascade. task_started carries
-// the PLANNED model, never the stamp.
+// Producer wire semantics are frozen in the handoff's F2-PRODUCER-SHAPES,
+// F2-CORRECTION-KINDS and F2-VERIFICATIONS rows. Verified against dispatcher
+// orchestrator.py at df771516b905355995d03313b470b06e1aea4e06 and recorded
+// dispatcher_version 0.1.0 journals. The version string alone does not identify
+// a source revision; fixtures record both their origin and the shape used.
+// panel_started with iteration AND iterations_remaining is a review invocation;
+// forced_by=path_classification is a gate record, not a review. Corrective
+// panel_iterate/verification_iterate markers follow their spawn finish.
+// Planned task_started models never supply an implementing stamp.
 const (
 	// ProducerDispatcherV0_1_0 is the exact wire value of
 	// run_started.payload.dispatcher_version for the producer whose sequences
@@ -49,22 +40,26 @@ const (
 	// to this constant.
 	ProducerDispatcherV0_1_0 = "0.1.0"
 
-	EventRunStarted          = "run_started"
-	EventTaskStarted         = "task_started"
-	EventTaskSpawnFinished   = "task_spawn_finished"
-	EventPanelStarted        = "panel_started"
-	EventPanelVerdict        = "panel_verdict"
-	EventPanelIterate        = "panel_iterate"
-	EventVerificationStarted = "verification_started"
-	EventVerificationVerdict = "verification_verdict"
-	EventVerificationIterate = "verification_iterate"
-	EventAgentFallback       = "agent_fallback"
-	EventTaskDone            = "task_done"
-	EventTaskBlocked         = "task_blocked"
-	SpawnKindImplementer     = "implementer"
-	SpawnKindPanelIterate    = "panel-iterate"
-	SpawnKindVerifier        = "verifier"
-	SpawnKindReviewer        = "reviewer"
+	EventRunStarted             = "run_started"
+	EventTaskStarted            = "task_started"
+	EventTaskSpawnFinished      = "task_spawn_finished"
+	EventPanelStarted           = "panel_started"
+	EventPanelVerdict           = "panel_verdict"
+	EventPanelIterate           = "panel_iterate"
+	EventVerificationStarted    = "verification_started"
+	EventVerificationVerdict    = "verification_verdict"
+	EventVerificationIterate    = "verification_iterate"
+	EventVerificationSkipped    = "verification_skipped"
+	EventVerificationMechanical = "verification_mechanical"
+	EventAgentFallback          = "agent_fallback"
+	EventTaskDone               = "task_done"
+	EventTaskBlocked            = "task_blocked"
+	SpawnKindImplementer        = "implementer"
+	SpawnKindPanelIterate       = "panel-iterate"
+	SpawnKindVerifier           = "verifier"
+	SpawnKindVerifierIterate    = "verifier-iterate"
+	SpawnKindTestFixRetry       = "test-fix-retry"
+	SpawnKindCommitRetry        = "commit-retry"
 )
 
 // JournalIdentity names one journal file: the run it belongs to, the source
@@ -80,15 +75,24 @@ type JournalIdentity struct {
 	Producer string `json:"producer"`
 }
 
-// EventRef is the position of one event in one journal: the producer's seq
-// when present, else the 1-based line. It is the provenance unit for every
-// field of an attempt; conflicts and sums cite it.
+// EventRef retains the physical citation and optional producer identity.
+// HasSeq distinguishes an absent sequence (Seq=0) from an explicit zero. Inside
+// one JournalIdentity, equal present Seq plus equivalent task/type/instant/payload
+// is a retransmission: ParseEvents retains the least physical line once. Different
+// payloads under one sequence are malformed: discard every colliding line and
+// count each in LinesUnparsed. Without Seq, distinct physical lines are distinct
+// events even when their contents agree; never guess that identical spawns are
+// retransmissions. Hash fields preserve producer provenance; this contract does
+// not claim cryptographic chain verification or detection of an omitted tail.
 type EventRef struct {
-	Journal JournalIdentity `json:"journal"`
-	Seq     int             `json:"seq"`
-	Line    int             `json:"line"`
-	Type    string          `json:"type"`
-	At      time.Time       `json:"at"`
+	HasSeq   bool            `json:"has_seq"`
+	Hash     string          `json:"hash"`
+	PrevHash string          `json:"prev_hash"`
+	Journal  JournalIdentity `json:"journal"`
+	Seq      int             `json:"seq"`
+	Line     int             `json:"line"`
+	Type     string          `json:"type"`
+	At       time.Time       `json:"at"`
 }
 
 // EventPayload mirrors scalar producer payloads. Nil means absent or JSON null;
@@ -96,17 +100,19 @@ type EventRef struct {
 // ReduceAttempts lifts these wire values into Attempt's Measured fields.
 // DurationMillis is duration_ms on the wire; conversion to nanoseconds is checked.
 type EventPayload struct {
-	Model          string   `json:"model"`
-	SpawnKind      string   `json:"spawn_kind"`
-	Iteration      *int     `json:"iteration"`
-	InputTokens    *int64   `json:"input_tokens"`
-	OutputTokens   *int64   `json:"output_tokens"`
-	CostUSD        *float64 `json:"cost_usd"`
-	DurationMillis *int64   `json:"duration_ms"`
-	FromAgent      string   `json:"from_agent"`
-	ToAgent        string   `json:"to_agent"`
-	Reason         string   `json:"reason"`
-	Status         string   `json:"status"`
+	Model               string   `json:"model"`
+	SpawnKind           string   `json:"spawn_kind"`
+	Iteration           *int     `json:"iteration"`
+	InputTokens         *int64   `json:"input_tokens"`
+	OutputTokens        *int64   `json:"output_tokens"`
+	CostUSD             *float64 `json:"cost_usd"`
+	DurationMillis      *int64   `json:"duration_ms"`
+	FromAgent           string   `json:"from_agent"`
+	ToAgent             string   `json:"to_agent"`
+	Reason              string   `json:"reason"`
+	Status              string   `json:"status"`
+	IterationsRemaining *int     `json:"iterations_remaining"`
+	ForcedBy            string   `json:"forced_by"`
 }
 
 // Event is one parsed journal line with a task key. Lines without a task
@@ -139,14 +145,17 @@ type JournalDiagnostics struct {
 	MissingProducer bool `json:"missing_producer"`
 }
 
-// Attempt is the normalised record of one attempt (F1/F2). It is the joint
-// record the sampler (F4) resamples, so its fields stay paired.
+// CostScopeRecordedSpawns labels quantities available in recorded task spawns.
+const CostScopeRecordedSpawns = "recorded_task_spawns"
+
+// Attempt is the normalized joint record resampled by F4; fields stay paired.
 type Attempt struct {
 	ID    AttemptID `json:"id"`
 	Start EventRef  `json:"start"`
 
 	// Model is the final recorded implementing stamp: the model on the last
-	// implementer or panel-iterate task_spawn_finished. Unknown when no such
+	// implementing task_spawn_finished (implementer, panel-iterate, verifier-iterate,
+	// test-fix-retry or commit-retry). Verifier/unknown kinds do not stamp a model. Unknown when no such
 	// spawn carried a model (DispositionAbsentStamp); never the planned
 	// model from task_started nor the authored YAML model. Its evidence is
 	// Evidence.Model; there is no second copy.
@@ -165,20 +174,28 @@ type Attempt struct {
 	Cutoff     time.Time     `json:"cutoff"`
 	Elapsed    time.Duration `json:"elapsed_ns"`
 	Wall       WallBreakdown `json:"wall"`
-	// Corrections is the recorded correction-round count (panel_iterate
-	// events). Reviews is the review invocation count (panel_started). They
-	// are different numbers; a first review is not a correction.
-	Corrections   int `json:"corrections"`
-	Reviews       int `json:"reviews"`
-	Verifications int `json:"verifications"`
+	// Corrections counts panel_iterate + verification_iterate markers plus
+	// test-fix-retry/commit-retry spawn finishes, each once. Reviews counts only
+	// invocation-shaped panel_started; Verifications counts verification_started
+	// only (not skipped, mechanical, iterate or verdict). Each evidence field cites
+	// the least canonical counted event, or EvidenceNone for zero; full lists follow.
+	Corrections        int        `json:"corrections"`
+	Reviews            int        `json:"reviews"`
+	Verifications      int        `json:"verifications"`
+	CorrectionEvents   []EventRef `json:"correction_events"`
+	ReviewEvents       []EventRef `json:"review_events"`
+	VerificationEvents []EventRef `json:"verification_events"`
 
-	// Tokens and Cost are summed once over implementing spawn payloads.
-	// CostEvents, InputTokenEvents and OutputTokenEvents list exactly the
-	// events summed into the matching Measured value, so no event is summed
-	// twice and each optional measurement is cited independently: a spawn
-	// that records output tokens but not input tokens appears in
-	// OutputTokenEvents only. Missing any contribution makes its total Unknown;
-	// the available citations remain for audit. A complete zero sum is Known(0).
+	// Cost/tokens sum ALL task_spawn_finished kinds once under EventRef identity,
+	// including verifier and retries. Any missing contribution makes that total
+	// Unknown; zero spawns also means Unknown. Complete measured zeros are Known(0).
+	// InputTokens means the producer's uncached input_tokens only; cache token
+	// quantities are not included. CostScope must equal CostScopeRecordedSpawns;
+	// separate panel-seat/operator spend absent from journals is outside this
+	// measurement. Consumers must label that scope, never call it total process cost.
+	// Available per-quantity event lists remain even when the total is unknown.
+	CostScope string `json:"cost_scope"`
+
 	InputTokens       Measured[int64]   `json:"input_tokens"`
 	OutputTokens      Measured[int64]   `json:"output_tokens"`
 	CostUSD           Measured[float64] `json:"cost_usd"`
@@ -204,11 +221,14 @@ func (a Attempt) Censored() bool { return a.Outcome != OutcomeDone }
 // once per identity, with the number of task_started events that shared
 // it), and conflicts found inside one attempt.
 type AttemptSet struct {
-	Journal     JournalIdentity    `json:"journal"`
-	Attempts    []Attempt          `json:"attempts"`
-	Ambiguous   []AmbiguousAttempt `json:"ambiguous"`
-	Conflicts   []AttemptConflict  `json:"conflicts"`
-	Diagnostics JournalDiagnostics `json:"diagnostics"`
+	// StartsAfterCutoff counts omitted task_started events; they create no attempt
+	// and never enter Attempts/LostAttempts or a negative elapsed calculation.
+	StartsAfterCutoff int                `json:"starts_after_cutoff"`
+	Journal           JournalIdentity    `json:"journal"`
+	Attempts          []Attempt          `json:"attempts"`
+	Ambiguous         []AmbiguousAttempt `json:"ambiguous"`
+	Conflicts         []AttemptConflict  `json:"conflicts"`
+	Diagnostics       JournalDiagnostics `json:"diagnostics"`
 	// LeadingEvents counts events seen before any task_started for a key;
 	// they belong to no attempt and are never folded into the next one.
 	LeadingEvents int `json:"leading_events"`
@@ -222,9 +242,24 @@ type AmbiguousAttempt struct {
 	Refs   []EventRef `json:"refs"`
 }
 
-// AttemptConflict is a within-attempt disagreement between two readings of
-// equal authority (F1). Field names the conflicting measurement or terminal selection unit.
+// ConflictValue is a tagged portable candidate. Value is canonical JSON:
+// model/role -> string; terminal -> {outcome,terminal_at,elapsed_ns}; tokens ->
+// integer; cost -> finite number; wall -> WallBreakdown; event -> Event.
+// Kind is one of model, role, terminal, input_tokens, output_tokens, cost, wall,
+// event. No candidate is omitted; A/AValue and B/BValue are selected atomically.
+type ConflictValue struct {
+	Kind  string          `json:"kind"`
+	Value json.RawMessage `json:"value"`
+}
+
+const EvidenceConflictCode = "evidence_conflict"
+
+// AttemptConflict retains both incompatible values and their complete citations.
+// Field names the conflicting measurement, role, model or terminal selection unit.
 type AttemptConflict struct {
+	Code   string        `json:"code"` // always EvidenceConflictCode
+	AValue ConflictValue `json:"a_value"`
+	BValue ConflictValue `json:"b_value"`
 	ID     AttemptID     `json:"id"`
 	Field  string        `json:"field"`
 	A      FieldEvidence `json:"a"`
@@ -236,7 +271,10 @@ type AttemptConflict struct {
 // ParseEvents decodes one journal stream into a ParsedJournal, events in
 // file order, bounded by bounds.MaxLineBytes (zero uses DefaultMaxLineBytes;
 // negative returns ErrInvalidSourceSpec). It applies that line-bound rule
-// itself, without depending on the later FC-SOURCES validation body. The returned Journal is the
+// itself, without depending on the later FC-SOURCES validation body.
+// It applies EventRef retransmission/sequence-collision rules before reduction.
+// Unknown panel_started shapes (neither invocation nor path-classification gate)
+// are malformed LinesUnparsed, rather than guessed review starts. The returned Journal is the
 // input identity with Producer filled from run_started (Diagnostics.
 // MissingProducer when there is none), and every Event.Ref.Journal is that
 // resolved identity. It never guesses: an undecodable line, an unparseable
@@ -266,9 +304,17 @@ func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader,
 // scaffold returns ErrNotImplemented and reads none of them.
 // Cutoff must be nonzero (ErrInvalidSelection otherwise), is normalized to UTC,
 // and is the sole extraction instant; no wall clock is read here.
+// Validate/deduplicate direct ParsedJournal inputs under the EventRef rule too;
+// physical sequence-less lines remain distinct. Malformed collisions update the
+// returned Diagnostics.LinesUnparsed, so FC-1 must propagate that to PARTIAL.
 // Events after cutoff do not contribute terminal/model/time/round/cost evidence.
+// Starts strictly after cutoff are omitted and counted in StartsAfterCutoff;
+// starts at cutoff are included. Duration/token/count/sum overflow returns
+// ErrMeasurementOverflow beside retained valid attempts; it never saturates.
+// Reversed attempt elapsed wraps ErrReversedInterval. Build marks a diagnostic
+// artifact PARTIAL after reduction error and cannot license prediction from it.
 // All emitted timestamps and citation lists use the canonical order in
-// WallBreakdown. Missing cost/tokens on ANY contributing implementing spawn
+// WallBreakdown. Missing cost/tokens on ANY recorded task spawn
 // makes that total unknown; retain observed event citations for audit even then.
 func ReduceAttempts(parsed ParsedJournal, cutoff time.Time) (AttemptSet, error) {
 	return AttemptSet{Journal: parsed.Journal}, fmt.Errorf("%w: ReduceAttempts(%s)", ErrNotImplemented, parsed.Journal.Path)
@@ -279,7 +325,9 @@ func ReduceAttempts(parsed ParsedJournal, cutoff time.Time) (AttemptSet, error) 
 // It uses checked duration sums; zero-length intervals occupy no time.
 // ErrInvalidPhase names a bad phase (including an explicit unclassified span),
 // ErrUnattributable a missing start, ErrReversedInterval a reversed span, and
-// ErrOverlappingIntervals an overlap/outside span. Unclassified is elapsed
+// ErrOverlappingIntervals an overlap/outside span. Negative elapsed wraps
+// ErrNegativeValue; noncanonical order wraps ErrNonCanonicalEvidence; arithmetic
+// overflow wraps ErrMeasurementOverflow (checked, never saturating). Unclassified is elapsed
 // minus classified time. No duration is returned on error.
 // FC-JOURNAL implements this after TestFCJournalContract is authored.
 func SummarizeWall(w WallBreakdown) (WallSummary, error) {

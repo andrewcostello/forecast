@@ -78,6 +78,11 @@ var (
 	// ErrUnknownMeasurement (F2): a Measured value was read as if known.
 	ErrUnknownMeasurement = errors.New("dispatched: measurement is unknown")
 
+	// ErrNonCanonicalEvidence: interval/citation order violates the frozen order.
+	ErrNonCanonicalEvidence = errors.New("dispatched: evidence is not in canonical order")
+	// ErrMeasurementOverflow: duration, count, token or finite-cost arithmetic
+	// exceeds its representation; never saturation or a manufactured finite value.
+	ErrMeasurementOverflow = errors.New("dispatched: measurement arithmetic overflow")
 	// ErrInvalidPhase (F2): an undeclared phase or unclassified interval.
 	ErrInvalidPhase = errors.New("dispatched: invalid classified phase")
 
@@ -99,7 +104,7 @@ var (
 
 	// ErrSourceEmpty (F3): discovery succeeded and found zero journals,
 	// and Selection.AllowEmpty was not set. Zero task readings alone is valid.
-	ErrSourceEmpty = errors.New("dispatched: source discovered no records")
+	ErrSourceEmpty = errors.New("dispatched: source discovered no journals")
 
 	// ErrSourceIncomplete (F3/F4): a PARTIAL or EMPTY source manifest reached
 	// a gate that requires complete selected sources.

@@ -145,17 +145,19 @@ const (
 
 // SourceCounts are the per-source tallies the manifest stores.
 type SourceCounts struct {
-	Files            int   `json:"files"`
-	Journals         int   `json:"journals"`
-	Commits          int   `json:"commits"`
-	Blobs            int   `json:"blobs"`
-	Bytes            int64 `json:"bytes"`
-	Records          int   `json:"records"`
-	NonTaskDocuments int   `json:"non_task_documents"`
-	Malformed        int   `json:"malformed"`
-	Unreadable       int   `json:"unreadable"`
-	ExcludedByRun    int   `json:"excluded_by_holdout"`
-	AfterCutoff      int   `json:"excluded_after_cutoff"`
+	Files               int   `json:"files"`
+	Journals            int   `json:"journals"`
+	Commits             int   `json:"commits"`
+	Blobs               int   `json:"blobs"`
+	Bytes               int64 `json:"bytes"`
+	Records             int   `json:"records"`
+	NonTaskDocuments    int   `json:"non_task_documents"`
+	MalformedExcluded   int   `json:"malformed_excluded"`
+	UnreadableExcluded  int   `json:"unreadable_excluded"`
+	Malformed           int   `json:"malformed"`
+	Unreadable          int   `json:"unreadable"`
+	ExcludedByHoldout   int   `json:"excluded_by_holdout"`
+	ExcludedAfterCutoff int   `json:"excluded_after_cutoff"`
 	// BoundsExceeded counts the commit, line, blob and total-byte caps that
 	// stopped a read of this source. MaxProcesses never contributes to it.
 	BoundsExceeded int `json:"bounds_exceeded"`
@@ -221,6 +223,10 @@ func (s Selection) UnmatchedHoldouts(discoveredRunIDs []string) error {
 // SourceManifest is the record of every source supplied to one extraction.
 // No claim extends beyond it.
 type SourceManifest struct {
+	// Reasons is the canonical sorted, duplicate-free aggregate diagnostic list.
+	// FC-1 adds "reduce: <sentinel-name>: <detail>" or "join: <sentinel-name>: <detail>"
+	// and PARTIAL state for cross-source failures, without falsifying source reports.
+	Reasons       []string       `json:"reasons"`
 	Sources       []SourceReport `json:"sources"`
 	Cutoff        time.Time      `json:"cutoff"`
 	HoldoutRunIDs []string       `json:"holdout_run_ids,omitempty"`
@@ -230,16 +236,10 @@ type SourceManifest struct {
 	State  SourceState `json:"state"`
 }
 
-// ValidateComplete rejects nil/empty manifests, non-COMPLETE aggregate or
-// source states, shallow/grafted/replaced history, cancellation, positive
-// malformed/unreadable/bound counters, and invalid/negative counters. Zero
-// matching task rows alone do not make a successfully enumerated YAML source
-// incomplete. Require nonzero cutoff, valid unique source identities and positive
-// resolved bounds; at least one journal must have been read across the manifest.
-// All completed-body refusals wrap ErrSourceIncomplete. Shallow facts additionally
-// wrap ErrShallowHistory; exceeded data bounds additionally wrap ErrBoundExceeded.
-// These causes belong to validation errors, never a nil diagnostic read error. Until FC-SOURCES
-// lands, this nil-safe seam returns ErrNotImplemented for every input.
+// ValidateComplete is nil-safe and wraps ErrSourceIncomplete, plus
+// ErrShallowHistory/ErrBoundExceeded when those facts apply. Excluded quality
+// counters are diagnostic only. The authoritative predicate is in the handoff's
+// "Entry-point contracts" and F3-COMPLETENESS-CAUSES. FC-SOURCES body.
 func (m *SourceManifest) ValidateComplete() error {
 	return fmt.Errorf("%w: SourceManifest.ValidateComplete", ErrNotImplemented)
 }
@@ -271,46 +271,33 @@ type SourceReadings struct {
 	Readings         []Reading
 }
 
-// ReadSources validates each SourceSpec, unique source IDs, Selection and
-// nonnegative bounds before I/O; it applies the documented defaults to zeros
-// and stores the effective positive bounds in the manifest. Cutoff is required
-// and copied unchanged (UTC-normalized) into the manifest. No clock is read.
-// A reading with RecordedAt, started_at or completed_at after Cutoff is an
-// identity-only AfterCutoff envelope. YAML identity/role/outcome/cost fields from
-// later revisions cannot enter amended reconciliation. Missing revision time
-// sets Reading.Err and increments Malformed/PARTIAL, not permission to ignore cutoff.
-// The common disposition precedence is DocumentNotTasks, then HeldOut, then
-// AfterCutoff, then malformed, then missing join keys, then matching outcomes.
-// HeldOut wins over cutoff and malformed. Missing RecordedAt on an otherwise
-// in-sample row is malformed; never classify it as merely unrecoverable.
-// All source quality counters retain malformed facts even on excluded envelopes. See F3-CUTOFF-REPLAY.
-// Each missing/unreadable requested source returns ErrSourceMissing. Zero
-// discovered journals returns ErrSourceEmpty unless AllowEmpty; a valid YAML
-// source with zero task rows is complete, not a discovery failure. Non-task
-// documents have a separate count and never degrade completeness.
-// It uses ParseEvents for journals and carries malformed/bad-timestamp/
-// over-bound parser diagnostics into source quality counters and PARTIAL state.
-// It decodes task rows independently through parseReadings. Malformed rows
-// mark PARTIAL without dropping valid siblings. Shallow/grafted/replaced
-// history and data caps return PARTIAL manifests with named Reasons; they do
-// not cause a read error solely because completeness is lost. There is no
-// hidden "demand complete" option: ValidateComplete/PredictionEligibility
-// alone refuse such manifests. Cancellation returns retained readings and a
-// PARTIAL manifest beside an error wrapping ErrSourceCancelled and ctx.Err().
-// Every named holdout must match a discovered journal run before exclusion.
-// SourceReadings preserves excluded audit envelopes as documented above.
-// Excluded markers retain the classification after predictive fields are erased.
-// Git uses full reachable history, including superseded/deleted/renamed blobs,
-// with bounded streamed metadata/content and a per-source process semaphore.
-// Strip GIT_DIR/WORK_TREE/COMMON_DIR/OBJECT_DIRECTORY and all inherited GIT_*
-// configuration/location overrides (including the GIT_CONFIG* family); ignore
-// global/system config, pin the selected repository, and disable replace/graft
-// interpretation after detecting/reporting it. Do not fetch or run configured
-// helpers to satisfy enumeration. Resolve every ref named by an all-refs walk
-// into ResolvedRefs before traversal. Only the explicit roots are read.
-// FC-SOURCES implements this seam; the scaffold always returns ErrNotImplemented.
+// ReadSources reads explicit specs at Selection.Cutoff with resolved bounds.
+// Retained manifest/readings remain meaningful on error. Named errors are
+// ErrInvalidSourceSpec, ErrInvalidSelection, ErrSourceMissing, ErrSourceEmpty,
+// ErrSourceCancelled (also ctx.Err()), and ErrJournalSource for a journal read.
+// F3 tables and "Entry-point contracts" in notes/FC-SCAFFOLD.md are authoritative.
+// FC-SOURCES body; all amended Git children must use sourceGitCommand, never the
+// inherited-env legacy helpers below.
 func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, bounds ReadBounds) (*SourceManifest, *SourceReadings, error) {
 	return nil, nil, fmt.Errorf("%w: ReadSources(%d sources)", ErrNotImplemented, len(specs))
+}
+
+// sourceGitCommand constructs an amended read-only Git command with an explicit
+// isolated environment. No inherited Git location/config overrides or helpers;
+// system/global config disabled, repository pinned. See F3-GIT-ENV-STRIPPED and
+// "Entry-point contracts". It does not spawn; ReadSources applies process/byte
+// bounds. FC-SOURCES body. Legacy helpers remain on their original environment.
+func sourceGitCommand(ctx context.Context, repo string, args ...string) (*exec.Cmd, error) {
+	return nil, fmt.Errorf("%w: sourceGitCommand", ErrNotImplemented)
+}
+
+// ValidateReadingRevision requires exactly "live" or "git:" plus a full lowercase
+// 40- or 64-hex object ID. No bare/abbreviated SHA or live:<mtime>. Mtime belongs
+// only in RecordedAt. ReadSources resolves refs before formatting; this pure
+// validator never resolves/fetches. Invalid input wraps ErrUnparseableRevision.
+// It narrows the existing legacy ParseRevision grammar without changing it.
+func ValidateReadingRevision(revision string) error {
+	return fmt.Errorf("%w: ValidateReadingRevision", ErrNotImplemented)
 }
 
 // ---------------------------------------------------------------------------

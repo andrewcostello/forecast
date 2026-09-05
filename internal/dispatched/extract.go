@@ -67,6 +67,26 @@ const (
 	DocumentMalformed DocumentKind = "malformed_document"
 )
 
+// ReadingSnapshot exposes decoded predictive fields to callers. These are usable
+// only when Reading.Err is nil; Reading.Identity remains independently usable.
+// Reading is an in-memory pipeline carrier, not the portable artifact schema.
+type ReadingSnapshot struct {
+	Role           Role
+	AuthoredModel  string
+	Status         string
+	IterationCount int
+}
+
+// ReadingIdentity is decoded from individual YAML scalar nodes before the rest
+// of the row. Known means successfully decoded and valid (nonblank/unpadded ID,
+// valid timestamp); raw presence remains on Reading.Present. An unrelated field
+// error cannot erase these keys. Invalid run identity cannot prove a holdout.
+type ReadingIdentity struct {
+	RunID     Measured[string]
+	Key       Measured[string]
+	StartedAt Measured[time.Time]
+}
+
 // Reading is the envelope for one discovered tasks-YAML row, whether or not
 // it parsed (F3: every examined snapshot receives a Disposition). Ref names
 // the reading; Ref.Row is the 1-based position in the document's tasks sequence,
@@ -77,14 +97,19 @@ const (
 //
 // JoinEvidence classifies DocumentNotTasks before field/parse errors. A
 // task row with Err set is malformed; absent join keys are counted separately.
+// Reading retains identity and selection evidence even when predictive decoding
+// fails. On excluded envelopes Identity/Ref/Err remain; Snapshot and CompletedAt
+// are cleared after the exclusion marker is computed.
 type Reading struct {
-	Kind DocumentKind
+	Identity    ReadingIdentity
+	CompletedAt Measured[time.Time]
+	Kind        DocumentKind
 	// Excluded is empty, DispositionHeldOut, or DispositionAfterCutoff. Such an
 	// envelope keeps identity/citation only; JoinEvidence audits but never samples it.
 	Excluded Disposition
 	Ref      ReadingRef
 	Present  RowFields
-	Snapshot taskSnapshot
+	Snapshot ReadingSnapshot
 	Err      error
 }
 

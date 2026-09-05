@@ -85,11 +85,18 @@ type Artifact struct {
 // only; amended sampling uses Evidence.Observations exclusively.
 const EvidenceSchemaVersion = 4
 
+// BaselineSchemaVersion is the current legacy writer version. Only the amended
+// FC-1 Build may emit EvidenceSchemaVersion after filling both required payloads.
+const BaselineSchemaVersion = 3
+
 // ArtifactEvidence is the complete serializable join audit and joint sample.
 // A nil payload means unavailable (legacy version 3); all counters inside a version 4
 // payload are present, including zero. Durations on Attempt use nanoseconds.
 // FC-1 initializes every list in version 4 evidence (including nested lists) to
 // [] rather than null. Canonical JSON-value equality includes that distinction.
+// Attempt outcome and terminal conflict outcome are done/blocked/unfinished text.
+// Compatibility projections map amended EvidenceNone="" to legacy "none",
+// leaving "yaml" and "journal" unchanged; amended sampling never reads projections.
 // Reading revisions use stable strings; Cell retains legacy Role/Model JSON keys.
 // Limits must disclose recorded_task_spawns cost scope, excluded cache tokens,
 // and that unrecorded reviewer/operator spend is not total-process cost.
@@ -523,7 +530,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	cells := summarizeCells(table)
 	coverage.finishTarget(required, cells, opts.MinObservations)
 	artifact := Artifact{
-		SchemaVersion: 3,
+		SchemaVersion: BaselineSchemaVersion,
 		GeneratedAt:   opts.Now.UTC(),
 		Observations:  observations,
 		Cells:         cells,

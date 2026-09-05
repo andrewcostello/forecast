@@ -333,6 +333,7 @@ type WallBreakdown struct {
 
 // WallSummary partitions elapsed into classified phases and the residual.
 type WallSummary struct {
+	Complete     bool          `json:"complete"`
 	Development  time.Duration `json:"development_ns"`
 	PanelReview  time.Duration `json:"panel_review_ns"`
 	Verifier     time.Duration `json:"verifier_ns"`
@@ -362,6 +363,8 @@ type FieldEvidence struct {
 // Any merge selects a value and its citation atomically. Terminal outcome,
 // terminal instant, elapsed and their citations form one selection unit.
 // Equal-authority incompatible values are conflicts, never independent maxima.
+// Each aggregate FieldEvidence names the least canonical counted event. Its
+// corresponding Attempt event list includes ALL counted refs, including that one.
 type ObservationEvidence struct {
 	Role          FieldEvidence `json:"role"`
 	Model         FieldEvidence `json:"model"`

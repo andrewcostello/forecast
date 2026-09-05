@@ -60,6 +60,9 @@ const (
 	SpawnKindVerifierIterate    = "verifier-iterate"
 	SpawnKindTestFixRetry       = "test-fix-retry"
 	SpawnKindCommitRetry        = "commit-retry"
+	SpawnKindPushRetry          = "push-retry"
+	SpawnKindSummaryRecovery    = "summary-recovery"
+	ForcedByPathClassification  = "path_classification"
 )
 
 // JournalIdentity names one journal file: the run it belongs to, the source
@@ -155,7 +158,7 @@ type Attempt struct {
 
 	// Model is the final recorded implementing stamp: the model on the last
 	// implementing task_spawn_finished (implementer, panel-iterate, verifier-iterate,
-	// test-fix-retry or commit-retry). Verifier/unknown kinds do not stamp a model. Unknown when no such
+	// test-fix-retry, commit-retry, push-retry or summary-recovery). Verifier/unknown kinds do not stamp a model. Unknown when no such
 	// spawn carried a model (DispositionAbsentStamp); never the planned
 	// model from task_started nor the authored YAML model. Its evidence is
 	// Evidence.Model; there is no second copy.
@@ -163,7 +166,8 @@ type Attempt struct {
 	// Cascades counts agent_fallback events; a cascaded attempt is disclosed,
 	// and Model describes the closing model only. Evidence.Cascades cites
 	// the least agent_fallback event, or EvidenceNone when Cascades is 0.
-	Cascades int `json:"cascades"`
+	Cascades      int        `json:"cascades"`
+	CascadeEvents []EventRef `json:"cascade_events"`
 
 	// Outcome is OutcomeDone/OutcomeBlocked on a terminal event, else
 	// OutcomeUnfinished with Elapsed measured to Cutoff. Blocked and
@@ -175,7 +179,7 @@ type Attempt struct {
 	Elapsed    time.Duration `json:"elapsed_ns"`
 	Wall       WallBreakdown `json:"wall"`
 	// Corrections counts panel_iterate + verification_iterate markers plus
-	// test-fix-retry/commit-retry spawn finishes, each once. Reviews counts only
+	// test-fix-retry/commit-retry/push-retry/summary-recovery finishes, each once. Reviews counts only
 	// invocation-shaped panel_started; Verifications counts verification_started
 	// only (not skipped, mechanical, iterate or verdict). Each evidence field cites
 	// the least canonical counted event, or EvidenceNone for zero; full lists follow.
@@ -193,6 +197,8 @@ type Attempt struct {
 	// quantities are not included. CostScope must equal CostScopeRecordedSpawns;
 	// separate panel-seat/operator spend absent from journals is outside this
 	// measurement. Consumers must label that scope, never call it total process cost.
+	// Every counted-event list (including CascadeEvents) is COMPLETE, including
+	// the least event named by FieldEvidence, in canonical order. Zero lists are [].
 	// Available per-quantity event lists remain even when the total is unknown.
 	CostScope string `json:"cost_scope"`
 
@@ -213,8 +219,25 @@ type Attempt struct {
 	Evidence ObservationEvidence `json:"evidence"`
 }
 
-// Censored reports whether Elapsed is a lower bound.
-func (a Attempt) Censored() bool { return a.Outcome != OutcomeDone }
+// Censored rejects invalid outcomes with ErrInvalidOutcome, otherwise reports
+// whether elapsed is a lower bound. FC-JOURNAL body, F4-OUTCOME-WIRE.
+func (a Attempt) Censored() (bool, error) {
+	return false, fmt.Errorf("%w: Attempt.Censored", ErrNotImplemented)
+}
+
+// MarshalJSON emits textual outcome done/blocked/unfinished in schema 4; invalid
+// outcomes wrap ErrInvalidOutcome. All other fields retain their declared wire
+// tags and Measured representation. FC-JOURNAL body; baseline Outcome is unchanged.
+func (a Attempt) MarshalJSON() ([]byte, error) {
+	return nil, fmt.Errorf("%w: Attempt.MarshalJSON", ErrNotImplemented)
+}
+
+// UnmarshalJSON rejects missing/unknown/non-text outcome with ErrInvalidOutcome;
+// successful decoding never converts absent outcome to a plausible censored row.
+// FC-JOURNAL body; see F4-OUTCOME-WIRE and F4-SCHEMA-ROUNDTRIP.
+func (a *Attempt) UnmarshalJSON(data []byte) error {
+	return fmt.Errorf("%w: Attempt.UnmarshalJSON", ErrNotImplemented)
+}
 
 // AttemptSet is what ReduceAttempts yields for one journal: the unambiguous
 // attempts, the identities that were excluded as ambiguous (each counted
@@ -291,31 +314,11 @@ func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader,
 	return ParsedJournal{Journal: journal}, fmt.Errorf("%w: ParseEvents(%s)", ErrNotImplemented, journal.Path)
 }
 
-// ReduceAttempts folds one parsed journal into attempts under the F1/F2
-// rules: one Attempt per unambiguous AttemptID; identical triples excluded
-// as ambiguous; elapsed to the terminal event or to cutoff; a validated
-// disjoint WallBreakdown with Complete false when phase data is missing;
-// corrections separate from reviews; cost and tokens summed once with their
-// EventRefs; implementing stamp with cascade count; AttemptSet.Journal and
-// AttemptSet.Diagnostics carried over from parsed. The result is
-// deterministic under permutations of events that share a timestamp.
-//
-// FC-JOURNAL body. Parameters are named so the body can use them; the
-// scaffold returns ErrNotImplemented and reads none of them.
-// Cutoff must be nonzero (ErrInvalidSelection otherwise), is normalized to UTC,
-// and is the sole extraction instant; no wall clock is read here.
-// Validate/deduplicate direct ParsedJournal inputs under the EventRef rule too;
-// physical sequence-less lines remain distinct. Malformed collisions update the
-// returned Diagnostics.LinesUnparsed, so FC-1 must propagate that to PARTIAL.
-// Events after cutoff do not contribute terminal/model/time/round/cost evidence.
-// Starts strictly after cutoff are omitted and counted in StartsAfterCutoff;
-// starts at cutoff are included. Duration/token/count/sum overflow returns
-// ErrMeasurementOverflow beside retained valid attempts; it never saturates.
-// Reversed attempt elapsed wraps ErrReversedInterval. Build marks a diagnostic
-// artifact PARTIAL after reduction error and cannot license prediction from it.
-// All emitted timestamps and citation lists use the canonical order in
-// WallBreakdown. Missing cost/tokens on ANY recorded task spawn
-// makes that total unknown; retain observed event citations for audit even then.
+// ReduceAttempts reduces one journal at a required nonzero UTC cutoff. It returns
+// retained valid attempts/diagnostics alongside ErrMeasurementOverflow or
+// ErrReversedInterval, and ErrInvalidSelection for an invalid cutoff.
+// Authoritative behavior: notes/FC-SCAFFOLD.md, F1/F2 tables and the "Entry-point
+// contracts" section. FC-JOURNAL owns this and the Attempt JSON/Censored seams.
 func ReduceAttempts(parsed ParsedJournal, cutoff time.Time) (AttemptSet, error) {
 	return AttemptSet{Journal: parsed.Journal}, fmt.Errorf("%w: ReduceAttempts(%s)", ErrNotImplemented, parsed.Journal.Path)
 }
@@ -327,7 +330,8 @@ func ReduceAttempts(parsed ParsedJournal, cutoff time.Time) (AttemptSet, error) 
 // ErrUnattributable a missing start, ErrReversedInterval a reversed span, and
 // ErrOverlappingIntervals an overlap/outside span. Negative elapsed wraps
 // ErrNegativeValue; noncanonical order wraps ErrNonCanonicalEvidence; arithmetic
-// overflow wraps ErrMeasurementOverflow (checked, never saturating). Unclassified is elapsed
+// overflow wraps ErrMeasurementOverflow (checked, never saturating). Complete is
+// copied from WallBreakdown so missing phases remain distinguishable. Unclassified is elapsed
 // minus classified time. No duration is returned on error.
 // FC-JOURNAL implements this after TestFCJournalContract is authored.
 func SummarizeWall(w WallBreakdown) (WallSummary, error) {

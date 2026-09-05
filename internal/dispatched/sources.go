@@ -6,8 +6,7 @@ package dispatched
 // (ReadSources) and may replace the baseline readers. The baseline readers
 // are the FC-1 code moved verbatim from extract.go; Build still runs them
 // until FC-1 switches Build to ReadSources, so the artifact does not change
-// under the move. Everything in this file that touches the filesystem or
-// runs git lives here; legacy YAML decoding stays in extract.go, while
+// under the move. Source discovery and Git reads live here; legacy YAML decoding stays in extract.go, while
 // the amended per-row parser is owned here by FC-SOURCES.
 
 import (
@@ -43,6 +42,8 @@ const (
 	// cap exists so an unexpectedly large repository fails loudly and
 	// countably rather than running until it is killed.
 	defaultMaxHistoryCommits = 5000
+	// DefaultMaxCommits is the amended history bound; the legacy default above stays fixed.
+	DefaultMaxCommits = 5000
 	// DefaultMaxLineBytes is the longest journal line that is decoded; the
 	// baseline scanner used this value.
 	DefaultMaxLineBytes = 16 * 1024 * 1024
@@ -72,7 +73,7 @@ type ReadBounds struct {
 // Validate wraps ErrInvalidSourceSpec for any negative bound when FC-SOURCES
 // fills this named stub. Zero fields mean their documented defaults.
 func (b ReadBounds) Validate() error {
-	return fmt.Errorf("%w: source validation", ErrNotImplemented)
+	return fmt.Errorf("%w: ReadBounds.Validate", ErrNotImplemented)
 }
 
 // SourceKind is what a source contributes.
@@ -121,7 +122,7 @@ type SourceSpec struct {
 // undeclared kind, missing roots on a YAML source, a blank/absolute/escaping
 // root, or roots on a journal source. FC-SOURCES fills this named stub.
 func (s SourceSpec) Validate() error {
-	return fmt.Errorf("%w: source validation", ErrNotImplemented)
+	return fmt.Errorf("%w: SourceSpec.Validate", ErrNotImplemented)
 }
 
 // SourceState is the completeness of one source or of the whole manifest.
@@ -196,13 +197,13 @@ type Selection struct {
 	AllowEmpty    bool
 }
 
-// Validate wraps ErrInvalidSelection for a held-out run ID that is blank,
+// Validate requires a nonzero Cutoff and wraps ErrInvalidSelection for a held-out run ID that is blank,
 // that differs from its whitespace-trimmed form, or that is listed twice.
 // Rejecting an untrimmed ID (rather than trimming it) keeps the stored list
 // identical to the compared one, so a holdout can never pass validation and
 // then fail to match the run it names. FC-SOURCES fills this named stub.
 func (s Selection) Validate() error {
-	return fmt.Errorf("%w: source validation", ErrNotImplemented)
+	return fmt.Errorf("%w: Selection.Validate", ErrNotImplemented)
 }
 
 // UnmatchedHoldouts wraps ErrInvalidSelection when any held-out run ID names
@@ -212,7 +213,7 @@ func (s Selection) Validate() error {
 // out into the corpus the artifact is then used to predict. ReadSources
 // calls this once discovery is complete. This is a named stub for FC-SOURCES.
 func (s Selection) UnmatchedHoldouts(discoveredRunIDs []string) error {
-	return fmt.Errorf("%w: source validation", ErrNotImplemented)
+	return fmt.Errorf("%w: Selection.UnmatchedHoldouts", ErrNotImplemented)
 }
 
 // SourceManifest is the record of every source supplied to one extraction.
@@ -222,15 +223,17 @@ type SourceManifest struct {
 	Cutoff        time.Time      `json:"cutoff"`
 	HoldoutRunIDs []string       `json:"holdout_run_ids,omitempty"`
 	AllowEmpty    bool           `json:"allow_empty"`
-	Bounds        ReadBounds     `json:"bounds"`
-	State         SourceState    `json:"state"`
+	// Bounds stores effective positive values, never unresolved zero defaults.
+	Bounds ReadBounds  `json:"bounds"`
+	State  SourceState `json:"state"`
 }
 
 // ValidateComplete rejects nil/empty manifests, non-COMPLETE aggregate or
 // source states, shallow/grafted/replaced history, cancellation, positive
 // malformed/unreadable/bound counters, and invalid/negative counters. Zero
 // matching task rows alone do not make a successfully enumerated YAML source
-// incomplete. At least one journal must have been read across the manifest.
+// incomplete. Require nonzero cutoff, valid unique source identities and positive
+// resolved bounds; at least one journal must have been read across the manifest.
 // All completed-body refusals wrap ErrSourceIncomplete. Until FC-SOURCES
 // lands, this nil-safe seam returns ErrNotImplemented for every input.
 func (m *SourceManifest) ValidateComplete() error {
@@ -238,12 +241,17 @@ func (m *SourceManifest) ValidateComplete() error {
 }
 
 // ReadingRef identifies one reading of a tasks YAML: the source, the
-// repository-relative path, and the revision it was read at.
+// repository-relative path, revision, and 1-based task row (zero for document
+// envelopes). RecordedAt is the UTC Git committer instant for a historical
+// revision or observed file mtime for live input. It is required by amended
+// selection; it is recorded metadata, not a guarantee against forged clocks.
 type ReadingRef struct {
-	SourceID   string   `json:"source_id"`
-	Repository string   `json:"repository"`
-	Path       string   `json:"path"`
-	Revision   Revision `json:"revision"`
+	Row        int       `json:"row"`
+	RecordedAt time.Time `json:"recorded_at"`
+	SourceID   string    `json:"source_id"`
+	Repository string    `json:"repository"`
+	Path       string    `json:"path"`
+	Revision   Revision  `json:"revision"`
 }
 
 // SourceReadings retains every YAML envelope, including non-task documents
@@ -260,7 +268,13 @@ type SourceReadings struct {
 }
 
 // ReadSources validates each SourceSpec, unique source IDs, Selection and
-// nonnegative bounds before I/O; it applies the documented defaults to zeros.
+// nonnegative bounds before I/O; it applies the documented defaults to zeros
+// and stores the effective positive bounds in the manifest. Cutoff is required
+// and copied unchanged (UTC-normalized) into the manifest. No clock is read.
+// A reading with RecordedAt, started_at or completed_at after Cutoff is an
+// identity-only AfterCutoff envelope. YAML identity/role/outcome/cost fields from
+// later revisions cannot enter amended reconciliation. Missing revision time
+// is malformed/PARTIAL, not permission to ignore cutoff. See F3-CUTOFF-REPLAY.
 // Each missing/unreadable requested source returns ErrSourceMissing. Zero
 // discovered journals returns ErrSourceEmpty unless AllowEmpty; a valid YAML
 // source with zero task rows is complete, not a discovery failure. Non-task
@@ -538,7 +552,7 @@ func gitLines(ctx context.Context, repo string, args ...string) ([]string, error
 
 // readTargetTasks reads and validates the target task list. A row without a
 // key, valid role and nonblank model, or a repeated key, wraps ErrYAMLSource
-// (baseline) and ErrInvalidTarget (F4) so both classifications hold.
+// only, preserving baseline behavior. The amended FC-1 path uses ErrInvalidTarget.
 func readTargetTasks(path string) ([]yamlTask, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -561,7 +575,8 @@ func readTargetTasks(path string) ([]yamlTask, error) {
 	return doc.Tasks, nil
 }
 
-// parseReadings decodes each YAML tasks-sequence row independently, preserving
+// parseReadings copies the source citation and sets Ref.Row per envelope. It
+// decodes each YAML tasks-sequence row independently, preserving
 // valid siblings of type-invalid rows. Non-task documents yield one
 // DocumentNotTasks envelope, Row=0, Err=nil. Invalid document syntax or an
 // explicitly malformed tasks value yields DocumentMalformed, Row=0, Err set.

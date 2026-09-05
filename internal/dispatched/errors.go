@@ -29,7 +29,7 @@ var (
 	//
 	// Baseline name. The amended contract raises ErrEvidenceConflict for the
 	// same situation scoped to one AttemptID; Table.Add keeps this sentinel
-	// until FC-1 rebases the table on AttemptID.
+	// on the legacy path; amended reconciliation uses RecoveredAttempt.
 	ErrStampConflict = errors.New("dispatched: same row observed with different stamps")
 
 	// ErrCycle: the dependency graph is not acyclic.
@@ -97,8 +97,8 @@ var (
 	// does not exist or cannot be read. Missing is an error by default.
 	ErrSourceMissing = errors.New("dispatched: requested source is missing or unreadable")
 
-	// ErrSourceEmpty (F3): discovery succeeded and found zero journals or zero
-	// readings, and Selection.AllowEmpty was not set.
+	// ErrSourceEmpty (F3): discovery succeeded and found zero journals,
+	// and Selection.AllowEmpty was not set. Zero task readings alone is valid.
 	ErrSourceEmpty = errors.New("dispatched: source discovered no records")
 
 	// ErrSourceIncomplete (F3/F4): a PARTIAL or EMPTY source manifest reached

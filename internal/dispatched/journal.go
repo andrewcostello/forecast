@@ -49,23 +49,22 @@ const (
 	// to this constant.
 	ProducerDispatcherV0_1_0 = "0.1.0"
 
-	EventRunStarted           = "run_started"
-	EventTaskStarted          = "task_started"
-	EventTaskSpawnFinished    = "task_spawn_finished"
-	EventPanelStarted         = "panel_started"
-	EventPanelVerdict         = "panel_verdict"
-	EventPanelIterate         = "panel_iterate"
-	EventVerificationStarted  = "verification_started"
-	EventVerificationVerdict  = "verification_verdict"
-	EventVerificationIterate  = "verification_iterate"
-	EventAgentFallback        = "agent_fallback"
-	EventTaskDone             = "task_done"
-	EventTaskBlocked          = "task_blocked"
-	SpawnKindImplementer      = "implementer"
-	SpawnKindPanelIterate     = "panel-iterate"
-	SpawnKindVerifier         = "verifier"
-	SpawnKindReviewer         = "reviewer"
-	journalScannerInitialSize = 64 * 1024
+	EventRunStarted          = "run_started"
+	EventTaskStarted         = "task_started"
+	EventTaskSpawnFinished   = "task_spawn_finished"
+	EventPanelStarted        = "panel_started"
+	EventPanelVerdict        = "panel_verdict"
+	EventPanelIterate        = "panel_iterate"
+	EventVerificationStarted = "verification_started"
+	EventVerificationVerdict = "verification_verdict"
+	EventVerificationIterate = "verification_iterate"
+	EventAgentFallback       = "agent_fallback"
+	EventTaskDone            = "task_done"
+	EventTaskBlocked         = "task_blocked"
+	SpawnKindImplementer     = "implementer"
+	SpawnKindPanelIterate    = "panel-iterate"
+	SpawnKindVerifier        = "verifier"
+	SpawnKindReviewer        = "reviewer"
 )
 
 // JournalIdentity names one journal file: the run it belongs to, the source
@@ -92,21 +91,22 @@ type EventRef struct {
 	At      time.Time       `json:"at"`
 }
 
-// EventPayload is the subset of a journal payload the reducer reads. Every
-// number that can be absent in the producer is Measured: duration_ms and
-// cost_usd are null in real spawn records.
+// EventPayload mirrors scalar producer payloads. Nil means absent or JSON null;
+// a pointer to zero is measured zero. ParseEvents validates quantities and
+// ReduceAttempts lifts these wire values into Attempt's Measured fields.
+// DurationMillis is duration_ms on the wire; conversion to nanoseconds is checked.
 type EventPayload struct {
-	Model        string                  `json:"model"`
-	SpawnKind    string                  `json:"spawn_kind"`
-	Iteration    Measured[int]           `json:"iteration"`
-	InputTokens  Measured[int64]         `json:"input_tokens"`
-	OutputTokens Measured[int64]         `json:"output_tokens"`
-	CostUSD      Measured[float64]       `json:"cost_usd"`
-	Duration     Measured[time.Duration] `json:"duration_ns"`
-	FromAgent    string                  `json:"from_agent"`
-	ToAgent      string                  `json:"to_agent"`
-	Reason       string                  `json:"reason"`
-	Status       string                  `json:"status"`
+	Model          string   `json:"model"`
+	SpawnKind      string   `json:"spawn_kind"`
+	Iteration      *int     `json:"iteration"`
+	InputTokens    *int64   `json:"input_tokens"`
+	OutputTokens   *int64   `json:"output_tokens"`
+	CostUSD        *float64 `json:"cost_usd"`
+	DurationMillis *int64   `json:"duration_ms"`
+	FromAgent      string   `json:"from_agent"`
+	ToAgent        string   `json:"to_agent"`
+	Reason         string   `json:"reason"`
+	Status         string   `json:"status"`
 }
 
 // Event is one parsed journal line with a task key. Lines without a task
@@ -242,7 +242,10 @@ type AttemptConflict struct {
 // resolved identity. It never guesses: an undecodable line, an unparseable
 // timestamp and an over-bound line are counted in the diagnostics and
 // skipped; a read failure or cancellation is an error wrapping
-// ErrJournalSource or ErrSourceCancelled.
+// ErrJournalSource or ErrSourceCancelled (also ctx.Err()), with all parsed
+// events/diagnostics retained. Numeric decode/type failures count LinesUnparsed;
+// negative/non-finite quantities and duration-ms conversion overflow do too.
+// See F2-SPAWN-WIRE and F2-CORRECTIVE-BOUNDARY in the handoff table.
 //
 // FC-JOURNAL body. Parameters are named so the body can use them; the
 // scaffold returns ErrNotImplemented and reads none of them.
@@ -261,6 +264,8 @@ func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader,
 //
 // FC-JOURNAL body. Parameters are named so the body can use them; the
 // scaffold returns ErrNotImplemented and reads none of them.
+// Cutoff must be nonzero (ErrInvalidSelection otherwise), is normalized to UTC,
+// and is the sole extraction instant; no wall clock is read here.
 // Events after cutoff do not contribute terminal/model/time/round/cost evidence.
 // All emitted timestamps and citation lists use the canonical order in
 // WallBreakdown. Missing cost/tokens on ANY contributing implementing spawn
@@ -429,7 +434,7 @@ type journalSources struct {
 
 func scanJournal(ctx context.Context, reader io.Reader, path, runID string, out *journalSources) error {
 	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, journalScannerInitialSize), DefaultMaxLineBytes)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: scan %s: %w", ErrJournalSource, path, err)

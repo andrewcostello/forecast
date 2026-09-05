@@ -368,7 +368,7 @@ type ObservationEvidence struct {
 	Terminal      FieldEvidence `json:"terminal"`
 	Elapsed       FieldEvidence `json:"elapsed"`
 	Wall          FieldEvidence `json:"wall"`
-	Rounds        FieldEvidence `json:"rounds"`
+	Corrections   FieldEvidence `json:"corrections"`
 	Cascades      FieldEvidence `json:"cascades"`
 	Reviews       FieldEvidence `json:"reviews"`
 	Verifications FieldEvidence `json:"verifications"`

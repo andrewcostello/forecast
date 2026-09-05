@@ -79,14 +79,14 @@ type Artifact struct {
 }
 
 // EvidenceSchemaVersion is emitted only once FC-1 implements the amended build.
-// Version 1 retains legacy fields. Version 2 requires SourceManifest and Evidence;
+// Legacy version 3 retains its fields. Version 4 requires SourceManifest and Evidence;
 // consumers must reject missing payloads or unsupported versions, not default
 // their absence to zero. Legacy Observations/Cells are compatibility projections
 // only; amended sampling uses Evidence.Observations exclusively.
-const EvidenceSchemaVersion = 2
+const EvidenceSchemaVersion = 4
 
 // ArtifactEvidence is the complete serializable join audit and joint sample.
-// A nil payload means unavailable (version 1); all counters inside a version 2
+// A nil payload means unavailable (legacy version 3); all counters inside a version 4
 // payload are present, including zero. Durations on Attempt use nanoseconds.
 type ArtifactEvidence struct {
 	Observations     []RecoveredAttempt `json:"observations"`
@@ -112,8 +112,18 @@ type Eligibility struct {
 	Reasons      []string `json:"reasons,omitempty"`
 }
 
-// PredictionEligibility requires schema version 2, nonnil Evidence and a valid
-// complete SourceManifest, a nonempty valid target and sufficient completed
+// TargetRow preserves each target identity and cell before coverage aggregation.
+// Callers pass original rows, including invalid ones, so validation cannot hide
+// blank/duplicate keys or roles/models that aggregation would discard.
+type TargetRow struct {
+	Key   string `json:"key"`
+	Role  Role   `json:"role"`
+	Model string `json:"model"`
+}
+
+// PredictionEligibility requires SchemaVersion == EvidenceSchemaVersion exactly,
+// nonnil Evidence, a valid complete SourceManifest, a nonempty valid target
+// argument and sufficient completed
 // samples in every required cell. minCompleted<=0 uses DefaultMinObservations;
 // Eligibility.MinCompleted records the effective positive threshold.
 // Invalid schema/payload or incomplete sources yield Eligible=false and a
@@ -123,9 +133,13 @@ type Eligibility struct {
 // With refuse=false, ordinary insufficiency is a diagnostic result, not an
 // error. The scaffold returns ErrNotImplemented regardless of inputs.
 //
-// FC-1 body. Parameters are named so the body can use them; the scaffold
-// returns ErrNotImplemented and reads none of them.
-func PredictionEligibility(artifact Artifact, minCompleted int, refuse bool) (Eligibility, error) {
+// Validate target rows first: empty -> ErrEmptyTarget, then declaration-order
+// invalid/duplicate keys, invalid roles or blank models -> ErrInvalidTarget.
+// Compute completed counts from valid Evidence.Observations, not legacy Cells/Coverage.
+// Malformed joint records or cutoff/cell/model contradictions make the evidence
+// payload invalid; refuse with ErrSourceIncomplete and ErrNotEligible as above.
+// FC-1 body; this scaffold returns ErrNotImplemented.
+func PredictionEligibility(artifact Artifact, target []TargetRow, minCompleted int, refuse bool) (Eligibility, error) {
 	return Eligibility{}, fmt.Errorf("%w: PredictionEligibility(min %d)", ErrNotImplemented, minCompleted)
 }
 
@@ -254,6 +268,13 @@ type Conflict struct {
 	Reason    string    `json:"reason"`
 }
 
+// The amended FC-1 Build captures one instant (Selection.Cutoff, else opts.Now,
+// else a single clock read), freezes it into Selection before ReadSources, and
+// uses it for reduction/join/manifest. It parses target rows before aggregation,
+// maps target errors to ErrInvalidTarget, and calls PredictionEligibility with
+// those rows. On source error it returns a nonnil diagnostic BuildResult whenever
+// a manifest exists, preserving PARTIAL metadata beside the error; the CLI must
+// write/report that artifact before returning the data error without usage spam.
 // Build constructs the union reference class. The stamped journal model is
 // the only model used for attribution; the authored YAML model is retained
 // only to count disagreements.

@@ -44,11 +44,6 @@ type taskSnapshot struct {
 	SourceID string
 }
 
-// Ref is the reading reference of the snapshot.
-func (s taskSnapshot) Ref() ReadingRef {
-	return ReadingRef{SourceID: s.SourceID, Repository: s.Repository, Path: s.Path, Revision: s.Revision}
-}
-
 // RowFields records which join-key fields were PRESENT (non-empty) in the
 // raw YAML row, independently of whether they parsed. It lets the join tell
 // a missing started_at (DispositionMissingJoinKeys) from a malformed one
@@ -65,7 +60,7 @@ func (f RowFields) Complete() bool { return f.Key && f.RunID && f.StartedAt }
 
 // Reading is the envelope for one discovered tasks-YAML row, whether or not
 // it parsed (F3: every examined snapshot receives a Disposition). Ref names
-// the reading; Row is the 1-based position in the document's tasks sequence,
+// the reading; Ref.Row is the 1-based position in the document's tasks sequence,
 // 0 when the document itself did not decode; Present is raw-field presence;
 // Snapshot is usable only when Err is nil. Err is the parse failure for a
 // row or document that could not be decoded; it is never a read failure,
@@ -89,7 +84,6 @@ type Reading struct {
 	// envelope keeps identity/citation only; JoinEvidence audits but never samples it.
 	Excluded Disposition
 	Ref      ReadingRef
-	Row      int
 	Present  RowFields
 	Snapshot taskSnapshot
 	Err      error

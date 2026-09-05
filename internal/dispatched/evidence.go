@@ -29,7 +29,10 @@ const (
 	DispositionRecovered       Disposition = "recovered"
 	DispositionNotTaskDocument Disposition = "not_task_document"
 	// DispositionDuplicateReading: a further reading of an attempt that
-	// already had one from the same reading reference. Counted, not sampled.
+	// already has a recovered envelope, even across different revisions. Once all
+	// compatible evidence has been reconciled, the least canonical ReadingRef is
+	// Recovered; every other envelope for that AttemptID is DuplicateReading.
+	// All citations remain; conflicting attempts get no Recovered envelope.
 	DispositionDuplicateReading Disposition = "duplicate_reading"
 	// DispositionMissingJoinKeys: no key, run ID or started_at in the raw
 	// row (Reading.Present incomplete) while the row otherwise parsed.
@@ -87,11 +90,10 @@ func (d Disposition) Valid() bool {
 
 // Examined is one reading's disposition with the identity it was matched
 // to (zero when no attempt could be named) and a reason a human can act on.
-// Row is the reading's row in its document, so two rows of one file are two
+// Reading.Row identifies the row, so two rows of one file are two
 // Examined entries.
 type Examined struct {
 	Reading     ReadingRef  `json:"reading"`
-	Row         int         `json:"row"`
 	Attempt     AttemptID   `json:"attempt"`
 	Disposition Disposition `json:"disposition"`
 	Reason      string      `json:"reason"`
@@ -151,9 +153,16 @@ type EvidenceJoin struct {
 // terminal time and elapsed treated as one unit. Canonicalize all instants to
 // UTC without monotonic components. Equal-source citation ties compare the
 // complete journal identity (including Producer), sequence, line, type, instant,
-// then the complete ReadingRef. A tie never justifies choosing incompatible
+// then ReadingRef source ID/repository/path/revision source/commit/row/RecordedAt. A tie never justifies choosing incompatible
 // values. Full event lists and verification counts remain in RecoveredAttempt.
-func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection, now time.Time) (EvidenceJoin, error) {
+// Selection.Validate is mandatory. All Attempt.Cutoff values must equal the
+// nonzero Selection.Cutoff or return ErrInvalidSelection; unfinished elapsed is
+// always measured to that instant. Recheck Ref.RecordedAt and YAML start/terminal
+// against cutoff, rejecting missing recorded times as unrecoverable. A YAML-only
+// terminal can contribute only from a revision and terminal at/before cutoff.
+// Invalid roles, outcomes, negative/non-finite measurements, overflow or invalid
+// citations are unrecoverable; no invalid joint record enters Observations.
+func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection) (EvidenceJoin, error) {
 	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d journals, %d readings)", ErrNotImplemented, len(attempts), len(readings))
 }
 

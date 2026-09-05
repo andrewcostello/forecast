@@ -102,17 +102,27 @@ const BaselineSchemaVersion = 3
 // Limits must disclose recorded_task_spawns cost scope, excluded cache tokens,
 // and that unrecorded reviewer/operator spend is not total-process cost.
 type ArtifactEvidence struct {
-	StartsAfterCutoff int                `json:"starts_after_cutoff"`
-	Observations      []RecoveredAttempt `json:"observations"`
-	Examined          []Examined         `json:"examined"`
-	Dispositions      []DispositionCount `json:"dispositions"`
-	Conflicts         []AttemptConflict  `json:"conflicts"`
-	Ambiguous         []AmbiguousAttempt `json:"ambiguous"`
-	UniqueRows        int                `json:"unique_rows"`
-	Attempts          int                `json:"attempts"`
-	Recovered         int                `json:"recovered"`
-	LostAttempts      []AttemptID        `json:"lost_attempts"`
-	ExcludedJournals  []JournalIdentity  `json:"excluded_journals"`
+	RowsWithYAMLOnlyTerminal int                `json:"rows_with_yaml_only_terminal"`
+	StartsAfterCutoff        int                `json:"starts_after_cutoff"`
+	Observations             []RecoveredAttempt `json:"observations"`
+	Examined                 []Examined         `json:"examined"`
+	Dispositions             []DispositionCount `json:"dispositions"`
+	Conflicts                []AttemptConflict  `json:"conflicts"`
+	Ambiguous                []AmbiguousAttempt `json:"ambiguous"`
+	UniqueRows               int                `json:"unique_rows"`
+	Attempts                 int                `json:"attempts"`
+	Recovered                int                `json:"recovered"`
+	LostAttempts             []AttemptID        `json:"lost_attempts"`
+	ExcludedJournals         []JournalIdentity  `json:"excluded_journals"`
+}
+
+// EligibilityCell is computed from joint evidence, never legacy coverage counts.
+type EligibilityCell struct {
+	Role         Role   `json:"role"`
+	Model        string `json:"model"`
+	Completed    int    `json:"completed"`
+	MinCompleted int    `json:"min_completed"`
+	Eligible     bool   `json:"eligible"`
 }
 
 // Eligibility is the F4 prediction gate result. Eligible is true only when
@@ -121,9 +131,10 @@ type ArtifactEvidence struct {
 // completed samples. Reasons lists every failed condition; MinCompleted is
 // reported as a threshold, not as proof of calibration.
 type Eligibility struct {
-	Eligible     bool     `json:"eligible"`
-	MinCompleted int      `json:"min_completed"`
-	Reasons      []string `json:"reasons,omitempty"`
+	Cells        []EligibilityCell `json:"cells"`
+	Eligible     bool              `json:"eligible"`
+	MinCompleted int               `json:"min_completed"`
+	Reasons      []string          `json:"reasons,omitempty"`
 }
 
 // TargetRow preserves each target identity and cell before coverage aggregation.
@@ -150,7 +161,8 @@ type TargetRow struct {
 // Validate target rows first: empty -> ErrEmptyTarget, then declaration-order
 // invalid/duplicate keys, invalid roles or blank models -> ErrInvalidTarget.
 // Compute completed counts from valid Evidence.Observations, not legacy Cells/Coverage.
-// Malformed joint records or cutoff/cell/model contradictions make the evidence
+// A sampled run listed in manifest holdouts, a mismatched manifest/attempt
+// cutoff, malformed joint records or cell/model contradictions make the evidence
 // payload invalid; refuse with ErrSourceIncomplete and ErrNotEligible as above.
 // FC-1 body; this scaffold returns ErrNotImplemented.
 func PredictionEligibility(artifact Artifact, target []TargetRow, minCompleted int, refuse bool) (Eligibility, error) {

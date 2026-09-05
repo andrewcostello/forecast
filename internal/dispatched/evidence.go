@@ -41,7 +41,9 @@ const (
 	// document that would not decode (Reading.Err != nil). Distinct from
 	// DispositionMissingJoinKeys: a malformed started_at was present.
 	DispositionMalformed Disposition = "malformed"
-	// DispositionNoMatchingRun: no journal has that (run ID, key).
+	// DispositionNoMatchingRun: no journal attempt has this run AND key. Missing
+	// run and existing-run/missing-key cases share this bucket; unmatched YAML
+	// never creates a LostAttempt or enlarges the journal denominator.
 	DispositionNoMatchingRun Disposition = "no_matching_run_key"
 	// DispositionNoMatchingStart: the run/key exists but no task_started has
 	// that exact instant. Stale or hand-edited timestamps land here; there
@@ -97,10 +99,12 @@ func (d Disposition) Valid() bool {
 // Reading.Row identifies the row, so two rows of one file are two
 // Examined entries.
 type Examined struct {
-	Reading     ReadingRef  `json:"reading"`
-	Attempt     AttemptID   `json:"attempt"`
-	Disposition Disposition `json:"disposition"`
-	Reason      string      `json:"reason"`
+	Identity    ReadingIdentity     `json:"identity"`
+	CompletedAt Measured[time.Time] `json:"completed_at"`
+	Reading     ReadingRef          `json:"reading"`
+	Attempt     AttemptID           `json:"attempt"`
+	Disposition Disposition         `json:"disposition"`
+	Reason      string              `json:"reason"`
 }
 
 // DispositionCount is one row of the per-disposition tally.
@@ -126,19 +130,20 @@ type RecoveredAttempt struct {
 // separately; LostAttempts are started attempts with no recovered reading,
 // listed individually so a recovered sibling cannot hide them.
 type EvidenceJoin struct {
-	ExcludedJournals  []JournalIdentity
-	StartsAfterCutoff int
-	Observations      []RecoveredAttempt
-	Examined          []Examined
-	Dispositions      []DispositionCount
-	Conflicts         []AttemptConflict
-	UniqueRows        int
-	Attempts          int
-	Recovered         int
-	LostAttempts      []AttemptID
-	Ambiguous         []AmbiguousAttempt
-	HeldOutRuns       []string
-	CutoffApplied     time.Time
+	RowsWithYAMLOnlyTerminal int
+	ExcludedJournals         []JournalIdentity
+	StartsAfterCutoff        int
+	Observations             []RecoveredAttempt
+	Examined                 []Examined
+	Dispositions             []DispositionCount
+	Conflicts                []AttemptConflict
+	UniqueRows               int
+	Attempts                 int
+	Recovered                int
+	LostAttempts             []AttemptID
+	Ambiguous                []AmbiguousAttempt
+	HeldOutRuns              []string
+	CutoffApplied            time.Time
 }
 
 // JoinEvidence reconciles attempts/readings under a validated Selection. Journals
@@ -146,7 +151,8 @@ type EvidenceJoin struct {
 // AttemptSet must belong to it. Any supplied held-out AttemptSet/Attempt is
 // refused with ErrInvalidSelection, before it can contribute observations or
 // LostAttempts; run identities must also agree between each set, attempt and start. Unmatched holdouts and inconsistent markers wrap
-// ErrInvalidSelection before reconciliation. Full exclusions, deterministic audit
+// ErrInvalidSelection before reconciliation. Duplicate universe run IDs (even
+// byte-identical replicas) wrap ErrDuplicateJournalRun; no replica merging. Full exclusions, deterministic audit
 // and error rules are authoritative in notes/FC-SCAFFOLD.md "Entry-point contracts"
 // and F1/F3 rows. FC-1 body; ReadSources supplies the universe via Journals plus
 // ExcludedJournals, so valid held-out runs remain checkable after event removal.

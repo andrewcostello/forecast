@@ -39,9 +39,6 @@ type taskSnapshot struct {
 	Revision        Revision
 	Repository      string
 	Path            string
-	// SourceID names the SourceSpec the reading came from; empty on the
-	// baseline readers, which predate explicit sources.
-	SourceID string
 }
 
 // RowFields records which join-key fields were PRESENT (non-empty) in the
@@ -82,9 +79,9 @@ type ReadingSnapshot struct {
 // valid timestamp); raw presence remains on Reading.Present. An unrelated field
 // error cannot erase these keys. Invalid run identity cannot prove a holdout.
 type ReadingIdentity struct {
-	RunID     Measured[string]
-	Key       Measured[string]
-	StartedAt Measured[time.Time]
+	RunID     Measured[string]    `json:"run_id"`
+	Key       Measured[string]    `json:"key"`
+	StartedAt Measured[time.Time] `json:"started_at"`
 }
 
 // Reading is the envelope for one discovered tasks-YAML row, whether or not
@@ -98,8 +95,9 @@ type ReadingIdentity struct {
 // JoinEvidence classifies DocumentNotTasks before field/parse errors. A
 // task row with Err set is malformed; absent join keys are counted separately.
 // Reading retains identity and selection evidence even when predictive decoding
-// fails. On excluded envelopes Identity/Ref/Err remain; Snapshot and CompletedAt
-// are cleared after the exclusion marker is computed.
+// fails. Excluded envelopes retain Identity/Ref/Err/CompletedAt strictly for
+// selection audit; Snapshot is cleared. CompletedAt is never sampled from an
+// excluded row, but permits validating a completion-only cutoff exclusion.
 type Reading struct {
 	Identity    ReadingIdentity
 	CompletedAt Measured[time.Time]

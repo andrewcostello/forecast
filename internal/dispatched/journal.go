@@ -55,6 +55,7 @@ const (
 	EventTaskDone               = "task_done"
 	EventTaskBlocked            = "task_blocked"
 	SpawnKindImplementer        = "implementer"
+	SpawnKindDesign             = "design"
 	SpawnKindPanelIterate       = "panel-iterate"
 	SpawnKindVerifier           = "verifier"
 	SpawnKindVerifierIterate    = "verifier-iterate"
@@ -103,6 +104,7 @@ type EventRef struct {
 // ReduceAttempts lifts these wire values into Attempt's Measured fields.
 // DurationMillis is duration_ms on the wire; conversion to nanoseconds is checked.
 type EventPayload struct {
+	DispatcherVersion   *string  `json:"dispatcher_version"`
 	Model               string   `json:"model"`
 	SpawnKind           string   `json:"spawn_kind"`
 	Iteration           *int     `json:"iteration"`
@@ -118,9 +120,20 @@ type EventPayload struct {
 	ForcedBy            string   `json:"forced_by"`
 }
 
-// Event is one parsed journal line with a task key. Lines without a task
-// key (run_started, preflight, heartbeat) are not Events; ParseEvents keeps
-// run_started only to fill JournalIdentity.Producer.
+// JournalLine is the producer envelope, distinct from portable EventRef tags.
+// HasSeq is derived from Seq!=nil; explicit zero is present, absent/null is not.
+// Negative/noninteger/overflowing seq is malformed. Timestamp is RFC3339Nano.
+type JournalLine struct {
+	Seq       *int            `json:"seq"`
+	Hash      string          `json:"hash"`
+	PrevHash  string          `json:"prev_hash"`
+	EventType string          `json:"event_type"`
+	TaskKey   string          `json:"task_key"`
+	Timestamp string          `json:"timestamp"`
+	Payload   json.RawMessage `json:"payload"`
+}
+
+// Event is a parsed task-keyed event. Run metadata stays in ParsedJournal identity/diagnostics.
 type Event struct {
 	Ref     EventRef     `json:"ref"`
 	TaskKey string       `json:"task_key"`
@@ -140,12 +153,16 @@ type ParsedJournal struct {
 // JournalDiagnostics counts what a journal could not yield. Every count is
 // reported; none is a reason to drop the rest of the journal.
 type JournalDiagnostics struct {
-	Lines           int  `json:"lines"`
-	Events          int  `json:"events"`
-	LinesUnparsed   int  `json:"lines_unparsed"`
-	BadTimestamps   int  `json:"bad_timestamps"`
-	LinesOverBound  int  `json:"lines_over_bound"`
-	MissingProducer bool `json:"missing_producer"`
+	ProducerConflict   bool     `json:"producer_conflict"`
+	ProducerVersions   []string `json:"producer_versions"`
+	Bytes              int64    `json:"bytes"`
+	TotalBoundExceeded bool     `json:"total_bound_exceeded"`
+	Lines              int      `json:"lines"`
+	Events             int      `json:"events"`
+	LinesUnparsed      int      `json:"lines_unparsed"`
+	BadTimestamps      int      `json:"bad_timestamps"`
+	LinesOverBound     int      `json:"lines_over_bound"`
+	MissingProducer    bool     `json:"missing_producer"`
 }
 
 // CostScopeRecordedSpawns labels quantities available in recorded task spawns.
@@ -179,7 +196,9 @@ type Attempt struct {
 	Elapsed    time.Duration `json:"elapsed_ns"`
 	// Wall.StartedAt must equal ID.StartedAt as an instant and Wall.Elapsed must
 	// equal Elapsed. ReduceAttempts, Attempt JSON methods and JoinEvidence refuse
-	// mismatches with ErrEvidenceConflict; never repair one copy by taking a max.
+	// input mismatches with ErrEvidenceConflict. JoinEvidence may atomically rebase
+	// both values when adopting a YAML terminal, under F2-YAML-TERMINAL-WALL; this
+	// never repairs a preexisting mismatch or takes independent maxima.
 	Wall WallBreakdown `json:"wall"`
 	// Corrections counts panel_iterate + verification_iterate markers plus
 	// test-fix-retry/commit-retry/push-retry/summary-recovery finishes, each once. Reviews counts only
@@ -294,10 +313,18 @@ type AttemptConflict struct {
 	Reason string        `json:"reason"`
 }
 
+// JournalBounds is the standalone parser's complete byte-bound input. Zero
+// uses the shared defaults; negative fields wrap ErrInvalidSourceSpec.
+type JournalBounds struct {
+	MaxLineBytes  int   `json:"max_line_bytes"`
+	MaxTotalBytes int64 `json:"max_total_bytes"`
+}
+
 // ParseEvents decodes one journal stream into a ParsedJournal, events in
 // file order, bounded by bounds.MaxLineBytes (zero uses DefaultMaxLineBytes;
 // negative returns ErrInvalidSourceSpec). It applies that line-bound rule
-// itself, without depending on the later FC-SOURCES validation body.
+// itself, without depending on the later FC-SOURCES validation body. It also
+// enforces MaxTotalBytes, retaining data and setting TotalBoundExceeded at a cap.
 // It applies EventRef retransmission/sequence-collision rules before reduction.
 // Unknown panel_started shapes (neither invocation nor path-classification gate)
 // are malformed LinesUnparsed, rather than guessed review starts. The returned Journal is the
@@ -313,7 +340,7 @@ type AttemptConflict struct {
 //
 // FC-JOURNAL body. Parameters are named so the body can use them; the
 // scaffold returns ErrNotImplemented and reads none of them.
-func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader, bounds ReadBounds) (ParsedJournal, error) {
+func ParseEvents(ctx context.Context, journal JournalIdentity, reader io.Reader, bounds JournalBounds) (ParsedJournal, error) {
 	return ParsedJournal{Journal: journal}, fmt.Errorf("%w: ParseEvents(%s)", ErrNotImplemented, journal.Path)
 }
 

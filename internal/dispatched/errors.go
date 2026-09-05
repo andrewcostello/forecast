@@ -124,6 +124,10 @@ var (
 	// context.Canceled) still holds.
 	ErrSourceCancelled = errors.New("dispatched: source read cancelled")
 
+	// ErrDuplicateJournalRun: two discovered journal identities name one run ID;
+	// select one journal source per run, never silently merge replicas.
+	ErrDuplicateJournalRun = errors.New("dispatched: duplicate journal run ID across sources")
+
 	// ErrInvalidSelection (F3/F6): a cutoff or holdout selection is malformed:
 	// a blank or whitespace-padded held-out run ID, a duplicate
 	// (Selection.Validate), or a holdout that names no discovered run

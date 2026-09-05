@@ -13,6 +13,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -120,7 +121,7 @@ type SourceSpec struct {
 
 // Validate wraps ErrInvalidSourceSpec for a blank ID or repository, an
 // undeclared kind, missing roots on a YAML source, a blank/absolute/escaping
-// root, or roots on a journal source. FC-SOURCES fills this named stub.
+// root, roots on a journal source, or nonempty Ref on non-history kinds. FC-SOURCES fills this named stub.
 func (s SourceSpec) Validate() error {
 	return fmt.Errorf("%w: SourceSpec.Validate", ErrNotImplemented)
 }
@@ -178,18 +179,21 @@ type ResolvedRef struct {
 // its commit and ResolvedRefs contains that single name/commit pair. For --all,
 // ResolvedRef is empty and ResolvedRefs is the sorted complete ref-tip list.
 type SourceReport struct {
-	ID           string        `json:"id"`
-	Kind         SourceKind    `json:"kind"`
-	Repository   string        `json:"repository"`
-	Roots        []string      `json:"roots"`
-	RequestedRef string        `json:"requested_ref,omitempty"`
-	ResolvedRef  string        `json:"resolved_ref,omitempty"`
-	ResolvedRefs []ResolvedRef `json:"resolved_refs"`
-	State        SourceState   `json:"state"`
-	Reasons      []string      `json:"reasons"`
-	Shallow      bool          `json:"shallow"`
-	Cancelled    bool          `json:"cancelled"`
-	Counts       SourceCounts  `json:"counts"`
+	Grafted           bool          `json:"grafted"`
+	Replaced          bool          `json:"replaced"`
+	ProducerUncertain bool          `json:"producer_uncertain"`
+	ID                string        `json:"id"`
+	Kind              SourceKind    `json:"kind"`
+	Repository        string        `json:"repository"`
+	Roots             []string      `json:"roots"`
+	RequestedRef      string        `json:"requested_ref,omitempty"`
+	ResolvedRef       string        `json:"resolved_ref,omitempty"`
+	ResolvedRefs      []ResolvedRef `json:"resolved_refs"`
+	State             SourceState   `json:"state"`
+	Reasons           []string      `json:"reasons"`
+	Shallow           bool          `json:"shallow"`
+	Cancelled         bool          `json:"cancelled"`
+	Counts            SourceCounts  `json:"counts"`
 }
 
 // Selection freezes, before extraction, which evidence is excluded: runs
@@ -270,7 +274,8 @@ type ReadingRef struct {
 
 // SourceReadings retains every YAML envelope, including non-task documents
 // and excluded rows. ReadSources marks Excluded before joining and counts it;
-// excluded envelopes carry identity/citation only, never predictive values.
+// excluded envelopes carry identity/citation/selection evidence but no predictive
+// Snapshot. CompletedAt is retained solely for cutoff validation, never sampling.
 // Journals contains only in-sample ParsedJournal values. Held-out identities
 // occur only in ExcludedJournals, never even as an empty ParsedJournal in Journals. ReduceAttempts ignores events after cutoff.
 // JoinEvidence rechecks selection, emits one audit disposition per envelope,
@@ -286,17 +291,46 @@ type SourceReadings struct {
 // ErrInvalidSourceSpec, ErrInvalidSelection, ErrSourceMissing, ErrSourceEmpty,
 // ErrSourceCancelled (also ctx.Err()), and ErrJournalSource for a journal read.
 // F3 tables and "Entry-point contracts" in notes/FC-SCAFFOLD.md are authoritative.
-// FC-SOURCES body; all amended Git children must use sourceGitCommand, never the
+// FC-SOURCES body; all amended Git children must use runSourceGit, never the
 // inherited-env legacy helpers below.
 func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, bounds ReadBounds) (*SourceManifest, *SourceReadings, error) {
 	return nil, nil, fmt.Errorf("%w: ReadSources(%d sources)", ErrNotImplemented, len(specs))
 }
 
+// sourceBudget is one source's shared byte/process budget. FC-SOURCES may add
+// private implementation state here. ReadSources shares it across Git, journal
+// and live-file reads; it is never reset per child command.
+type sourceBudget struct{ bounds ReadBounds }
+
+// newSourceBudget validates/resolves bounds before I/O. FC-SOURCES body.
+func newSourceBudget(bounds ReadBounds) (*sourceBudget, error) {
+	return nil, fmt.Errorf("%w: newSourceBudget", ErrNotImplemented)
+}
+
+// SourceGitRequest distinguishes a single raw blob from metadata. Blob requests
+// are exactly cat-file blob <full-object-id>; metadata permits only the fixed
+// read-only traversal/ref-inspection commands listed in the handoff. No batch,
+// filtered output, arbitrary subcommand, helper, network or shell execution.
+type SourceGitRequest struct {
+	Args []string
+	Blob bool
+}
+
+// runSourceGit is the ONLY amended Git execution entry point. It installs the
+// isolated command environment, shares sourceBudget slots/total bytes, streams
+// stdout, caps each Blob request before buffering, and bounds stderr. Returned
+// Read/Close surface exit/cancel/bound errors; Close terminates/reaps and releases
+// slots on every path. EOF cannot hide a nonzero child exit. See F3-GIT-RUNNER.
+func runSourceGit(ctx context.Context, repo string, budget *sourceBudget, request SourceGitRequest) (io.ReadCloser, error) {
+	return nil, fmt.Errorf("%w: runSourceGit", ErrNotImplemented)
+}
+
 // sourceGitCommand constructs an amended read-only Git command with an explicit
 // isolated environment. No inherited Git location/config overrides or helpers;
 // system/global config disabled, repository pinned. See F3-GIT-ENV-STRIPPED and
-// "Entry-point contracts". It does not spawn; ReadSources applies process/byte
-// bounds. FC-SOURCES body. Legacy helpers remain on their original environment.
+// "Entry-point contracts". It does not spawn; runSourceGit applies process/byte
+// bounds. Called only by runSourceGit. FC-SOURCES body; legacy helpers remain
+// on their original environment and cannot be reused by the amended reader.
 func sourceGitCommand(ctx context.Context, repo string, args ...string) (*exec.Cmd, error) {
 	return nil, fmt.Errorf("%w: sourceGitCommand", ErrNotImplemented)
 }
@@ -308,6 +342,19 @@ func sourceGitCommand(ctx context.Context, repo string, args ...string) (*exec.C
 // It narrows the existing legacy ParseRevision grammar without changing it.
 func ValidateReadingRevision(revision string) error {
 	return fmt.Errorf("%w: ValidateReadingRevision", ErrNotImplemented)
+}
+
+// parseReadings copies the source citation and sets Ref.Row per envelope. It
+// decodes each YAML tasks-sequence row independently, preserving
+// valid siblings of type-invalid rows. Non-task documents yield one
+// DocumentNotTasks envelope, Row=0, Err=nil. Invalid document syntax or an
+// explicitly malformed tasks value yields DocumentMalformed, Row=0, Err set.
+// Valid empty tasks lists yield no row envelopes. Every task row has Row>=1,
+// raw join-key presence, and its own parse error. Exclusion is not applied here.
+// FC-SOURCES implements it; the top-level error is reserved for an unimplemented
+// parser (this scaffold), not an ordinary malformed row/document.
+func parseReadings(data []byte, ref ReadingRef) ([]Reading, error) {
+	return nil, fmt.Errorf("%w: parseReadings", ErrNotImplemented)
 }
 
 // ---------------------------------------------------------------------------
@@ -580,17 +627,4 @@ func readTargetTasks(path string) ([]yamlTask, error) {
 		seen[task.Key] = true
 	}
 	return doc.Tasks, nil
-}
-
-// parseReadings copies the source citation and sets Ref.Row per envelope. It
-// decodes each YAML tasks-sequence row independently, preserving
-// valid siblings of type-invalid rows. Non-task documents yield one
-// DocumentNotTasks envelope, Row=0, Err=nil. Invalid document syntax or an
-// explicitly malformed tasks value yields DocumentMalformed, Row=0, Err set.
-// Valid empty tasks lists yield no row envelopes. Every task row has Row>=1,
-// raw join-key presence, and its own parse error. Exclusion is not applied here.
-// FC-SOURCES implements it; the top-level error is reserved for an unimplemented
-// parser (this scaffold), not an ordinary malformed row/document.
-func parseReadings(data []byte, ref ReadingRef) ([]Reading, error) {
-	return nil, fmt.Errorf("%w: parseReadings", ErrNotImplemented)
 }

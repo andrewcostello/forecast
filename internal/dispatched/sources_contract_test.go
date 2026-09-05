@@ -102,6 +102,39 @@ func testF3SrcRootOutsideFeatures(t *testing.T) {
 		t.Fatal("undeclared features/ root was scanned")
 	}
 	_ = manifest
+
+	// Two explicitly declared roots must both be scanned; the undeclared
+	// sibling must not. Live and history each declare dispatcher + features.
+	_, multi := mustReadSources(t, []SourceSpec{
+		journalSpec("j", runs),
+		liveSpec("live-multi", repo.path, "dispatcher", "features"),
+		historySpec("hist-multi", repo.path, "", "dispatcher", "features"),
+	}, defaultSelection(), ReadBounds{})
+	if containPath(multi.Readings, "unrelated") {
+		t.Fatalf("undeclared unrelated/ sibling was scanned: %+v", multi.Readings)
+	}
+	var liveDispatcher, liveFeatures, histDispatcher, histFeatures bool
+	for _, r := range multi.Readings {
+		if r.Identity.Key.Value == "SHOULD-NOT-BE-READ" {
+			t.Fatalf("undeclared sibling row leaked: %+v", r)
+		}
+		switch {
+		case r.Ref.SourceID == "live-multi" && strings.Contains(r.Ref.Path, "dispatcher"):
+			liveDispatcher = true
+		case r.Ref.SourceID == "live-multi" && strings.Contains(r.Ref.Path, "features/study"):
+			liveFeatures = true
+		case r.Ref.SourceID == "hist-multi" && strings.Contains(r.Ref.Path, "dispatcher"):
+			histDispatcher = true
+		case r.Ref.SourceID == "hist-multi" && strings.Contains(r.Ref.Path, "features/study"):
+			histFeatures = true
+		}
+	}
+	if !liveDispatcher || !liveFeatures {
+		t.Fatalf("live two-root scan incomplete: dispatcher=%v features=%v readings=%+v", liveDispatcher, liveFeatures, multi.Readings)
+	}
+	if !histDispatcher || !histFeatures {
+		t.Fatalf("history two-root scan incomplete: dispatcher=%v features=%v readings=%+v", histDispatcher, histFeatures, multi.Readings)
+	}
 }
 
 func testF3SrcRootEscapes(t *testing.T) {
@@ -541,8 +574,8 @@ func testF3HoldoutExcluded(t *testing.T) {
 	writeJournalTree(t, runs, "held", "synthetic-utc-offset.jsonl")
 	writeJournalTree(t, runs, "keep", "synthetic-blocked.jsonl")
 	repo := initGitRepo(t)
-	repo.write("features/study/tasks.yaml", testdataFile(t, "yaml", "offset-equivalent.yaml"))
-	repo.commit("live", "features")
+	repo.writeTestdata("features/study/tasks.yaml", "yaml", "holdout-held-and-keep.yaml")
+	repo.commit("live-and-history", "features")
 	sel := Selection{Cutoff: contractCutoff(), HoldoutRunIDs: []string{"held"}}
 	manifest, readings := mustReadSources(t, []SourceSpec{
 		journalSpec("j", runs),
@@ -566,13 +599,48 @@ func testF3HoldoutExcluded(t *testing.T) {
 	if !found {
 		t.Fatalf("held-out identity missing: %+v", readings.ExcludedJournals)
 	}
+	var liveHeld, histHeld, liveKeep, histKeep bool
 	for _, r := range readings.Readings {
-		if r.Identity.RunID.Value == "held" && r.Excluded != DispositionHeldOut {
-			t.Fatalf("held YAML not marked HeldOut: %+v", r)
+		if !r.Identity.RunID.Known {
+			continue
 		}
-		if r.Excluded == DispositionHeldOut && r.Snapshot.AuthoredModel != "" {
-			t.Fatal("held-out snapshot still carries predictive fields")
+		switch r.Identity.RunID.Value {
+		case "held":
+			if r.Excluded != DispositionHeldOut {
+				t.Fatalf("held YAML not marked HeldOut: %+v", r)
+			}
+			if r.Snapshot.AuthoredModel != "" {
+				t.Fatal("held-out snapshot still carries predictive fields")
+			}
+			switch r.Ref.SourceID {
+			case "live":
+				liveHeld = true
+			case "hist":
+				histHeld = true
+				if !strings.HasPrefix(r.Ref.Revision, "git:") {
+					t.Fatalf("history held-out row revision = %q, want git:", r.Ref.Revision)
+				}
+			}
+		case "keep":
+			if r.Excluded == DispositionHeldOut {
+				t.Fatalf("in-sample keep YAML marked HeldOut: %+v", r)
+			}
+			switch r.Ref.SourceID {
+			case "live":
+				liveKeep = true
+			case "hist":
+				histKeep = true
+			}
 		}
+	}
+	if !liveHeld {
+		t.Fatal("held-out YAML missing from live join")
+	}
+	if !histHeld {
+		t.Fatal("held-out YAML missing from git-history join")
+	}
+	if !liveKeep || !histKeep {
+		t.Fatalf("in-sample keep YAML dropped: live=%v hist=%v", liveKeep, histKeep)
 	}
 	_ = manifest
 }
@@ -680,6 +748,16 @@ func testF3CompleteConsistency(t *testing.T) {
 	m.Sources[0].Shallow = true
 	if err := m.ValidateComplete(); !errors.Is(err, ErrSourceIncomplete) || !errors.Is(err, ErrShallowHistory) {
 		t.Fatalf("COMPLETE+shallow = %v", err)
+	}
+	m = completeManifest(SourceComplete)
+	m.Sources[0].Grafted = true
+	if err := m.ValidateComplete(); !errors.Is(err, ErrSourceIncomplete) || !errors.Is(err, ErrShallowHistory) {
+		t.Fatalf("COMPLETE+grafted = %v", err)
+	}
+	m = completeManifest(SourceComplete)
+	m.Sources[0].Replaced = true
+	if err := m.ValidateComplete(); !errors.Is(err, ErrSourceIncomplete) || !errors.Is(err, ErrShallowHistory) {
+		t.Fatalf("COMPLETE+replaced = %v", err)
 	}
 	m = completeManifest(SourceComplete)
 	m.Cutoff = time.Time{}
@@ -824,8 +902,49 @@ func testF3HistoryFacts(t *testing.T) {
 	if !hist.Grafted {
 		t.Fatalf("grafted flag not set: %+v", hist)
 	}
-	if err := manifest.ValidateComplete(); !errors.Is(err, ErrShallowHistory) {
-		t.Fatalf("grafted ValidateComplete = %v", err)
+	if hist.Replaced {
+		t.Fatalf("grafted-only repo reported Replaced: %+v", hist)
+	}
+	if err := manifest.ValidateComplete(); !errors.Is(err, ErrShallowHistory) || !errors.Is(err, ErrSourceIncomplete) {
+		t.Fatalf("grafted ValidateComplete = %v, want ErrShallowHistory+ErrSourceIncomplete", err)
+	}
+
+	replacedRepo := initGitRepo(t)
+	replacedRepo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+	original := replacedRepo.commit("original", "features")
+	replacedRepo.writeTestdata("features/study/tasks.yaml", "yaml", "dispatcher-root.yaml")
+	replacement := replacedRepo.commit("replacement", "features")
+	runGit(t, replacedRepo.path, "replace", original, replacement)
+	replaceListed := gitOutput(t, replacedRepo.path, "for-each-ref", "--format=%(refname)", "refs/replace")
+	if !strings.Contains(replaceListed, "refs/replace/") {
+		t.Fatalf("replace ref was not created: %q", replaceListed)
+	}
+	replaceRuns := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, replaceRuns, "run-root", "synthetic-utc-offset.jsonl")
+	replacedManifest, _, err := readContractSources(t, []SourceSpec{
+		journalSpec("j", replaceRuns),
+		historySpec("hist", replacedRepo.path, "", "features"),
+	}, defaultSelection(), ReadBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var replaced SourceReport
+	for _, src := range replacedManifest.Sources {
+		if src.ID == "hist" {
+			replaced = src
+		}
+	}
+	if !replaced.Replaced {
+		t.Fatalf("replaced flag not set: %+v", replaced)
+	}
+	if replaced.Grafted {
+		t.Fatalf("replaced-only repo reported Grafted: %+v", replaced)
+	}
+	if replaced.State != SourcePartial {
+		t.Fatalf("replaced state = %q, want PARTIAL", replaced.State)
+	}
+	if err := replacedManifest.ValidateComplete(); !errors.Is(err, ErrShallowHistory) || !errors.Is(err, ErrSourceIncomplete) {
+		t.Fatalf("replaced ValidateComplete = %v, want ErrShallowHistory+ErrSourceIncomplete", err)
 	}
 }
 

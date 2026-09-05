@@ -28,8 +28,11 @@ Recorded/sanitized:
 - Sanitized: synthetic keys/hashes, rounded cost, no hostnames/prompts/credentials
 
 All other `testdata/journals/synthetic-*.jsonl` and `testdata/yaml/*` files are
-explicitly synthetic. Git history fixtures are built in-process from those YAML
-files; no network and no real credentials.
+explicitly synthetic, including `testdata/yaml/holdout-held-and-keep.yaml`
+(keep + held-out rows for live and git-history joins). Git history fixtures
+are built in-process from those YAML files; no network and no real credentials.
+Replace-ref fixtures are created with `git replace` against those in-process
+repos (F3-HISTORY-FACTS).
 
 CLI targets live under `cmd/forecast/testdata/dispatched/targets/`.
 
@@ -138,7 +141,7 @@ drops the assertion's predicate fails the same test.
 | Case | Expected | Mutation |
 |---|---|---|
 | F3-SRC-EXPLICIT-ONLY | `ErrInvalidSourceSpec`; no HOME default | Scan `$HOME/Project/claude-workflow` |
-| F3-SRC-ROOT-OUTSIDE-FEATURES | `dispatcher/` read; `unrelated/` not | Walk the whole tree |
+| F3-SRC-ROOT-OUTSIDE-FEATURES | Single `dispatcher/` root: scanned, `features/` and `unrelated/` not. Two declared roots `dispatcher`+`features` (live and history): both scanned, undeclared `unrelated/` not | Walk the whole tree; scan only the first root |
 | F3-SRC-ROOT-ESCAPES | Reject `../`, `/abs`, symlink escape | Follow the symlink |
 | F3-SRC-MISSING | `ErrSourceMissing` | Return EMPTY |
 | F3-SRC-ZERO-JOURNALS | `ErrSourceEmpty`; AllowEmpty → EMPTY, not eligible | Succeed with zero journals |
@@ -155,13 +158,13 @@ drops the assertion's predicate fails the same test.
 | F3-BOUND-BYTES | PARTIAL on blob cap | Buffer the whole blob |
 | F3-BOUND-PROCESSES | Negative invalid; cap does not mark PARTIAL | Treat as data cap |
 | F3-CANCELLED | Both cancel sentinels; not COMPLETE | Ignore ctx |
-| F3-HOLDOUT-EXCLUDED | Identity in ExcludedJournals; YAML HeldOut, snapshot cleared | Feed held-out events to reducer |
+| F3-HOLDOUT-EXCLUDED | Held-out journal in ExcludedJournals; live AND git-history YAML rows with `dispatcher_run_id: held` marked HeldOut with snapshot cleared; keep rows remain in-sample | Feed held-out events to reducer; ignore history YAML |
 | F3-CUTOFF-EXCLUDED | AfterCutoff audit envelope | Sample later completed_at |
 | F3-SELECTION-INVALID | Padded/duplicate/zero cutoff rejected before IO | Trim then match |
 | F3-HOLDOUT-PADDED-STILL-EXCLUDES | `ErrInvalidSelection` | Match after trim |
 | F3-HOLDOUT-UNMATCHED | `ErrInvalidSelection` | Ignore unknown IDs |
 | F3-MISSING-REVISION-TIME | Zero RecordedAt is malformed in-sample | Treat as AfterCutoff |
-| F3-COMPLETE-CONSISTENCY | Nil receiver does not panic; COMPLETE+shallow refused | Panic on nil |
+| F3-COMPLETE-CONSISTENCY | Nil receiver does not panic; COMPLETE+shallow/grafted/replaced each wrap ErrShallowHistory+ErrSourceIncomplete | Panic on nil; ignore Replaced |
 | F3-DEFAULT-BOUNDS | Zeros become stored defaults; negatives invalid | Persist zeros |
 | F3-RESOLVED-BOUNDS | Positive DefaultMaxCommits stored | Re-apply future defaults |
 | F3-REF-IDENTITY | All-refs: empty ResolvedRef, full list | Put HEAD in ResolvedRef |
@@ -169,7 +172,7 @@ drops the assertion's predicate fails the same test.
 | F3-UNSUPPORTED-REF | Ref on live/journal → invalid spec | Ignore Ref |
 | F3-AMENDED-GIT-HELPER | Poisoned GIT_DIR does not redirect | Call legacy gitLines |
 | F3-GIT-RUNNER | Nil budget invalid; `git status` invalid; cancel wraps | Shell out unbounded |
-| F3-HISTORY-FACTS | Grafted flag + ErrShallowHistory | Hide grafts by disabling replace only |
+| F3-HISTORY-FACTS | Grafted-only: Grafted, not Replaced, ErrShallowHistory+ErrSourceIncomplete. Replaced-only: `git replace` ref present, Replaced, not Grafted, PARTIAL, same sentinels | Hide grafts/replace by disabling replace objects only; set one flag for both |
 | F3-EXCLUDED-QUALITY | Held-out malformed uses MalformedExcluded | Degrade in-sample completeness |
 | F3-MALFORMED-HELDOUT-IDENTITY | Independent RunID still proves holdout | Require valid Snapshot |
 | F3-ALL-JOURNALS-HELDOUT | COMPLETE, Journals=1, excluded=1 | Mark EMPTY |

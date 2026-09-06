@@ -609,7 +609,7 @@ func validArtifactJournalIdentity(journal JournalIdentity, selectedSources map[s
 
 func portablePathComponent(value string) bool {
 	return value != "" && value == strings.TrimSpace(value) && value != "." && value != ".." &&
-		!strings.ContainsAny(value, `/\`)
+		!strings.ContainsAny(value, `/\`) && !hasASCIIDrivePrefix(value)
 }
 
 func validArtifactAttemptJournals(attempt Attempt, selectedSources map[string]SourceReport) bool {
@@ -663,14 +663,24 @@ func validArtifactAttemptJournals(attempt Attempt, selectedSources map[string]So
 
 func portableRelativePath(value string) bool {
 	return value != "" && !path.IsAbs(value) && !strings.Contains(value, `\`) &&
-		path.Clean(value) == value && value != "." && value != ".." && !strings.HasPrefix(value, "../")
+		!hasASCIIDrivePrefix(value) && path.Clean(value) == value && value != "." &&
+		value != ".." && !strings.HasPrefix(value, "../")
+}
+
+func hasASCIIDrivePrefix(value string) bool {
+	return len(value) >= 2 && value[1] == ':' &&
+		(value[0] >= 'A' && value[0] <= 'Z' || value[0] >= 'a' && value[0] <= 'z')
 }
 
 func portablePathWithin(value, root string) bool {
-	if !portableRelativePath(value) {
+	if !portableRelativePath(value) || root == "" || path.IsAbs(root) ||
+		strings.Contains(root, `\`) || hasASCIIDrivePrefix(root) {
 		return false
 	}
 	cleanRoot := path.Clean(root)
+	if cleanRoot == ".." || strings.HasPrefix(cleanRoot, "../") {
+		return false
+	}
 	if cleanRoot == "." {
 		return true
 	}
@@ -1153,6 +1163,7 @@ func buildAmended(ctx context.Context, opts BuildOptions) (*BuildResult, error) 
 		Limits: []string{
 			HandFinishedLimit,
 			"Cost covers recorded_task_spawns only; cache tokens and unrecorded reviewer/operator spend are excluded.",
+			"Structured eligibility validates carried values and citations for internal consistency; it does not re-derive original snapshot/event values or authenticate source bytes.",
 			"Schema-4 rounds records correction events, not review invocation count.",
 			"Legacy phase and unknown-token projections cannot express availability; structured evidence is authoritative.",
 			"Legacy Coverage journal_lines_unparsed and journal_events_with_bad_timestamp are uncomputed separately; SourceManifest source malformed counts are authoritative for source quality.",

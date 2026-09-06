@@ -271,7 +271,7 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 	for _, list := range conflicts {
 		out.Conflicts = append(out.Conflicts, list...)
 	}
-	sort.Slice(out.Conflicts, func(i, j int) bool { return attemptConflictLess(out.Conflicts[i], out.Conflicts[j]) })
+	sort.Slice(out.Conflicts, func(i, j int) bool { return evidenceConflictLess(out.Conflicts[i], out.Conflicts[j]) })
 
 	type matchedReading struct {
 		examined int
@@ -368,7 +368,7 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 	sort.Slice(out.Observations, func(i, j int) bool {
 		return attemptIDLess(out.Observations[i].Attempt.ID, out.Observations[j].Attempt.ID)
 	})
-	sort.Slice(out.Conflicts, func(i, j int) bool { return attemptConflictLess(out.Conflicts[i], out.Conflicts[j]) })
+	sort.Slice(out.Conflicts, func(i, j int) bool { return evidenceConflictLess(out.Conflicts[i], out.Conflicts[j]) })
 	recoveredIDs := make(map[AttemptID]bool, len(out.Observations))
 	for _, observation := range out.Observations {
 		recoveredIDs[observation.Attempt.ID] = true
@@ -396,6 +396,87 @@ func sameAttemptConflict(a, b AttemptConflict) bool {
 		a.AValue.Kind == b.AValue.Kind && bytes.Equal(a.AValue.Value, b.AValue.Value) &&
 		a.BValue.Kind == b.BValue.Kind && bytes.Equal(a.BValue.Value, b.BValue.Value) &&
 		a.A == b.A && a.B == b.B && a.Reason == b.Reason
+}
+
+// evidenceConflictLess extends the Journal-owned primary order into a total
+// order for every serialized conflict field. Distinct conflict facts for one
+// identity stay paired and retained; Err is intentionally absent because it is
+// not part of the portable representation.
+func evidenceConflictLess(a, b AttemptConflict) bool {
+	if attemptConflictLess(a, b) {
+		return true
+	}
+	if attemptConflictLess(b, a) {
+		return false
+	}
+	if fieldEvidenceTotalLess(a.A, b.A) {
+		return true
+	}
+	if fieldEvidenceTotalLess(b.A, a.A) {
+		return false
+	}
+	if conflictValueLess(a.AValue, b.AValue) {
+		return true
+	}
+	if conflictValueLess(b.AValue, a.AValue) {
+		return false
+	}
+	if fieldEvidenceTotalLess(a.B, b.B) {
+		return true
+	}
+	if fieldEvidenceTotalLess(b.B, a.B) {
+		return false
+	}
+	if conflictValueLess(a.BValue, b.BValue) {
+		return true
+	}
+	if conflictValueLess(b.BValue, a.BValue) {
+		return false
+	}
+	if a.Code != b.Code {
+		return a.Code < b.Code
+	}
+	return a.Reason < b.Reason
+}
+
+func fieldEvidenceTotalLess(a, b FieldEvidence) bool {
+	if a.Source != b.Source {
+		return a.Source < b.Source
+	}
+	if eventRefTotalLess(a.Event, b.Event) {
+		return true
+	}
+	if eventRefTotalLess(b.Event, a.Event) {
+		return false
+	}
+	return readingRefTotalLess(a.Reading, b.Reading)
+}
+
+func eventRefTotalLess(a, b EventRef) bool {
+	if eventRefLess(a, b) {
+		return true
+	}
+	if eventRefLess(b, a) {
+		return false
+	}
+	return a.At.Format(time.RFC3339Nano) < b.At.Format(time.RFC3339Nano)
+}
+
+func readingRefTotalLess(a, b ReadingRef) bool {
+	if readingRefLess(a, b) {
+		return true
+	}
+	if readingRefLess(b, a) {
+		return false
+	}
+	return a.RecordedAt.Format(time.RFC3339Nano) < b.RecordedAt.Format(time.RFC3339Nano)
+}
+
+func conflictValueLess(a, b ConflictValue) bool {
+	if a.Kind != b.Kind {
+		return a.Kind < b.Kind
+	}
+	return bytes.Compare(a.Value, b.Value) < 0
 }
 
 func emptyEvidenceJoin(selection Selection) EvidenceJoin {

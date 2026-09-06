@@ -366,3 +366,70 @@ worklists were not edited. Every second-panel correction and the historical
 diagnostic PARTIAL 44/303 limitation remain as recorded above. FC-1 remains
 Blocked pending the parent exact-head gate, independent verifier and panel; this
 follow-up does not mark runtime work Done.
+
+## Third-panel corrective body
+
+The two High findings from the panel on `12a0e11` are corrected under the final
+Operator F1/F4 third-panel ruling. Portable stored citation paths, journal run
+components and declared-root matching now reject an ASCII letter followed by a
+colon at the start, independent of the build host. This covers upper/lowercase
+drive-absolute and drive-relative spellings. Existing absolute, backslash,
+traversal, dot and nested-run refusals remain, while ordinary relative paths,
+legal spaces and non-drive colons such as `features/archive:notes/tasks.yaml`
+remain valid. No SourceSpec/ReadSources behavior, filesystem lookup or general
+Windows filename policy was added.
+
+An FC-1-private total comparator now governs both `EvidenceJoin.Conflicts` sort
+sites. It preserves `attemptConflictLess` as the primary order and then compares
+the complete A and B citations, both typed values, `Code` and `Reason`; only the
+non-serialized `Err` is excluded. Different conflict facts for one identity
+remain paired, retained and counted as one attempt denominator entry. No stable
+input-order fallback, candidate swap, conflict deletion or caller mutation is
+used.
+
+Schema-4 `Artifact.Limits` now states the accepted carried-value boundary:
+eligibility validates internal consistency and citations but does not re-derive
+role or other values from original snapshots/events and does not authenticate
+source bytes. Sources are not refetched, and neither Examined nor the public
+schema was expanded.
+
+### Third-body-panel final dispositions
+
+These IDs belong only to the third panel and do not replace either earlier
+panel-disposition table.
+
+| Finding ID | Final disposition |
+|---|---|
+| `Claude-1` | **Corrected.** Both conflict output sorts use an FC-1-private total comparator over every serialized conflict field while retaining all distinct facts and pairings. |
+| `Claude-2` | **Accepted nonblocking boundary.** Current event-citation fields remain explicitly enumerated; no reflection, hypothetical-field requirement or shared production/fixture enumerator was introduced. Future schema fields must amend their owning scaffold and seals. |
+| `Claude-3` | **Disclosed as ruled.** Artifact Limits and these notes state that carried-value/citation consistency does not re-prove original role/event values or authenticate source bytes. |
+| `Claude-4` | **Deferred nonblocking.** Validator factoring is a maintainability suggestion, not a behavior requirement; the tested indices and invariants remain intact without a broad refactor. |
+| `Claude-5` | **Accepted with reason.** The shipped CLI is one-shot; repeated execution of a mutated Cobra singleton is not a frozen embedding promise, and no incomplete RunE-only reset was added. Fresh-constructor and data-refusal behavior remains tested. |
+| `Codex-1` | **Corrected.** Host-independent ASCII drive prefixes are refused in stored YAML paths, journal run components and root interpretation, including absolute and drive-relative forms. |
+| `Grok-1` | **Corrected under the parent-confirmed ruling.** Drive-qualified provenance can no longer become eligible merely because the current host treats it as relative; legal non-drive colons remain allowed. |
+| `Grok-2` | **Accepted with reason.** No repeated-singleton Execute contract or partial state reset was invented; callers needing independent invocations use fresh constructors. |
+
+### Third-panel corrective verification
+
+On seal commit `ad255c937833bc03419486dfb993db5b0fe3ca81`, the
+focused Evidence baseline failed only the eight drive-prefix leaves and ten
+conflict-order permutation leaves recorded by the independent seals. The
+field-primary conflict controls, legal colon/space/path controls and complete CLI
+group remained green; no immutable assertion contradicted the ruling.
+
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go test ./cmd/forecast -run '^TestFCReferenceCLIContract$' -count=1` — pass.
+- `go test ./internal/dispatched -count=1` — pass.
+- `go test ./cmd/forecast -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+- `git diff --check` — pass.
+
+No ruled third-panel body deviation is known. Tests, fixtures, seals, schema,
+Source/Journal/shared helpers, scaffold, known-red and worklists were not edited.
+The historical real corpus report remains diagnostic PARTIAL at 44/303
+recovered; it was not rescanned and is not a post-fix count, holdout evaluation
+or data-sufficiency claim. FC-1 remains Blocked pending the parent exact-head
+gate, independent verifier and isolated panel; this body does not mark runtime
+work Done.

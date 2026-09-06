@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
@@ -335,20 +336,31 @@ func (m *SourceManifest) ValidateComplete() error {
 	}
 	seen := make(map[string]struct{}, len(m.Sources))
 	journalSources, journals := 0, 0
+	if len(m.Reasons) != 0 {
+		incomplete = true
+	}
 	for _, source := range m.Sources {
 		if source.ID == "" || !source.Kind.Valid() || source.Repository == "" || source.State != SourceComplete {
+			incomplete = true
+		}
+		if len(source.Reasons) != 0 {
 			incomplete = true
 		}
 		if err := (SourceSpec{ID: source.ID, Kind: source.Kind, Repository: source.Repository, Roots: source.Roots, Ref: source.RequestedRef}).Validate(); err != nil {
 			incomplete = true
 		}
 		if source.Kind == SourceKindGitHistory {
+			if !validResolvedRefs(source.ResolvedRefs) {
+				incomplete = true
+			}
 			if source.RequestedRef == "" && (source.ResolvedRef != "" || len(source.ResolvedRefs) == 0) {
 				incomplete = true
 			}
 			if source.RequestedRef != "" && (!validObjectID(source.ResolvedRef) || len(source.ResolvedRefs) != 1 || source.ResolvedRefs[0].Name != source.RequestedRef || source.ResolvedRefs[0].Commit != source.ResolvedRef) {
 				incomplete = true
 			}
+		} else if source.ResolvedRef != "" || len(source.ResolvedRefs) != 0 {
+			incomplete = true
 		}
 		if _, ok := seen[source.ID]; ok {
 			incomplete = true
@@ -382,6 +394,26 @@ func (m *SourceManifest) ValidateComplete() error {
 		errList = append(errList, ErrBoundExceeded)
 	}
 	return errors.Join(errList...)
+}
+
+func validResolvedRefs(refs []ResolvedRef) bool {
+	seen := make(map[string]struct{}, len(refs))
+	for i, ref := range refs {
+		if ref.Name == "" || ref.Name != strings.TrimSpace(ref.Name) || !validObjectID(ref.Commit) {
+			return false
+		}
+		if _, duplicate := seen[ref.Name]; duplicate {
+			return false
+		}
+		seen[ref.Name] = struct{}{}
+		if i > 0 {
+			previous := refs[i-1]
+			if previous.Name > ref.Name || previous.Name == ref.Name && previous.Commit >= ref.Commit {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ReadingRef identifies one reading of a tasks YAML: the source, the
@@ -480,6 +512,7 @@ func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, b
 	}
 	if err := preflightSources(ordered); err != nil {
 		addManifestReason(manifest, err.Error())
+		finalizeManifest(manifest)
 		return manifest, readings, err
 	}
 	manifest.State = SourceComplete
@@ -498,6 +531,8 @@ func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, b
 		}
 		budget, err := newSourceBudget(resolved)
 		if err != nil {
+			addSourceReason(report, err.Error())
+			finalizeManifest(manifest)
 			return manifest, readings, err
 		}
 		if err := budget.setFileRoot(spec.Repository); err != nil {
@@ -557,6 +592,7 @@ func ReadSources(ctx context.Context, specs []SourceSpec, selection Selection, b
 			finalizeManifest(manifest)
 			return manifest, readings, err
 		}
+		finalizeManifest(manifest)
 		manifest.State = SourceEmpty
 	} else {
 		finalizeManifest(manifest)
@@ -574,7 +610,9 @@ type sourceBudget struct {
 
 	mu            sync.Mutex
 	bytes         int64
+	reservedBytes int64
 	totalExceeded bool
+	changed       chan struct{}
 	fileRoot      *os.Root
 	fileRootPath  string
 }
@@ -585,7 +623,11 @@ func newSourceBudget(bounds ReadBounds) (*sourceBudget, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &sourceBudget{bounds: resolved, slots: make(chan struct{}, resolved.MaxProcesses)}, nil
+	return &sourceBudget{
+		bounds:  resolved,
+		slots:   make(chan struct{}, resolved.MaxProcesses),
+		changed: make(chan struct{}),
+	}, nil
 }
 
 // SourceGitRequest distinguishes a single raw blob from metadata. Blob requests
@@ -627,19 +669,27 @@ func runSourceGit(ctx context.Context, repo string, budget *sourceBudget, reques
 		<-budget.slots
 		return nil, err
 	}
-	stdout, err := cmd.StdoutPipe()
+	stdout, stdoutWriter, err := os.Pipe()
 	if err != nil {
 		cancel()
 		<-budget.slots
 		return nil, fmt.Errorf("%w: open Git stdout: %v", ErrGitHistory, err)
 	}
-	stderr, err := cmd.StderrPipe()
+	stderr, stderrWriter, err := os.Pipe()
 	if err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
 		cancel()
 		<-budget.slots
 		return nil, fmt.Errorf("%w: open Git stderr: %v", ErrGitHistory, err)
 	}
+	cmd.Stdout = stdoutWriter
+	cmd.Stderr = stderrWriter
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stdoutWriter.Close()
+		_ = stderr.Close()
+		_ = stderrWriter.Close()
 		cancel()
 		<-budget.slots
 		if ctx.Err() != nil {
@@ -647,14 +697,19 @@ func runSourceGit(ctx context.Context, repo string, budget *sourceBudget, reques
 		}
 		return nil, fmt.Errorf("%w: start git %s in %s: %v", ErrGitHistory, strings.Join(request.Args, " "), repo, err)
 	}
+	_ = stdoutWriter.Close()
+	_ = stderrWriter.Close()
 	reader := &sourceGitReadCloser{
-		parentCtx: ctx, cancel: cancel, cmd: cmd, stdout: stdout, budget: budget,
-		repo: repo, args: append([]string(nil), request.Args...), stderrDone: make(chan struct{}),
+		parentCtx: ctx, ioCtx: internalCtx, cancel: cancel, cmd: cmd,
+		stdout: stdout, stderrPipe: stderr, budget: budget,
+		repo: repo, args: append([]string(nil), request.Args...),
+		stderrDone: make(chan struct{}), waitDone: make(chan error, 1), pipesDone: make(chan struct{}),
 	}
 	if request.Blob {
 		reader.localLimit = budget.bounds.MaxBlobBytes
 	}
 	go reader.drainStderr(stderr)
+	go reader.waitForProcess()
 	return reader, nil
 }
 
@@ -692,7 +747,10 @@ func openSourceFile(ctx context.Context, path string, budget *sourceBudget, jour
 	if !journal {
 		localLimit = budget.bounds.MaxBlobBytes
 	}
-	return &boundedSourceReadCloser{ctx: ctx, source: file, budget: budget, localLimit: localLimit}, nil
+	return &boundedSourceReadCloser{
+		ctx: ctx, source: file, file: file, initialInfo: info,
+		budget: budget, localLimit: localLimit,
+	}, nil
 }
 
 // sourceGitCommand constructs an amended read-only Git command with an explicit
@@ -784,7 +842,7 @@ func parseReadings(data []byte, ref ReadingRef) ([]Reading, error) {
 		return []Reading{{Kind: DocumentMalformed, Ref: ref, Err: fmt.Errorf("%w: decode YAML document: %v", ErrYAMLSource, err)}}, nil
 	}
 	if len(root.Content) != 1 || root.Content[0].Kind != yaml.MappingNode {
-		return []Reading{{Kind: DocumentMalformed, Ref: ref, Err: fmt.Errorf("%w: expected a mapping document", ErrYAMLSource)}}, nil
+		return []Reading{{Kind: DocumentNotTasks, Ref: ref}}, nil
 	}
 	tasks, found := yamlMappingValue(root.Content[0], "tasks")
 	if !found {
@@ -926,12 +984,15 @@ func (b *sourceBudget) openConfined(path string) (*os.File, error) {
 		}
 		return os.Open(path)
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return nil, err
+	rel := filepath.Clean(path)
+	if filepath.IsAbs(path) {
+		var err error
+		rel, err = filepath.Rel(rootPath, path)
+		if err != nil {
+			return nil, err
+		}
 	}
-	rel, err := filepath.Rel(rootPath, abs)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return nil, fmt.Errorf("path escapes confined source root")
 	}
 	info, err := root.Lstat(rel)
@@ -944,28 +1005,88 @@ func (b *sourceBudget) openConfined(path string) (*os.File, error) {
 	return root.Open(rel)
 }
 
-func (b *sourceBudget) readAllowance(want int) int {
-	if want <= 0 {
-		return 0
-	}
+func (b *sourceBudget) confinedFS() (fs.FS, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	remaining := b.bounds.MaxTotalBytes - b.bytes
-	if remaining < 0 {
-		return 0
+	root := b.fileRoot
+	b.mu.Unlock()
+	if root == nil {
+		return nil, fmt.Errorf("confined source root is not open")
 	}
-	if remaining < int64(want) {
-		return int(remaining + 1)
-	}
-	return want
+	return root.FS(), nil
 }
 
-func (b *sourceBudget) accountRead(n int) (retained int, exceeded bool) {
-	if n <= 0 {
-		return 0, false
+func (b *sourceBudget) readDirConfined(path string) ([]fs.DirEntry, error) {
+	rootFS, err := b.confinedFS()
+	if err != nil {
+		return nil, err
 	}
+	return fs.ReadDir(rootFS, filepath.ToSlash(filepath.Clean(path)))
+}
+
+func (b *sourceBudget) lstatConfined(path string) (os.FileInfo, error) {
+	b.mu.Lock()
+	root := b.fileRoot
+	b.mu.Unlock()
+	if root == nil {
+		return nil, fmt.Errorf("confined source root is not open")
+	}
+	clean := filepath.Clean(path)
+	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("path escapes confined source root")
+	}
+	return root.Lstat(clean)
+}
+
+func (b *sourceBudget) signalChangeLocked() {
+	close(b.changed)
+	b.changed = make(chan struct{})
+}
+
+// reserveRead atomically reserves bytes before a physical read. The shared
+// allowance includes one source-wide probe byte so exact-bound EOF can be
+// distinguished from overflow. Callers wait for an in-flight reservation to
+// be returned rather than mistaking temporary contention for a bound hit.
+func (b *sourceBudget) reserveRead(ctx context.Context, want int) (int, error) {
+	if want <= 0 {
+		return 0, nil
+	}
+	probeLimit := b.bounds.MaxTotalBytes
+	if probeLimit < int64(^uint64(0)>>1) {
+		probeLimit++
+	}
+	for {
+		b.mu.Lock()
+		if b.totalExceeded {
+			b.mu.Unlock()
+			return 0, ErrBoundExceeded
+		}
+		available := probeLimit - b.bytes - b.reservedBytes
+		if available > 0 {
+			reserved := int64(want)
+			if reserved > available {
+				reserved = available
+			}
+			b.reservedBytes += reserved
+			b.mu.Unlock()
+			return int(reserved), nil
+		}
+		changed := b.changed
+		b.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return 0, fmt.Errorf("%w: %w", ErrSourceCancelled, ctx.Err())
+		case <-changed:
+		}
+	}
+}
+
+func (b *sourceBudget) accountReservation(reserved, n int) (retained int, exceeded bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if int64(reserved) > b.reservedBytes {
+		reserved = int(b.reservedBytes)
+	}
+	b.reservedBytes -= int64(reserved)
 	before := b.bytes
 	b.bytes += int64(n)
 	allowed := b.bounds.MaxTotalBytes - before
@@ -977,6 +1098,7 @@ func (b *sourceBudget) accountRead(n int) (retained int, exceeded bool) {
 		retained = int(allowed)
 		b.totalExceeded = true
 	}
+	b.signalChangeLocked()
 	return retained, b.totalExceeded
 }
 
@@ -993,13 +1115,15 @@ func (b *sourceBudget) hitTotalBound() bool {
 }
 
 type boundedSourceReadCloser struct {
-	ctx        context.Context
-	source     io.ReadCloser
-	budget     *sourceBudget
-	localLimit int64
-	localRead  int64
-	closed     bool
-	mu         sync.Mutex
+	ctx         context.Context
+	source      io.ReadCloser
+	file        *os.File
+	initialInfo os.FileInfo
+	budget      *sourceBudget
+	localLimit  int64
+	localRead   int64
+	closed      bool
+	mu          sync.Mutex
 }
 
 func (r *boundedSourceReadCloser) Read(p []byte) (int, error) {
@@ -1008,7 +1132,13 @@ func (r *boundedSourceReadCloser) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, os.ErrClosed
 	}
-	return readBoundedSource(r.ctx, r.source, r.budget, r.localLimit, &r.localRead, p)
+	n, err := readBoundedSource(r.ctx, r.source, r.budget, r.localLimit, &r.localRead, p)
+	if errors.Is(err, io.EOF) {
+		if _, stableErr := r.sourceFileInfoLocked(); stableErr != nil {
+			return n, stableErr
+		}
+	}
+	return n, err
 }
 
 func (r *boundedSourceReadCloser) Close() error {
@@ -1022,6 +1152,60 @@ func (r *boundedSourceReadCloser) Close() error {
 	return r.source.Close()
 }
 
+func (r *boundedSourceReadCloser) sourceFileInfo() (os.FileInfo, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, os.ErrClosed
+	}
+	return r.sourceFileInfoLocked()
+}
+
+func (r *boundedSourceReadCloser) sourceFileInfoLocked() (os.FileInfo, error) {
+	current, err := r.file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !os.SameFile(r.initialInfo, current) || r.initialInfo.Mode() != current.Mode() ||
+		r.initialInfo.Size() != current.Size() || !r.initialInfo.ModTime().Equal(current.ModTime()) {
+		return nil, fmt.Errorf("%w: source file changed while it was read", ErrSourceMissing)
+	}
+	return r.initialInfo, nil
+}
+
+func waitSourceReadable(ctx context.Context, source io.Reader, budget *sourceBudget) error {
+	file, ok := source.(*os.File)
+	if !ok {
+		return nil
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrSourceCancelled, err)
+		}
+		if budget.hitTotalBound() {
+			return ErrBoundExceeded
+		}
+		poll := []unix.PollFd{{
+			Fd:     int32(file.Fd()),
+			Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR,
+		}}
+		ready, err := unix.Poll(poll, 100)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if ready == 0 {
+			continue
+		}
+		if poll[0].Revents&unix.POLLNVAL != 0 {
+			return os.ErrClosed
+		}
+		return nil
+	}
+}
+
 func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudget, localLimit int64, localRead *int64, p []byte) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrSourceCancelled, err)
@@ -1029,7 +1213,7 @@ func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudg
 	if len(p) == 0 {
 		return 0, nil
 	}
-	want := budget.readAllowance(len(p))
+	want := len(p)
 	if localLimit > 0 {
 		remaining := localLimit - *localRead
 		if remaining < 0 {
@@ -1039,11 +1223,15 @@ func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudg
 			want = int(remaining + 1)
 		}
 	}
-	if want <= 0 {
-		return 0, ErrBoundExceeded
+	if err := waitSourceReadable(ctx, source, budget); err != nil {
+		return 0, err
 	}
-	n, err := source.Read(p[:want])
-	retained, totalExceeded := budget.accountRead(n)
+	reserved, reserveErr := budget.reserveRead(ctx, want)
+	if reserveErr != nil {
+		return 0, reserveErr
+	}
+	n, err := source.Read(p[:reserved])
+	retained, totalExceeded := budget.accountReservation(reserved, n)
 	localAllowed := n
 	if localLimit > 0 {
 		remaining := localLimit - *localRead
@@ -1073,9 +1261,11 @@ func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudg
 
 type sourceGitReadCloser struct {
 	parentCtx  context.Context
+	ioCtx      context.Context
 	cancel     context.CancelFunc
 	cmd        *exec.Cmd
-	stdout     io.ReadCloser
+	stdout     *os.File
+	stderrPipe *os.File
 	budget     *sourceBudget
 	repo       string
 	args       []string
@@ -1084,45 +1274,54 @@ type sourceGitReadCloser struct {
 
 	stderr     bytes.Buffer
 	stderrDone chan struct{}
+	waitDone   chan error
+	pipesDone  chan struct{}
 	finishOnce sync.Once
 	finishErr  error
 	readMu     sync.Mutex
+	stateMu    sync.Mutex
+	readEnded  bool
 }
 
 func (r *sourceGitReadCloser) Read(p []byte) (int, error) {
 	r.readMu.Lock()
 	defer r.readMu.Unlock()
-	n, err := readBoundedSource(r.parentCtx, r.stdout, r.budget, r.localLimit, &r.localRead, p)
+	n, err := readBoundedSource(r.ioCtx, r.stdout, r.budget, r.localLimit, &r.localRead, p)
 	if err == nil {
 		return n, nil
 	}
-	return n, r.finish(err, !errors.Is(err, io.EOF))
+	finishErr := r.finish(err, !errors.Is(err, io.EOF))
+	r.stateMu.Lock()
+	r.readEnded = true
+	r.stateMu.Unlock()
+	return n, finishErr
 }
 
 func (r *sourceGitReadCloser) Close() error {
-	_ = r.finish(io.ErrClosedPipe, true)
-	return nil
+	r.stateMu.Lock()
+	readEnded := r.readEnded
+	r.stateMu.Unlock()
+	err := r.finish(io.ErrClosedPipe, true)
+	if readEnded || err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
+		return nil
+	}
+	return err
 }
 
 func (r *sourceGitReadCloser) drainStderr(stderr io.Reader) {
 	defer close(r.stderrDone)
 	buffer := make([]byte, 4096)
+	var localRead int64
 	for {
-		want := r.budget.readAllowance(len(buffer))
-		if want <= 0 {
-			r.cancel()
-			return
-		}
-		n, err := stderr.Read(buffer[:want])
-		retained, exceeded := r.budget.accountRead(n)
-		if retained > 0 && r.stderr.Len() < 64*1024 {
-			keep := retained
+		n, err := readBoundedSource(r.ioCtx, stderr, r.budget, 0, &localRead, buffer)
+		if n > 0 && r.stderr.Len() < 64*1024 {
+			keep := n
 			if keep > 64*1024-r.stderr.Len() {
 				keep = 64*1024 - r.stderr.Len()
 			}
 			_, _ = r.stderr.Write(buffer[:keep])
 		}
-		if exceeded {
+		if errors.Is(err, ErrBoundExceeded) {
 			r.cancel()
 			return
 		}
@@ -1132,36 +1331,68 @@ func (r *sourceGitReadCloser) drainStderr(stderr io.Reader) {
 	}
 }
 
+// Wait begins immediately after Start so process reaping and its cleanup clock
+// never depend on a caller reaching Read or Close. The pipes are ours rather
+// than os/exec's, so a descendant that inherits one cannot hold cleanup past
+// the explicit deadline or make Cmd.Wait discard already emitted stderr.
+func (r *sourceGitReadCloser) waitForProcess() {
+	waitErr := r.cmd.Wait()
+	r.waitDone <- waitErr
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	select {
+	case <-r.pipesDone:
+	case <-timer.C:
+		_ = r.stdout.Close()
+		_ = r.stderrPipe.Close()
+	}
+}
+
 func (r *sourceGitReadCloser) finish(cause error, kill bool) error {
 	r.finishOnce.Do(func() {
-		if kill && r.cmd.Process != nil {
-			_ = r.cmd.Process.Kill()
+		if kill {
+			r.cancel()
+			if r.cmd.Process != nil {
+				_ = r.cmd.Process.Kill()
+			}
+			_ = r.stdout.Close()
 		}
-		_ = r.stdout.Close()
-		waitErr := r.cmd.Wait()
+		waitErr := <-r.waitDone
 		<-r.stderrDone
 		r.cancel()
+		_ = r.stdout.Close()
+		_ = r.stderrPipe.Close()
+		close(r.pipesDone)
 		<-r.budget.slots
 		switch {
 		case r.budget.hitTotalBound() || errors.Is(cause, ErrBoundExceeded):
 			r.finishErr = fmt.Errorf("%w: git %s in %s", ErrBoundExceeded, strings.Join(r.args, " "), r.repo)
 		case r.parentCtx.Err() != nil:
 			r.finishErr = fmt.Errorf("%w: git %s in %s: %w", ErrSourceCancelled, strings.Join(r.args, " "), r.repo, r.parentCtx.Err())
-		case errors.Is(cause, io.EOF) && waitErr == nil:
-			r.finishErr = io.EOF
-		case errors.Is(cause, io.ErrClosedPipe):
-			r.finishErr = io.ErrClosedPipe
-		default:
+		case waitErr != nil:
 			detail := strings.TrimSpace(r.stderr.String())
 			if detail != "" {
 				r.finishErr = fmt.Errorf("%w: git %s in %s: %v: %s", ErrGitHistory, strings.Join(r.args, " "), r.repo, waitErr, detail)
 			} else {
 				r.finishErr = fmt.Errorf("%w: git %s in %s: %v", ErrGitHistory, strings.Join(r.args, " "), r.repo, waitErr)
 			}
+		case errors.Is(cause, io.EOF) || errors.Is(cause, os.ErrClosed):
+			r.finishErr = io.EOF
+		case errors.Is(cause, io.ErrClosedPipe):
+			r.finishErr = nil
+		default:
+			detail := strings.TrimSpace(r.stderr.String())
+			if detail != "" {
+				r.finishErr = fmt.Errorf("%w: git %s in %s: %v: %s", ErrGitHistory, strings.Join(r.args, " "), r.repo, cause, detail)
+			} else {
+				r.finishErr = fmt.Errorf("%w: git %s in %s: %v", ErrGitHistory, strings.Join(r.args, " "), r.repo, cause)
+			}
 		}
 	})
 	return r.finishErr
 }
+
+const sourceRefFormat = "%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)"
 
 func validateSourceGitRequest(request SourceGitRequest) error {
 	if len(request.Args) == 0 {
@@ -1178,21 +1409,115 @@ func validateSourceGitRequest(request SourceGitRequest) error {
 		}
 		return nil
 	}
-	allowed := map[string]bool{
-		"rev-parse": true, "rev-list": true, "diff-tree": true, "ls-tree": true,
-		"for-each-ref": true, "show-ref": true, "show": true,
+	valid := false
+	switch request.Args[0] {
+	case "rev-parse":
+		valid = validSourceRevParse(request.Args)
+	case "for-each-ref":
+		valid = validSourceForEachRef(request.Args)
+	case "rev-list":
+		valid = validSourceRevList(request.Args)
+	case "ls-tree":
+		valid = validSourceLSTree(request.Args)
+	case "show":
+		// The accepted legacy form has no empty trailing operand. Keep it
+		// spelled explicitly rather than opening the full `show` option space.
+		valid = len(request.Args) == 5 && request.Args[1] == "-s" && request.Args[2] == "--format=%cI" &&
+			validObjectID(request.Args[3]) && request.Args[4] == "--"
+	case "diff-tree":
+		valid = len(request.Args) == 5 && request.Args[1] == "--no-ext-diff" &&
+			request.Args[2] == "--no-textconv" && request.Args[3] == "-r" && validObjectID(request.Args[4])
+	case "show-ref":
+		valid = validSourceShowRef(request.Args)
 	}
-	if !allowed[request.Args[0]] || request.Args[0] == "cat-file" {
-		return fmt.Errorf("%w: Git metadata command %q is not allowed", ErrInvalidSourceSpec, request.Args[0])
-	}
-	for _, arg := range request.Args[1:] {
-		if arg == "--batch" || arg == "--batch-command" || arg == "--textconv" || arg == "--ext-diff" ||
-			strings.HasPrefix(arg, "--filter") || strings.HasPrefix(arg, "--upload-pack") ||
-			strings.HasPrefix(arg, "--config-env") || strings.HasPrefix(arg, "--exec") {
-			return fmt.Errorf("%w: Git option %q is not allowed", ErrInvalidSourceSpec, arg)
-		}
+	if !valid {
+		return fmt.Errorf("%w: Git metadata request %q is not an accepted read-only form", ErrInvalidSourceSpec, strings.Join(request.Args, " "))
 	}
 	return nil
+}
+
+func validSourceRevParse(args []string) bool {
+	if len(args) == 2 {
+		switch args[1] {
+		case "HEAD", "--is-shallow-repository", "--absolute-git-dir", "--git-common-dir":
+			return true
+		}
+	}
+	return len(args) == 4 && args[1] == "--verify" && args[2] == "--end-of-options" && args[3] != ""
+}
+
+func validSourceForEachRef(args []string) bool {
+	if len(args) < 2 || len(args) > 3 {
+		return false
+	}
+	if args[1] != "--format=%(refname)" && args[1] != "--format="+sourceRefFormat {
+		return false
+	}
+	return len(args) == 2 || args[2] == "refs/replace"
+}
+
+func validSourceRevList(args []string) bool {
+	if len(args) < 3 || args[1] != "--topo-order" {
+		return false
+	}
+	i := 2
+	if i < len(args) && strings.HasPrefix(args[i], "--max-count=") {
+		value := strings.TrimPrefix(args[i], "--max-count=")
+		if value == "" {
+			return false
+		}
+		for _, digit := range value {
+			if digit < '0' || digit > '9' {
+				return false
+			}
+		}
+		i++
+	}
+	if i < len(args) && args[i] == "--format=%cI" {
+		i++
+	}
+	if i >= len(args) {
+		return false
+	}
+	if args[i] == "--all" {
+		return i+1 == len(args)
+	}
+	for ; i < len(args); i++ {
+		if !validObjectID(args[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func validSourceLSTree(args []string) bool {
+	if len(args) < 7 || args[1] != "-r" || args[2] != "-z" || args[3] != "--full-tree" ||
+		!validObjectID(args[4]) || args[5] != "--" {
+		return false
+	}
+	for _, root := range args[6:] {
+		clean := filepath.Clean(root)
+		if root == "" || filepath.IsAbs(root) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return false
+		}
+	}
+	return true
+}
+
+func validSourceShowRef(args []string) bool {
+	for _, arg := range args[1:] {
+		if strings.HasPrefix(arg, "-") {
+			switch arg {
+			case "--head", "--heads", "--tags", "--hash", "--verify":
+				continue
+			}
+			return false
+		}
+		if arg == "" {
+			return false
+		}
+	}
+	return true
 }
 
 func validObjectID(value string) bool {
@@ -1231,6 +1556,10 @@ func decodeIdentityField(row *yaml.Node, name string, present *bool, set func(st
 	if !ok {
 		return
 	}
+	if node.Kind != yaml.ScalarNode {
+		*errs = append(*errs, fmt.Errorf("%s: expected a string scalar", name))
+		return
+	}
 	*present = node.Kind == yaml.ScalarNode && node.Value != ""
 	if !*present {
 		return
@@ -1249,6 +1578,10 @@ func decodeIdentityField(row *yaml.Node, name string, present *bool, set func(st
 func decodeTimeField(row *yaml.Node, name string, present *bool, set func(time.Time), errs *[]error) {
 	node, ok := yamlMappingValue(row, name)
 	if !ok {
+		return
+	}
+	if node.Kind != yaml.ScalarNode {
+		*errs = append(*errs, fmt.Errorf("%s: expected a string scalar", name))
 		return
 	}
 	*present = node.Kind == yaml.ScalarNode && node.Value != ""
@@ -1303,12 +1636,15 @@ func decodePredictiveFields(row *yaml.Node, reading *Reading, errs *[]error) {
 }
 
 func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection, budget *sourceBudget, report *SourceReport, readings *SourceReadings, discoveredRuns *[]string, seenRuns map[string]JournalIdentity, duplicateErr *error) error {
-	entries, err := os.ReadDir(spec.Repository)
+	entries, err := budget.readDirConfined(".")
 	if err != nil {
 		return fmt.Errorf("%w: list journal source %q: %v", ErrSourceMissing, spec.ID, err)
 	}
 	holdouts := stringSet(selection.HoldoutRunIDs)
 	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%w: journal run %s is a symbolic link", ErrSourceMissing, entry.Name())
+		}
 		if !entry.IsDir() {
 			continue
 		}
@@ -1316,16 +1652,17 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 			return fmt.Errorf("%w: journal source %q: %w", ErrSourceCancelled, spec.ID, err)
 		}
 		runID := entry.Name()
-		path := filepath.Join(spec.Repository, runID, "journal.jsonl")
-		info, statErr := os.Lstat(path)
+		relPath := filepath.Join(runID, "journal.jsonl")
+		displayPath := filepath.Join(spec.Repository, relPath)
+		info, statErr := budget.lstatConfined(relPath)
 		if statErr != nil {
 			if os.IsNotExist(statErr) {
 				continue
 			}
-			return fmt.Errorf("%w: inspect journal %s: %v", ErrSourceMissing, path, statErr)
+			return fmt.Errorf("%w: inspect journal %s: %v", ErrSourceMissing, displayPath, statErr)
 		}
 		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: journal %s is not a regular confined file", ErrSourceMissing, path)
+			return fmt.Errorf("%w: journal %s is not a regular confined file", ErrSourceMissing, displayPath)
 		}
 		report.Counts.Files++
 		report.Counts.Journals++
@@ -1340,7 +1677,7 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 		} else {
 			seenRuns[runID] = identity
 		}
-		reader, openErr := openSourceFile(ctx, path, budget, true)
+		reader, openErr := openSourceFile(ctx, relPath, budget, true)
 		if openErr != nil {
 			if _, heldout := holdouts[runID]; heldout {
 				report.Counts.UnreadableExcluded++
@@ -1414,9 +1751,13 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 func readLiveSource(ctx context.Context, spec SourceSpec, selection Selection, budget *sourceBudget, report *SourceReport, readings *SourceReadings) error {
 	paths := make([]string, 0)
 	seen := make(map[string]struct{})
+	rootFS, err := budget.confinedFS()
+	if err != nil {
+		return fmt.Errorf("%w: live source %q has no confined root: %v", ErrSourceMissing, spec.ID, err)
+	}
 	for _, root := range report.Roots {
-		rootPath := filepath.Join(spec.Repository, root)
-		err := filepath.WalkDir(rootPath, func(path string, entry fs.DirEntry, walkErr error) error {
+		rootPath := filepath.ToSlash(filepath.Clean(root))
+		err := fs.WalkDir(rootFS, rootPath, func(path string, entry fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				return walkErr
 			}
@@ -1448,19 +1789,14 @@ func readLiveSource(ctx context.Context, spec SourceSpec, selection Selection, b
 			return fmt.Errorf("%w: live source %q: %w", ErrSourceCancelled, spec.ID, err)
 		}
 		report.Counts.Files++
-		info, err := os.Stat(path)
-		if err != nil {
-			report.Counts.Unreadable++
-			return fmt.Errorf("%w: stat live YAML %s: %v", ErrSourceMissing, path, err)
-		}
 		reader, err := openSourceFile(ctx, path, budget, false)
 		if err != nil {
 			report.Counts.Unreadable++
 			return err
 		}
 		data, readErr := io.ReadAll(reader)
-		_ = reader.Close()
 		if readErr != nil {
+			_ = reader.Close()
 			if errors.Is(readErr, ErrBoundExceeded) {
 				report.Counts.BoundsExceeded++
 				report.State = SourcePartial
@@ -1476,11 +1812,18 @@ func readLiveSource(ctx context.Context, spec SourceSpec, selection Selection, b
 			report.Counts.Unreadable++
 			return fmt.Errorf("%w: read live YAML %s: %v", ErrSourceMissing, path, readErr)
 		}
-		rel, err := filepath.Rel(spec.Repository, path)
-		if err != nil {
-			return fmt.Errorf("%w: make source path relative: %v", ErrSourceMissing, err)
+		metadata, ok := reader.(*boundedSourceReadCloser)
+		if !ok {
+			_ = reader.Close()
+			return fmt.Errorf("%w: live YAML reader did not retain descriptor metadata", ErrSourceMissing)
 		}
-		ref := ReadingRef{SourceID: spec.ID, Repository: spec.Repository, Path: filepath.ToSlash(rel), Revision: "live", RecordedAt: info.ModTime().Round(0).UTC()}
+		info, infoErr := metadata.sourceFileInfo()
+		_ = reader.Close()
+		if infoErr != nil {
+			report.Counts.Unreadable++
+			return fmt.Errorf("%w: verify live YAML %s: %v", ErrSourceMissing, path, infoErr)
+		}
+		ref := ReadingRef{SourceID: spec.ID, Repository: spec.Repository, Path: filepath.ToSlash(path), Revision: "live", RecordedAt: info.ModTime().Round(0).UTC()}
 		parsed, _ := parseReadings(data, ref)
 		ingestReadings(parsed, selection, report, readings)
 	}
@@ -1497,7 +1840,7 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 		return classifyHistoryReadError(spec.ID, err)
 	}
 	report.Shallow = strings.TrimSpace(string(shallowRaw)) == "true"
-	gitDirRaw, err := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"rev-parse", "--absolute-git-dir"}})
+	commonDirRaw, err := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"rev-parse", "--git-common-dir"}})
 	if err != nil {
 		if errors.Is(err, ErrBoundExceeded) {
 			markSourceBound(report, "Git metadata total-byte bound exceeded")
@@ -1505,34 +1848,25 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 		}
 		return classifyHistoryReadError(spec.ID, err)
 	}
-	gitDir := strings.TrimSpace(string(gitDirRaw))
-	if info, statErr := os.Stat(filepath.Join(gitDir, "info", "grafts")); statErr == nil && info.Size() > 0 {
+	commonDir := strings.TrimSpace(string(commonDirRaw))
+	if !filepath.IsAbs(commonDir) {
+		commonDir = filepath.Join(spec.Repository, commonDir)
+	}
+	if info, statErr := os.Stat(filepath.Join(commonDir, "info", "grafts")); statErr == nil && info.Size() > 0 {
 		report.Grafted = true
 	}
-	replaceRaw, err := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"for-each-ref", "--format=%(refname)", "refs/replace"}})
-	if err != nil {
-		if errors.Is(err, ErrBoundExceeded) {
-			markSourceBound(report, "Git metadata total-byte bound exceeded")
-			return nil
-		}
-		return classifyHistoryReadError(spec.ID, err)
-	}
-	report.Replaced = strings.TrimSpace(string(replaceRaw)) != ""
-	if report.Shallow {
-		addSourceReason(report, "Git history is shallow")
-	}
-	if report.Grafted {
-		addSourceReason(report, "Git history has grafts")
-	}
-	if report.Replaced {
-		addSourceReason(report, "Git history has replacement refs")
-	}
-	if report.Shallow || report.Grafted || report.Replaced {
-		report.State = SourcePartial
-	}
 
-	var traversal string
+	var traversal []string
 	if spec.Ref != "" {
+		replaceRaw, replaceErr := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"for-each-ref", "--format=%(refname)", "refs/replace"}})
+		if replaceErr != nil {
+			if errors.Is(replaceErr, ErrBoundExceeded) {
+				markSourceBound(report, "Git metadata total-byte bound exceeded")
+				return nil
+			}
+			return classifyHistoryReadError(spec.ID, replaceErr)
+		}
+		report.Replaced = strings.TrimSpace(string(replaceRaw)) != ""
 		resolvedRaw, resolveErr := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"rev-parse", "--verify", "--end-of-options", spec.Ref + "^{commit}"}})
 		if resolveErr != nil {
 			if errors.Is(resolveErr, ErrBoundExceeded) {
@@ -1547,9 +1881,9 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 		}
 		report.ResolvedRef = resolved
 		report.ResolvedRefs = []ResolvedRef{{Name: spec.Ref, Commit: resolved}}
-		traversal = resolved
+		traversal = []string{resolved}
 	} else {
-		refsRaw, refsErr := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"for-each-ref", "--format=%(refname)"}})
+		resolvedRefs, replaced, refsErr := readAllResolvedRefs(ctx, spec.Repository, budget)
 		if refsErr != nil {
 			if errors.Is(refsErr, ErrBoundExceeded) {
 				markSourceBound(report, "Git metadata total-byte bound exceeded")
@@ -1557,34 +1891,32 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 			}
 			return classifyHistoryReadError(spec.ID, refsErr)
 		}
-		for _, name := range strings.Split(strings.TrimSpace(string(refsRaw)), "\n") {
-			if name == "" {
-				continue
-			}
-			resolvedRaw, resolveErr := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"rev-parse", "--verify", "--end-of-options", name + "^{commit}"}})
-			if resolveErr != nil {
-				if errors.Is(resolveErr, ErrBoundExceeded) {
-					markSourceBound(report, "Git metadata total-byte bound exceeded")
-					return nil
-				}
-				return classifyHistoryReadError(spec.ID, resolveErr)
-			}
-			commit := strings.TrimSpace(string(resolvedRaw))
-			if !validObjectID(commit) {
-				return fmt.Errorf("%w: source %q ref %q did not resolve to a full commit", ErrGitHistory, spec.ID, name)
-			}
-			report.ResolvedRefs = append(report.ResolvedRefs, ResolvedRef{Name: name, Commit: commit})
+		report.ResolvedRefs = resolvedRefs
+		report.Replaced = replaced
+		for _, ref := range resolvedRefs {
+			traversal = append(traversal, ref.Commit)
 		}
-		sort.Slice(report.ResolvedRefs, func(i, j int) bool {
-			if report.ResolvedRefs[i].Name != report.ResolvedRefs[j].Name {
-				return report.ResolvedRefs[i].Name < report.ResolvedRefs[j].Name
-			}
-			return report.ResolvedRefs[i].Commit < report.ResolvedRefs[j].Commit
-		})
-		traversal = "--all"
+	}
+	if report.Shallow {
+		addSourceReason(report, "Git history is shallow")
+	}
+	if report.Grafted {
+		addSourceReason(report, "Git history has grafts")
+	}
+	if report.Replaced {
+		addSourceReason(report, "Git history has replacement refs")
+	}
+	if report.Shallow || report.Grafted || report.Replaced {
+		report.State = SourcePartial
+	}
+	if len(traversal) == 0 {
+		report.State = SourcePartial
+		addSourceReason(report, "Git history has no resolved commit refs")
+		return nil
 	}
 
 	commits, capped, err := readHistoryCommits(ctx, spec.Repository, traversal, budget, budget.bounds.MaxCommits)
+	report.Counts.Commits = len(commits)
 	if err != nil {
 		if errors.Is(err, ErrBoundExceeded) {
 			markSourceBound(report, "Git metadata total-byte bound exceeded")
@@ -1592,7 +1924,6 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 		}
 		return classifyHistoryReadError(spec.ID, err)
 	}
-	report.Counts.Commits = len(commits)
 	if capped {
 		markSourceBound(report, "Git commit bound exceeded")
 	}
@@ -1604,24 +1935,13 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 	}
 	cache := make(map[string]cachedBlob)
 	stop := false
-	for _, commit := range commits {
+	for _, historyCommit := range commits {
 		if stop {
 			break
 		}
+		commit := historyCommit.objectID
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: history source %q: %w", ErrSourceCancelled, spec.ID, err)
-		}
-		timeRaw, timeErr := readSourceGitAll(ctx, spec.Repository, budget, SourceGitRequest{Args: []string{"show", "-s", "--format=%cI", commit, "--"}})
-		if timeErr != nil {
-			if errors.Is(timeErr, ErrBoundExceeded) {
-				markSourceBound(report, "Git metadata total-byte bound exceeded")
-				break
-			}
-			return classifyHistoryReadError(spec.ID, timeErr)
-		}
-		recordedAt, timeErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(timeRaw)))
-		if timeErr != nil {
-			return fmt.Errorf("%w: source %q commit %s has invalid committer time: %v", ErrGitHistory, spec.ID, commit, timeErr)
 		}
 		args := []string{"ls-tree", "-r", "-z", "--full-tree", commit, "--"}
 		args = append(args, report.Roots...)
@@ -1686,7 +2006,7 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 			}
 			ref := ReadingRef{
 				SourceID: spec.ID, Repository: spec.Repository, Path: path,
-				Revision: "git:" + commit, RecordedAt: recordedAt.Round(0).UTC(),
+				Revision: "git:" + commit, RecordedAt: historyCommit.recordedAt,
 			}
 			parsed, _ := parseReadings(blob.data, ref)
 			ingestReadings(parsed, selection, report, readings)
@@ -1710,42 +2030,117 @@ func readSourceGitAll(ctx context.Context, repo string, budget *sourceBudget, re
 	return data, readErr
 }
 
-func readHistoryCommits(ctx context.Context, repo, traversal string, budget *sourceBudget, limit int) ([]string, bool, error) {
-	args := []string{"rev-list", "--topo-order"}
-	if traversal == "--all" {
-		args = append(args, "--all")
-	} else {
-		args = append(args, traversal)
+func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget) ([]ResolvedRef, bool, error) {
+	raw, err := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
+		Args: []string{"for-each-ref", "--format=" + sourceRefFormat},
+	})
+	if err != nil {
+		return nil, false, err
 	}
+	refs := make([]ResolvedRef, 0)
+	replaced := false
+	for _, record := range bytes.Split(bytes.TrimSpace(raw), []byte{'\n'}) {
+		if len(record) == 0 {
+			continue
+		}
+		fields := bytes.Split(record, []byte{0})
+		if len(fields) != 5 {
+			return refs, replaced, fmt.Errorf("%w: malformed for-each-ref metadata", ErrGitHistory)
+		}
+		name := string(fields[0])
+		objectType, objectID := string(fields[1]), string(fields[2])
+		peeledType, peeledID := string(fields[3]), string(fields[4])
+		if name == "" || name != strings.TrimSpace(name) {
+			return refs, replaced, fmt.Errorf("%w: invalid ref name %q", ErrGitHistory, name)
+		}
+		replaced = replaced || strings.HasPrefix(name, "refs/replace/")
+		commit := ""
+		switch {
+		case objectType == "commit":
+			commit = objectID
+		case peeledType == "commit":
+			commit = peeledID
+		default:
+			resolvedRaw, resolveErr := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
+				Args: []string{"rev-parse", "--verify", "--end-of-options", name + "^{commit}"},
+			})
+			if resolveErr != nil {
+				return refs, replaced, fmt.Errorf("%w: ref %q is not a supported commit ref: %v", ErrGitHistory, name, resolveErr)
+			}
+			commit = strings.TrimSpace(string(resolvedRaw))
+		}
+		if !validObjectID(commit) {
+			return refs, replaced, fmt.Errorf("%w: ref %q did not resolve to a full commit", ErrGitHistory, name)
+		}
+		refs = append(refs, ResolvedRef{Name: name, Commit: commit})
+	}
+	sort.Slice(refs, func(i, j int) bool {
+		if refs[i].Name != refs[j].Name {
+			return refs[i].Name < refs[j].Name
+		}
+		return refs[i].Commit < refs[j].Commit
+	})
+	return refs, replaced, nil
+}
+
+type sourceHistoryCommit struct {
+	objectID   string
+	recordedAt time.Time
+}
+
+func readHistoryCommits(ctx context.Context, repo string, traversal []string, budget *sourceBudget, limit int) ([]sourceHistoryCommit, bool, error) {
+	providerLimit := limit
+	if limit < int(^uint(0)>>1) {
+		providerLimit++
+	}
+	args := []string{"rev-list", "--topo-order", "--max-count=" + strconv.Itoa(providerLimit), "--format=%cI"}
+	args = append(args, traversal...)
 	reader, err := runSourceGit(ctx, repo, budget, SourceGitRequest{Args: args})
 	if err != nil {
 		return nil, false, err
 	}
 	buffered := bufio.NewReaderSize(reader, 32*1024)
-	commits := make([]string, 0, limit)
-	capped := false
+	capacity := limit
+	if capacity > 1024 {
+		capacity = 1024
+	}
+	commits := make([]sourceHistoryCommit, 0, capacity)
+	pendingCommit := ""
 	for {
 		line, readErr := buffered.ReadString('\n')
 		value := strings.TrimSpace(line)
 		if value != "" {
-			if !validObjectID(value) {
-				_ = reader.Close()
-				return commits, false, fmt.Errorf("%w: rev-list returned invalid object ID %q", ErrGitHistory, value)
+			if pendingCommit == "" {
+				commit, ok := strings.CutPrefix(value, "commit ")
+				if !ok || !validObjectID(commit) {
+					_ = reader.Close()
+					return commits, false, fmt.Errorf("%w: rev-list returned invalid commit header %q", ErrGitHistory, value)
+				}
+				pendingCommit = commit
+			} else {
+				recordedAt, parseErr := time.Parse(time.RFC3339Nano, value)
+				if parseErr != nil {
+					_ = reader.Close()
+					return commits, false, fmt.Errorf("%w: commit %s has invalid committer time: %v", ErrGitHistory, pendingCommit, parseErr)
+				}
+				commits = append(commits, sourceHistoryCommit{objectID: pendingCommit, recordedAt: recordedAt.Round(0).UTC()})
+				pendingCommit = ""
 			}
-			if len(commits) == limit {
-				capped = true
-				_ = reader.Close()
-				break
-			}
-			commits = append(commits, value)
 		}
 		if readErr != nil {
 			_ = reader.Close()
 			if errors.Is(readErr, io.EOF) {
+				if pendingCommit != "" {
+					return commits, false, fmt.Errorf("%w: rev-list omitted committer time for %s", ErrGitHistory, pendingCommit)
+				}
 				break
 			}
 			return commits, false, readErr
 		}
+	}
+	capped := len(commits) > limit
+	if capped {
+		commits = commits[:limit]
 	}
 	return commits, capped, nil
 }

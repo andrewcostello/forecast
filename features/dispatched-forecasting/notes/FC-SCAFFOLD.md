@@ -568,3 +568,29 @@ advertised. Callers control how many explicit sources they request.
 SummarizeWall is the phase checker: the exhaustive classified values are development,
 panel_review and verifier. Unclassified is a report key only; all other interval
 values wrap ErrInvalidPhase. Equivalent enum helpers are optional body details.
+
+## Operator F3 clarification after source follow-up review
+
+All-ref history retains Git --all semantics: every captured canonical refs/...
+tip AND the captured HEAD commit, including detached HEAD. Record HEAD explicitly
+in ResolvedRefs when it resolves; it is the one allowed pseudoref name in an
+implicit-ref snapshot. Other implicit names must follow full Git refs/... syntax.
+Explicit requested expressions retain their existing separate validation. An
+unborn/no-resolved-commit history is PARTIAL with a reason; ValidateComplete
+refuses it. Capture IDs once and peel captured object IDs, never reread mutable
+names as fallback. No COMPLETE claim may silently omit detached-HEAD evidence.
+
+The commit cap must stop traversal work, not only truncate emitted lines after
+an eager topological walk. Uncapped complete history still includes every
+reachable parent. Bound traversal argv independently of ref count (e.g. bounded
+snapshot-tip batches); no arbitrary total-process-count performance threshold
+is introduced. Preserve source completeness, deterministic retained evidence and
+unique commit counting under the cap.
+
+A forcibly closed/truncated Git stream is an error, never a synthesized clean EOF.
+Cleanup must not discard buffered successful output just because its consumer
+waited more than one second. Cancellation and inherited-pipe cleanup remain bounded.
+Final-component symlinks require atomic refusal relative to the confined parent
+descriptor; a pre-open Lstat alone is not proof. Platform-specific private file
+open helpers are permitted to preserve portable package builds; frozen public
+seams and test ownership do not change. Their implementations belong to FC-SOURCES.

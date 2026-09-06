@@ -84,6 +84,20 @@ enough for two isolated implementers to agree. Deviations from F5: none.
 - Dependencies are sets: repeated `BlockedBy` entries are one dependency;
   `NodeTrace.BlockedBy` reports the set ordered by the referenced node's
   declaration index, nil when empty. A self-reference is a cycle.
+- Declaration order is not a topological order. A `BlockedBy` entry may
+  name a node declared later than the dependent (a reverse-declaration
+  edge). Such an edge is legal once the uniqueness, unknown-dependency and
+  cycle checks pass; it is not `ErrCycle`, not `ErrUnknownDependency`, and
+  it is scheduled by the same process (the dependent simply is not ready
+  during the FILL walk until the later-declared node has finished). An arm
+  that only looks backwards for dependencies, or that treats a forward
+  reference as a cycle, agrees with every row whose edges point to
+  earlier-declared nodes and fails F5-REVERSE-DECLARATION.
+- Durations are `time.Duration` at nanosecond resolution. Start, Finish and
+  Makespan are exact sums of the input durations; no arm may round, quantize
+  or convert through a float or a whole-second tick. The row grammar below
+  uses whole seconds only for readability, and F5-MIXED-UNITS and
+  F5-NANOSECOND-GRAIN pin values that no whole-second arithmetic reproduces.
 - Validation precedence is the order of `SchedulerSentinels`. Every rule is
   evaluated over the whole graph before the next rule; within one rule the
   first offending node in declaration order is named. The returned error
@@ -130,10 +144,15 @@ enough for two isolated implementers to agree. Deviations from F5: none.
 
 ## Behavioral examples for independent seals
 
-Durations are seconds unless stated. Traces are `key start..finish`. Each
-example was computed by hand against the process above; a seal that
+Durations are seconds unless stated (a bare `2` is `2s`; other units are
+written as `time.ParseDuration` strings). Traces are `key start..finish`.
+Each example was computed by hand against the process above; a seal that
 disagrees with one of these rows is a contract dispute for FC-SCHED-ADJ,
 not a reason to edit an arm. The same rows are expected of both arms.
+Every success row below MUST be encoded as a fixture and asserted directly
+against both arms; the tick oracle of the next section is a third check on
+its own generated corpus and is never the source of truth for these rows
+(several of them lie outside its bounds on purpose).
 
 | Name | Input (cap; nodes in declaration order) | Expected |
 |---|---|---|
@@ -143,17 +162,21 @@ not a reason to edit an arm. The same rows are expected of both arms.
 | F5-FORK-JOIN-CAP1 | cap 1; same graph | A 0..1, B 1..3, C 3..6, D 6..7; makespan 7; DependencyPath `[A, C, D]` (sum 5); ExecutionChain `[A start, B dependency, C resource, D dependency]` (sum 7). |
 | F5-CAP-OVER-N | cap 10; same graph | Identical to F5-FORK-JOIN-FREE. |
 | F5-READY-DECLARATION-ORDER | cap 1; B=3, A=2 | B 0..3, A 3..5; makespan 5; `[A]`; `[B start, A resource]`. Compare F5-CAP-BINDS: same keys and durations, different declaration order, different trace; key order is never consulted. |
+| F5-REVERSE-DECLARATION | cap 1; A=2 (B), B=3 | B 0..3, A 3..5; makespan 5; DependencyPath `[B, A]`; ExecutionChain `[B start, A dependency]`; `Trace[A].BlockedBy == [B]`; nil error. A depends on a node declared after it. During the FILL walk at 0, A is walked first but is not ready, so B takes the slot. An arm that rejects forward references (as `ErrCycle` or `ErrUnknownDependency`) or that resolves dependencies only among earlier-declared nodes fails here and nowhere else in this corpus. |
 | F5-SIMULTANEOUS-COMPLETIONS | cap 2; X=2, Y=2, P=1 (Y), Q=1 (Y), R=1 (X) | X 0..2, Y 0..2, P 2..3, Q 2..3, R 3..4; makespan 4; `[X, R]`; `[Y start, P dependency, R resource]`. Mutation: completing X and filling before completing Y sees only R ready (P and Q still wait on Y), starts R 2..3, then completes Y and starts P 2..3 with no slot left for Q, giving Q 3..4, makespan 4, DependencyPath `[Y, Q]` and chain `[Y start, P dependency, Q resource]`; the frozen process starts P and Q at 2 and R at 3. |
 | F5-ZERO-DRAIN | cap 1; A=0, B=0 (A), C=1 (B) | A 0..0, B 0..0, C 0..1; makespan 1; `[A, B, C]`; `[A start, B dependency, C dependency]`. |
 | F5-ZERO-WAITS-FOR-SLOT | cap 1; A=2, Z=0 | A 0..2, Z 2..2; makespan 2; `L` is A (tie at 2, earlier declared); `[A]`; `[A start]`. |
 | F5-ZERO-DECLARATION-ORDER | cap 1; P=0, Q=3, R=0 | P 0..0, Q 0..3, R 3..3; makespan 3; `[Q]`; `[Q start]`. R does not overtake Q. |
-| F5-RESOURCE-SKIPS-ZERO | cap 1; A=2, Z=0, B=1 | A 0..2, Z 2..2, B 2..3; makespan 3; `[B]`; `[A start, B resource]`. Z finishes at B's start but has zero duration and is not the predecessor. |
+| F5-RESOURCE-SKIPS-ZERO | cap 1; A=2, Z=0, B=1 | A 0..2, Z 2..2, B 2..3; makespan 3; `[B]`; `[A start, B resource]`. Z finishes at B's start with zero duration. This row does NOT pin the `Duration(r) > 0` filter: A is declared before Z, so the declaration tie-break alone also picks A, and an arm without the filter answers identically. It is kept as the plain zero-drain-then-resource case; the next row is the discriminating one. |
+| F5-RESOURCE-SKIPS-ZERO-DECLARED-FIRST | cap 1; Z=0 (A), A=2, B=1 | Z 2..2, A 0..2, B 2..3 (trace in declaration order: Z, A, B); makespan 3; `[B]`; `[A start, B resource]`. Z is declared first, depends on A, and finishes at 2, the instant B starts. Without the `Duration(r) > 0` filter the earliest-declared candidate finishing at 2 is Z and the arm answers `[A start, Z dependency, B resource]` (three steps, duration sum 3, contiguous, and still wrong: Z held the slot for no time). The frozen rule skips Z and names A, the node that actually occupied the slot up to 2. A zero-duration predecessor is observable only when the zero node is declared before the positive node that released the slot; no earlier-to-later-edge graph can produce that, which is why this row is hand-written. |
 | F5-RESOURCE-TIE | cap 2; A=3, B=3, C=1 | A 0..3, B 0..3, C 3..4; makespan 4; `[C]`; `[A start, C resource]` (A and B both qualify; earliest declared). |
 | F5-DUP-DEPENDENCY | cap 1; A=1, B=1 (A, A) | A 0..1, B 1..2; `Trace[B].BlockedBy == [A]`; makespan 2; `[A, B]`; `[A start, B dependency]`. Input `BlockedBy` still `[A, A]` after the call. |
 | F5-DEP-SET-ORDER | cap 2; A=1, B=1, C=1 (B, A) | `Trace[C].BlockedBy == [A, B]`; A 0..1, B 0..1, C 1..2; makespan 2; `[A, C]` (A and B tie at 1; earliest declared); `[A start, C dependency]`. |
 | F5-LAST-NODE-KEY-ORDER | cap 2; B=2, A=2 | B 0..2, A 0..2; makespan 2; `L` is B (tie at 2, earlier declared although A sorts first); `[B]`; `[B start]`. A key-sorted arm answers `[A]` / `[A start]` and fails. |
 | F5-RESOURCE-TIE-KEY-ORDER | cap 2; B=3, A=3, C=1 | B 0..3, A 0..3, C 3..4; makespan 4; `[C]`; `[B start, C resource]` (B and A both qualify; B is earlier declared although A sorts first). A key-sorted arm answers `[A start, C resource]` and fails. |
 | F5-BLOCKED-BY-KEY-ORDER | cap 2; B=1, A=1, C=1 (A, B) | `Trace[C].BlockedBy == [B, A]` (declaration index, not key, not input order); B 0..1, A 0..1, C 1..2; makespan 2; `[B, C]` (B and A tie at 1; B earlier declared); `[B start, C dependency]`. A key-sorted arm answers `[A, B]`, `[A, C]` and `[A start, C dependency]` and fails. |
+| F5-MIXED-UNITS | cap 1; A=`1500ms`, B=`2s` | A 0..1.5s, B 1.5s..3.5s; makespan `3.5s` (3500000000ns); `[B]`; `[A start, B resource]`. An arm that quantizes to whole seconds (A becomes 1s or 2s) answers makespan 3s or 4s and fails; a seal that encodes durations as integer seconds cannot even express this row. |
+| F5-NANOSECOND-GRAIN | cap 1; A=`1m30s`, B=`250ns`, C=`1.5s` (B) | A 0..90s, B 90s..90.00000025s (90000000250ns), C 90.00000025s..91.50000025s; makespan 91500000250ns; DependencyPath `[B, C]`; ExecutionChain `[A start, B resource, C dependency]`. Three units on one graph, a duration below one microsecond, and a dependency edge whose contiguity is only visible at nanosecond resolution: a whole-second arm gives B 90..90, C 90..91 and makespan 91s; a float-seconds arm risks `90.00000025 + 1.5 != 91.50000025` bit-exactly. Comparison is by parsed `time.Duration` value, so `"91.50000025s"` and `"91500000250ns"` are the same expectation. |
 | F5-EMPTY | cap 1; no nodes | makespan 0; nil `Trace`, `DependencyPath`, `ExecutionChain`; nil error. |
 | F5-EMPTY-BAD-CAP | cap 0; no nodes | `ErrInvalidConcurrency`. |
 | F5-BLANK-KEY | cap 1; key `"  "` | `ErrBlankKey`. |
@@ -213,6 +236,36 @@ trace, both paths) and the error, not makespan alone. Disagreement between
 an arm and the oracle, or between the arms, is minimized and adjudicated by
 FC-SCHED-ADJ; no arm is edited to agree.
 
+The generated corpus is blind by construction to three frozen rules, and
+the seals MUST NOT treat oracle agreement as evidence for them. Coverage of
+each comes only from the hand-written row named, which the seals encode as
+a fixture and assert directly against both arms:
+
+- The `Duration(r) > 0` filter on `EdgeResource` predecessors. With edges
+  restricted to earlier-declared to later-declared nodes, a zero-duration
+  node finishing at instant `t` always has a positive-duration node
+  finishing at `t` declared before it (the node whose completion made it
+  ready or released its slot), so the declaration tie-break alone selects
+  the same predecessor and the filter is never observable. Exhaustively
+  checked for every corpus-shaped graph with `N <= 4` (84,072 graphs, zero
+  discriminate). Covered by F5-RESOURCE-SKIPS-ZERO-DECLARED-FIRST, whose
+  zero node is declared before the node that released the slot.
+- Reverse-declaration dependency edges. The corpus never generates one, so
+  an arm that refuses or mis-validates forward references matches the whole
+  generated corpus. Covered by F5-REVERSE-DECLARATION. The bound stays as it
+  is because it keeps generated graphs acyclic without a cycle detector in
+  the oracle; the seals may additionally extend the oracle to accept
+  reverse edges, but that is not a substitute for the fixture.
+- Non-tick durations. The tick oracle is an integer-tick process and is
+  defined ONLY over its own generated corpus, where every duration is a
+  small whole number of ticks encoded as whole seconds. It is never applied
+  to error rows, to overflow rows, or to hand fixtures whose durations are
+  not whole seconds. Nanosecond arithmetic in the arms is covered by
+  F5-MIXED-UNITS and F5-NANOSECOND-GRAIN, which the seals compare by parsed
+  `time.Duration` value against both arms. A seal suite whose fixture
+  encoder or comparison only handles whole seconds does not satisfy this
+  section.
+
 ## Guidance for FC-SCHED-SEALS drawn from inherited findings
 
 The inherited FC-OBS-ADJ findings concern evidence and reference-class code
@@ -245,8 +298,12 @@ are relevant to writing these seals and are pre-empted by the rulings:
 
 Residual limitation: the rulings above are checked by hand, not by a
 running implementation (the panel-iteration rows F5-SIMULTANEOUS-COMPLETIONS,
-F5-LAST-NODE-KEY-ORDER, F5-RESOURCE-TIE-KEY-ORDER, F5-BLOCKED-BY-KEY-ORDER
-and F5-OVERFLOW-WRAP were additionally checked against the named mutant
-process by hand and shown to differ); the first executable check is the oracle FC-SCHED-SEALS
+F5-LAST-NODE-KEY-ORDER, F5-RESOURCE-TIE-KEY-ORDER, F5-BLOCKED-BY-KEY-ORDER,
+F5-OVERFLOW-WRAP, F5-RESOURCE-SKIPS-ZERO-DECLARED-FIRST,
+F5-REVERSE-DECLARATION, F5-MIXED-UNITS and F5-NANOSECOND-GRAIN were
+additionally checked against the named mutant process, a no-zero-filter
+mutant and a whole-second quantizing mutant, by a throwaway simulator of
+the frozen process, and shown to differ where the row says they differ);
+the first executable check is the oracle FC-SCHED-SEALS
 writes, and any row it contradicts goes to FC-SCHED-ADJ as a contract
 dispute rather than being silently corrected in an arm.

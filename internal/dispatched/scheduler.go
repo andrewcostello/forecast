@@ -17,10 +17,16 @@ import "time"
 // Node is one row of a dependency graph with a duration already sampled.
 //
 // Key is compared byte-exact; a key that is empty or only whitespace is
-// blank. BlockedBy is the raw declared dependency list. Its meaning is a
-// SET: repeated entries are one dependency, order carries no information,
-// and an entry naming the node itself is a cycle. Implementations must not
-// mutate BlockedBy (or any other input slice) while normalizing it.
+// blank. Duration is a sampled time.Duration at nanosecond resolution and
+// is used exactly: no rounding, quantizing to ticks or seconds, or float
+// conversion anywhere in scheduling. BlockedBy is the raw declared
+// dependency list. Its meaning is a SET: repeated entries are one
+// dependency, order carries no information, and an entry naming the node
+// itself is a cycle. An entry may name a node declared LATER in the Graph
+// (declaration order is not a topological order); such a forward reference
+// is legal, not a cycle, and is scheduled by the same process.
+// Implementations must not mutate BlockedBy (or any other input slice)
+// while normalizing it.
 type Node struct {
 	Key       string
 	Duration  time.Duration

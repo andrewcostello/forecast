@@ -37,7 +37,7 @@ files may coexist in `internal/dispatched/`.
 
 The baseline `scheduler.go` (interface only, no implementation, no caller,
 no test anywhere in the module; verified by grep for `Schedule`, `Graph`,
-`CriticalPath` and the four scheduler sentinels) is amended as follows.
+`CriticalPath` and the five scheduler sentinels) is amended as follows.
 
 | Baseline | Amended | Reason |
 |---|---|---|
@@ -55,7 +55,11 @@ the five baseline scheduler sentinels keep their identities there.
 
 This note is the single normative source for F5 behavioral, fixture-loader
 and oracle rules. Go declarations own type/signature/wire-key shape;
-`SchedulerSentinels` owns the ordered error registry. Go comments point here
+`schedulerSentinels` owns the private ordered error registry;
+`SchedulerSentinels()` returns a fresh copy for external inspection. Mutating
+one returned slice must not alter later registry calls, lookup or arm errors.
+FC-SCHED-SEALS must assert that property; the registry utility is static metadata,
+not shared algorithm/validation logic. Go comments point here
 and do not restate the algorithm. Existing failed native panels are preserved;
 this operator correction requires independent acceptance before seals start.
 
@@ -67,6 +71,13 @@ enough for two isolated implementers to agree. Deviations from F5: none.
 - Input durations are already sampled. Neither arm reads a clock, a random
   source or the reference class. The result is a pure function of
   `(g, maxParallel)`; `g` and its slices are not mutated.
+- On success `len(Trace)==len(g.Nodes)` and `Trace[i].Key==g.Nodes[i].Key`.
+  Each input node appears exactly once, in declaration order even if a later
+  node starts earlier. Fixtures and comparisons preserve that positional order.
+  Normalizing nil/empty slices never permits reordering a trace or either chain.
+- A concurrency cap larger than the node count remains valid. Working storage
+  must be bounded by the graph, not by maxParallel: use at most min(cap,N)
+  occupied slots rather than allocating a cap-sized buffer.
 - Declaration order (index in `Graph.Nodes`) is the only tie-break. Keys are
   compared byte-exact and never sorted. This applies in all four places a
   tie can arise: the FILL walk, the choice of last node `L`, the
@@ -180,7 +191,7 @@ its own generated corpus and is never the source of truth for these rows
 | F5-FORK-JOIN-CAP1 | cap 1; same graph | A 0..1, B 1..3, C 3..6, D 6..7; makespan 7; DependencyPath `[A, C, D]` (sum 5); ExecutionChain `[A start, B dependency, C resource, D dependency]` (sum 7). |
 | F5-CAP-OVER-N | cap 10; same graph | Identical to F5-FORK-JOIN-FREE. |
 | F5-READY-DECLARATION-ORDER | cap 1; B=3, A=2 | B 0..3, A 3..5; makespan 5; `[A]`; `[B start, A resource]`. Compare F5-CAP-BINDS: same keys and durations, different declaration order, different trace; key order is never consulted. |
-| F5-REVERSE-DECLARATION | cap 1; A=2 (B), B=3 | B 0..3, A 3..5; makespan 5; DependencyPath `[B, A]`; ExecutionChain `[B start, A dependency]`; `Trace[A].BlockedBy == [B]`; nil error. A depends on a node declared after it. During the FILL walk at 0, A is walked first but is not ready, so B takes the slot. An arm that rejects forward references (as `ErrCycle` or `ErrUnknownDependency`) or that resolves dependencies only among earlier-declared nodes fails this row and also F5-RESOURCE-SKIPS-ZERO-DECLARED-FIRST. |
+| F5-REVERSE-DECLARATION | cap 1; A=2 (B), B=3 | A 3..5, B 0..3 (trace in declaration order: A, B); makespan 5; DependencyPath `[B, A]`; ExecutionChain `[B start, A dependency]`; `Trace[A].BlockedBy == [B]`; nil error. A depends on a node declared after it. During the FILL walk at 0, A is walked first but is not ready, so B takes the slot. An arm that rejects forward references (as `ErrCycle` or `ErrUnknownDependency`) or that resolves dependencies only among earlier-declared nodes fails this row and also F5-RESOURCE-SKIPS-ZERO-DECLARED-FIRST. |
 | F5-SIMULTANEOUS-COMPLETIONS | cap 2; X=2, Y=2, P=1 (Y), Q=1 (Y), R=1 (X) | X 0..2, Y 0..2, P 2..3, Q 2..3, R 3..4; makespan 4; `[X, R]`; `[Y start, P dependency, R resource]`. Mutation: completing X and filling before completing Y sees only R ready (P and Q still wait on Y), starts R 2..3, then completes Y and starts P 2..3 with no slot left for Q, giving Q 3..4, makespan 4, DependencyPath `[Y, Q]` and chain `[Y start, P dependency, Q resource]`; the frozen process starts P and Q at 2 and R at 3. |
 | F5-ZERO-RETIRE-BEFORE-READY | cap 2; A=0, B=1 (A), C=1 (A), D=2 | A 0..0, B 0..1, C 1..2, D 0..2; makespan 2; last node C (tie with D); DependencyPath `[A, C]`; ExecutionChain `[A start, B dependency, C resource]`. The first FILL starts A and D; only after COMPLETE(A) does B become ready. A Finish<=t mutant starts A and B first, then C, postpones D to 1..3 and returns makespan 3. |
 | F5-ZERO-DRAIN | cap 1; A=0, B=0 (A), C=1 (B) | A 0..0, B 0..0, C 0..1; makespan 1; `[A, B, C]`; `[A start, B dependency, C dependency]`. |
@@ -200,6 +211,7 @@ its own generated corpus and is never the source of truth for these rows
 | F5-EMPTY-BAD-CAP | cap 0; no nodes | `ErrInvalidConcurrency`. |
 | F5-BLANK-KEY | cap 1; key `"  "` | `ErrBlankKey`. |
 | F5-BLANK-DEPENDENCY | cap 1; A=1 (`""`) | `ErrUnknownDependency`. |
+| F5-WHITESPACE-DEPENDENCY | cap 1; A=1 (`"  "`) | `ErrUnknownDependency`, never ErrBlankKey; only node keys use the blank-key check. |
 | F5-DUPLICATE-KEY | cap 1; A=1, A=1 | `ErrDuplicateKey`. |
 | F5-UNKNOWN-DEPENDENCY | cap 1; A=1 (B) | `ErrUnknownDependency`. |
 | F5-NEGATIVE | cap 1; A=-1s | `ErrNegativeValue`. |
@@ -220,7 +232,7 @@ its own generated corpus and is never the source of truth for these rows
 | F5-PADDED-KEYS-DISTINCT | cap 1; key `"A"` duration 1, key `" A "` duration 2 with dependency `"A"` | Trace `"A"` 0..1 then `" A "` 1..3, latter BlockedBy `["A"]`; makespan 3; dependency path `["A", " A "]`; chain `["A" start, " A " dependency]`. Keep input bytes. |
 | F5-PADDED-LOOKUP-EXACT | cap 1; A=1, B=1 with dependency `"A "` | ErrUnknownDependency; trimming would incorrectly find A. |
 | F5-ZERO-WIDTH-NONBLANK | cap 1; key U+200B duration 0 | Success: trace U+200B 0..0 with no dependencies, makespan 0, dependency path `[U+200B]`, chain `[U+200B start]`. |
-| F5-EXACTLY-ONE-SENTINEL | any invalid input | `errors.Is` is true for exactly one entry of `SchedulerSentinels` and false for the other six and for `ErrNotImplemented`. |
+| F5-EXACTLY-ONE-SENTINEL | any invalid input | `errors.Is` is true for exactly one entry of `SchedulerSentinels()` and false for the other six and for `ErrNotImplemented`. |
 | F5-PURE | any valid input, called twice, in parallel goroutines under `-race` | Equal complete `Schedule` values under the fixture equality rule (nil and empty slices equivalent); input graph unchanged. Canonicalize list representations before any byte comparison. |
 
 The F5-EXACTLY-ONE-SENTINEL and F5-PURE rows are harness properties applied
@@ -241,15 +253,32 @@ dependency_path, execution_chain[]{key, edge}}`. Durations are
 empty list. Unknown keys are a loader error. `provenance` is `synthetic` for
 every scheduler fixture: no recorded schedule exists and none is claimed.
 Every hand fixture feeds arm A and arm B; no fixture is arm-specific.
-Hand fixtures never go through tickOracle. On success compare makespan,
-all trace fields and both chains by parsed duration/value equality. On error
+Hand fixture files never go through tickOracle; its one explicit zero-drain
+self-check below uses a directly constructed valid whole-tick graph. On success compare makespan,
+all trace fields and both chains by parsed duration/value equality, comparing
+arrays positionally. Trace length equals input-node length, with matching keys
+at every index, including the reverse-declaration case. On error
 assert exactly the named sentinel, every other registry sentinel absent, and
 zero Schedule. Unknown keys at every object depth, malformed durations, wrong
 JSON types, or nonempty unknown `expect.error` names are loader errors, never
 expect-success cases. Only the literal empty error name means success; false
 from LookupSchedulerSentinel on a nonempty name must fail the loader.
-FC-SCHED-SEALS must test loader refusal with an unknown name such as
-ErrScheduleOverflowed and unknown nested keys, plus valid empty/sentinel controls.
+The loader must track presence before decoding into the value-only Go fixture
+shape. Required non-null scalars/objects: top-level name, provenance, concurrency
+and expect; node key and duration; expect.error; successful expect.makespan;
+each trace entry key, start and finish; each chain entry key and edge. Optional
+note must be a string when present. List fields may be null or absent and mean
+empty, as above; entries inside a list must be non-null objects (or strings for
+string lists). Missing, null or incorrectly typed required fields are loader
+errors, not zero-value defaults. For error expectations, makespan may be absent;
+when present it must be a valid duration and equal zero, and all output lists
+must be empty. Chain edge must be exactly start, dependency or resource.
+Provenance must equal synthetic and name must equal the filename stem. JSON
+duplicate object keys are loader errors as well as unknown keys at every depth.
+FC-SCHED-SEALS must independently exercise missing required fields, null scalars,
+wrong types, invalid edge/provenance, filename disagreement, duplicate keys,
+unknown nested keys and ErrScheduleOverflowed, plus valid empty/sentinel controls.
+Loader failure must occur before either scheduler is called.
 
 ## Independent small-graph oracle
 
@@ -258,10 +287,17 @@ external scheduler test package and imported by neither arm. It advances one
 whole-second tick at a time using remaining-duration counters rather than
 jumping to the next event. At each tick it performs the same explicit
 COMPLETE/FILL phase boundaries and completed-state readiness defined above;
-zero counters started in FILL retire only in the next COMPLETE phase. It then
-decrements positive running counters and advances one tick. It derives both
+zero counters started in FILL retire only in the next COMPLETE phase at the
+SAME tick. Repeat COMPLETE/FILL at that tick until no newly running zero remains;
+only then decrement positive running counters and advance one tick (unless all
+nodes are done). Zero chains consume no positive ticks. Before generated arm
+comparisons, self-check the oracle using the valid whole-tick ZERO-DRAIN graph
+from the rule above: A=0 (no dependencies), B=0 (A), C=1 (B), cap1 gives makespan1. This explicit
+oracle self-check is the sole hand-case exception to its generated-corpus domain;
+it is not applied to general hand-fixture files. It derives both
 chains from its own trace. It is defined only for the generated valid corpus,
-never hand fixtures, error cases, overflow cases or non-tick durations.
+plus the explicitly named zero-drain self-check, never general hand-fixture
+files, error cases, overflow cases or non-tick durations.
 
 The mandatory deterministic corpus is exhaustive for N=1..4: durations in
 {0,1,2,3} ticks; every subset of directed edges (i,j) with i<j; cap=1..N+1.
@@ -299,7 +335,8 @@ a fixture and assert directly against both arms:
   the oracle; the seals may additionally extend the oracle to accept
   reverse edges, but that is not a substitute for the fixture.
 - Non-tick durations. The tick oracle is an integer-tick process and is
-  defined ONLY over its own generated corpus, where every duration is a
+  defined only over its generated corpus and the explicit zero-drain self-check,
+  where every duration is a
   small whole number of ticks encoded as whole seconds. It is never applied
   to error rows, to overflow rows, or to hand fixtures whose durations are
   not whole seconds. Nanosecond arithmetic in the arms is covered by
@@ -354,7 +391,7 @@ dispute rather than being silently corrected in an arm.
 ## Operator correction of the stalled panel
 
 Parent correction starts at adb20005917c0f946e061282b5c860d6af11eafd.
-This changes contract prose and examples only; public declarations, sentinel
+The first correction (06d7167) changed contract prose and examples only; public declarations, sentinel
 identities/registry, arm stubs, tests and fixtures are unchanged. Native Blocked
 verdicts remain historical. Independent review and then independent seals are
 still required. Existing row model pins are unchanged; this correction is
@@ -378,3 +415,23 @@ Remaining limit: no scheduling algorithm is implemented here. Fixture/oracle
 acceptance and mutation demonstrations belong to the independent seals row.
 
 Operator validation: full build/vet/race passed without exclusions; all 58 protected tests/fixtures/register files unchanged; noncomment Go code lines identical to the starting head. A local synthetic phase simulation reproduces makespan2 for completed-state readiness and makespan3 for the former Finish-only reading; proof archived under operator-scheduling-resolution/zero-readiness-proof.json. This explanatory probe is not a substitute for independent seals.
+
+## Second operator correction after independent review of 06d7167
+
+The panel at 2026-09-06T12-21-59Z found the same trace-order gap in two High
+findings. Trace cardinality and declaration order are now explicit, every hand
+trace follows that order, and fixture equality is positional. All additional
+findings are addressed together: private registry with copy accessor and named
+lookup results, same-tick oracle zero drain plus a direct self-check, presence-
+aware strict loader with edge/provenance checks, graph-bounded slot storage,
+whitespace-only dependency refusal, and corrected baseline count/file comments.
+
+The registry accessor is a deliberate pre-seal API amendment; no external Go
+consumer exists yet. Sentinel identities/order and both arm holes are unchanged.
+FC-SCHED-SEALS owns its mutation and loader assertions; no test or fixture is
+authored in this correction. Prior review verdicts and the first correction's
+code-shape proof remain historical, not claims about this second patch.
+
+Second correction validation: build, vet and full race suite pass without
+exclusions; all 58 protected test/fixture/register hashes remain unchanged.
+Both arm entry points remain ErrNotImplemented. Independent panel pending.

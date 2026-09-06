@@ -1,5 +1,6 @@
 // F5 behavior is defined once in features/dispatched-forecasting/notes/
 // FC-SCHED-SCAFFOLD.md; these declarations define the Go and fixture shapes.
+
 package dispatched
 
 import "time"

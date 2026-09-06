@@ -680,3 +680,76 @@ are retained proof, not samples. Likewise retain legitimate loss and unknown
 optional measurements. Required failures wrap ErrNotEligible and
 ErrSourceIncomplete. No public signature, source-selection policy or new CLI
 flag is needed. Independent seals precede the separate pinned body correction.
+
+
+## Operator F1/F4 second-panel ruling, 2026-09-06
+
+Applies to the 2026-09-06T06-10-55Z-FC-1-corrected-panel on 42c80ae:
+Claude/Codex request changes, Grok approves; consensus blocks with five High
+findings. The verifier and full 290-case offline gate passed (82.86% coverage);
+that does not waive these newly demonstrated gaps.
+
+1. **Codex-1 / Claude-4, audit binding:** every Recovered/DuplicateReading
+   envelope must have known run/key/start agreeing with its referenced AttemptID
+   as UTC instants, and cannot independently claim a held-out identity. Index
+   all envelopes per (AttemptID, ReadingRef), not one overwritten envelope. A
+   YAML terminal must have at least one corresponding cited envelope with known
+   CompletedAt exactly matching TerminalAt. Compatible same-ref duplicates may
+   include unknown completion plus matching known completion; do not require
+   every such duplicate to supply a terminal. CompletedAt alone does not prove
+   a terminal status (that source snapshot status is not retained in Examined).
+   Preserve all prior cutoff and exclusion rules. No reopening original files.
+2. **Codex-2 / Claude-2, selected provenance:** recovered YAML refs must resolve
+   to a selected live/history SourceReport with matching Repository and a
+   repository-relative path under one of its declared roots. Live revisions use
+   live, history revisions use the declared git revision syntax; an ancestor
+   revision need not equal a captured tip. Journal identities must resolve to a
+   selected journals source and the source's direct-child run/journal.jsonl
+   layout. Producer must equal the supported constant used by ReduceAttempts.
+   Use portable stored relative paths; do not resolve repositories on the review
+   machine, fetch history, or pretend this structurally verifies original bytes.
+   SourceID/repository/path/type/producer mismatches are invalid payloads.
+   Existing source path rules apply, including legal spaces in repository/path
+   names: do not invent padded-path restrictions beyond SourceSpec.
+   The synthetic recoveredArtifact fixture is authorized for independent seals
+   enrichment ONLY: add its missing live source report and make its journal
+   references match the declared run-directory layout, preserving n, sample
+   IDs, outcomes, models, thresholds and every old assertion. Do not change the
+   shared completeManifest or journalAttempt helpers; do not manufacture expected
+   evidence by calling Build/JoinEvidence. Add a real fixture Build->Eligibility
+   integration control separately.
+3. **Codex-3, total audit ordering:** keep ReadingRef's existing primary order,
+   then deterministically order ties by all reconciliation/audit-relevant
+   content, including optional completion evidence. Likewise, equal-ref audit
+   entries need a complete semantic tie order (Identity, CompletedAt, Attempt,
+   disposition, reason); do not leave distinct portable output ordered by caller
+   input. Do not reject otherwise compatible same-ref readings. Implement FC-1
+   private comparators in its owned file, leaving source-owned legacy helpers
+   unchanged. Seal permutations of two and three valid matched same-ref readings
+   (unknown/matching completion), plus same-ref unrecovered audit identities.
+4. **Claude-1, numeric domain:** known cost must be finite and nonnegative, known
+   input/output tokens nonnegative, and corrections/cascades/reviews/verifications
+   nonnegative. Unknown optional values remain unknown and are not required. Use
+   the existing numeric domains and error vocabulary; no new fitting, count
+   inference, or raw-event recomputation. Invalid payload refusal retains both
+   ErrNotEligible and ErrSourceIncomplete. Seal each field and known-zero/positive
+   and unknown controls.
+5. **Claude-5 / Grok-3, CLI tests and timeout usage:** strengthen the missing-task
+   seal to name --tasks and preserve existing RunE no-usage behavior. Test unknown
+   flags with a fresh real command WITHOUT the helper that resets SilenceUsage.
+   Unknown/parse-invalid flags and nonpositive timeout print usage; source/coverage
+   data errors remain silent. Validate timeout before enabling RunE suppression.
+6. **Recorded nonblocking boundaries:** Claude-3's all-or-nothing private legacy
+   projection fallback is accepted with reason: malformed walls cannot reach it
+   through Build's validated join; defensive failure makes the artifact PARTIAL
+   and cannot license prediction. Grok-1 direct malformed normalized AttemptSet
+   salvage is deferred, not hidden acceptance: JoinEvidence's input-validation
+   failures remain fail-closed, while Build's reducer retains usable normalized
+   attempts and records aggregate errors. No new partial-salvage API promise is
+   introduced here. Grok-2 bounded target reading belongs in FC-PREDICT-SCAFFOLD's
+   target snapshot/error contract and FC-4, alongside the already-deferred flags.
+   FC-OBS-ADJ must explicitly adjudicate these limitations; do not claim they were
+   implemented. These are diagnostic/usability limits, not data sufficiency.
+
+All substantive changes follow independent seals then a separate pinned body
+correction. Preserve every previous assertion, historical review and cost record.

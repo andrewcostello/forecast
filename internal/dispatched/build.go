@@ -465,12 +465,14 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	if attempt.ID.RunID == "" || attempt.ID.Key == "" || attempt.ID.StartedAt.IsZero() {
 		return fmt.Errorf("attempt identity is incomplete")
 	}
-	if !validArtifactJournalIdentity(attempt.Start.Journal, selectedSources) || attempt.Start.Journal.RunID != attempt.ID.RunID || attempt.Start.Type != EventTaskStarted ||
-		!attempt.Start.At.Equal(attempt.ID.StartedAt) {
+	if err := validateArtifactJournalIdentity(attempt.Start.Journal, selectedSources); err != nil {
+		return fmt.Errorf("start journal citation: %w", err)
+	}
+	if attempt.Start.Journal.RunID != attempt.ID.RunID || attempt.Start.Type != EventTaskStarted || !attempt.Start.At.Equal(attempt.ID.StartedAt) {
 		return fmt.Errorf("start citation disagrees with attempt identity")
 	}
-	if !validArtifactAttemptJournals(attempt, selectedSources) {
-		return fmt.Errorf("attempt contains a journal citation outside its selected run source")
+	if err := validateArtifactAttemptJournals(attempt, selectedSources); err != nil {
+		return err
 	}
 	if attempt.Evidence.Start.Source != EvidenceJournal || attempt.Evidence.Start.Event != attempt.Start {
 		return fmt.Errorf("required start provenance is missing or inconsistent")
@@ -489,6 +491,9 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	}
 	if attempt.Corrections < 0 || attempt.Cascades < 0 || attempt.Reviews < 0 || attempt.Verifications < 0 {
 		return fmt.Errorf("%w: attempt contains a negative recorded count", ErrNegativeValue)
+	}
+	if err := validateAttemptMeasurements(attempt); err != nil {
+		return err
 	}
 	if attempt.Outcome.terminal() && attempt.TerminalAt.After(manifest.Cutoff) {
 		return fmt.Errorf("terminal attempt ends after the extraction cutoff")
@@ -509,8 +514,8 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	refs := make(map[ReadingRef]bool, len(recovered.Readings))
 	for _, ref := range recovered.Readings {
 		ref.RecordedAt = canonicalTime(ref.RecordedAt)
-		if !validRecoveredReadingRef(ref, manifest.Cutoff, selectedSources) {
-			return fmt.Errorf("recovered reading citation is malformed")
+		if err := validateRecoveredReadingRef(ref, manifest.Cutoff, selectedSources); err != nil {
+			return err
 		}
 		refs[ref] = true
 	}
@@ -520,8 +525,8 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	if attempt.Evidence.Role.Source != EvidenceYAML || !refs[attempt.Evidence.Role.Reading] {
 		return fmt.Errorf("required role provenance does not cite a recovered reading")
 	}
-	if !validAttemptJournalEvidence(attempt.Evidence.Model, attempt, EventTaskSpawnFinished) {
-		return fmt.Errorf("required model provenance does not cite this attempt's journal")
+	if err := validateAttemptJournalEvidence("model", attempt.Evidence.Model, attempt, EventTaskSpawnFinished); err != nil {
+		return err
 	}
 
 	terminal, elapsed := attempt.Evidence.Terminal, attempt.Evidence.Elapsed
@@ -531,8 +536,13 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 		if attempt.Outcome == OutcomeBlocked {
 			wantType = EventTaskBlocked
 		}
-		if !attempt.Outcome.terminal() || !validAttemptJournalEvidence(terminal, attempt, wantType) ||
-			elapsed.Source != EvidenceJournal || elapsed.Event != terminal.Event {
+		if !attempt.Outcome.terminal() {
+			return fmt.Errorf("journal terminal provenance is present for nonterminal outcome %q", attempt.Outcome)
+		}
+		if err := validateAttemptJournalEvidence("terminal", terminal, attempt, wantType); err != nil {
+			return err
+		}
+		if elapsed.Source != EvidenceJournal || elapsed.Event != terminal.Event {
 			return fmt.Errorf("journal terminal/elapsed provenance is missing or inconsistent")
 		}
 		if !attempt.TerminalAt.Equal(terminal.Event.At) || attempt.Elapsed != attempt.TerminalAt.Sub(attempt.ID.StartedAt) {
@@ -556,6 +566,107 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	return nil
 }
 
+func validateAttemptMeasurements(attempt Attempt) error {
+	if attempt.CostScope != CostScopeRecordedSpawns {
+		return fmt.Errorf("cost_scope %q is invalid; want %q", attempt.CostScope, CostScopeRecordedSpawns)
+	}
+	if err := validateCountedEvents("corrections", attempt.Corrections, attempt.CorrectionEvents, attempt.Evidence.Corrections, attempt, func(eventType string) bool {
+		return eventType == EventPanelIterate || eventType == EventVerificationIterate || eventType == EventTaskSpawnFinished
+	}); err != nil {
+		return err
+	}
+	if err := validateCountedEvents("cascades", attempt.Cascades, attempt.CascadeEvents, attempt.Evidence.Cascades, attempt, func(eventType string) bool {
+		return eventType == EventAgentFallback
+	}); err != nil {
+		return err
+	}
+	if err := validateCountedEvents("reviews", attempt.Reviews, attempt.ReviewEvents, attempt.Evidence.Reviews, attempt, func(eventType string) bool {
+		return eventType == EventPanelStarted
+	}); err != nil {
+		return err
+	}
+	if err := validateCountedEvents("verifications", attempt.Verifications, attempt.VerificationEvents, attempt.Evidence.Verifications, attempt, func(eventType string) bool {
+		return eventType == EventVerificationStarted
+	}); err != nil {
+		return err
+	}
+	spawn := func(eventType string) bool { return eventType == EventTaskSpawnFinished }
+	if err := validateOptionalMeasuredEvents("cost", attempt.CostUSD.Known, attempt.CostEvents, attempt.Evidence.Cost, attempt, spawn); err != nil {
+		return err
+	}
+	if err := validateOptionalMeasuredEvents("input_tokens", attempt.InputTokens.Known, attempt.InputTokenEvents, attempt.Evidence.InputTokens, attempt, spawn); err != nil {
+		return err
+	}
+	return validateOptionalMeasuredEvents("output_tokens", attempt.OutputTokens.Known, attempt.OutputTokenEvents, attempt.Evidence.OutputTokens, attempt, spawn)
+}
+
+func validateCountedEvents(field string, count int, refs []EventRef, evidence FieldEvidence, attempt Attempt, typeAllowed func(string) bool) error {
+	if count != len(refs) {
+		return fmt.Errorf("%s count %d does not equal complete event-list length %d", field, count, len(refs))
+	}
+	if err := validateMeasurementEventList(field, refs, attempt, typeAllowed); err != nil {
+		return err
+	}
+	if count == 0 {
+		if evidence != (FieldEvidence{}) {
+			return fmt.Errorf("zero %s count requires EvidenceNone", field)
+		}
+		return nil
+	}
+	want := FieldEvidence{Source: EvidenceJournal, Event: refs[0]}
+	if evidence != want {
+		return fmt.Errorf("nonzero %s count requires EvidenceJournal citing least canonical event list[0]", field)
+	}
+	return nil
+}
+
+func validateOptionalMeasuredEvents(field string, known bool, refs []EventRef, evidence FieldEvidence, attempt Attempt, typeAllowed func(string) bool) error {
+	if err := validateMeasurementEventList(field, refs, attempt, typeAllowed); err != nil {
+		return err
+	}
+	if !known {
+		if evidence != (FieldEvidence{}) {
+			return fmt.Errorf("unknown %s total requires EvidenceNone even when contributor events are available", field)
+		}
+		return nil
+	}
+	if len(refs) == 0 {
+		return fmt.Errorf("known %s total requires a nonempty contributor event list", field)
+	}
+	want := FieldEvidence{Source: EvidenceJournal, Event: refs[0]}
+	if evidence != want {
+		return fmt.Errorf("known %s total requires EvidenceJournal citing least canonical contributor list[0]", field)
+	}
+	return nil
+}
+
+func validateMeasurementEventList(field string, refs []EventRef, attempt Attempt, typeAllowed func(string) bool) error {
+	for i, ref := range refs {
+		if ref.Journal != attempt.Start.Journal {
+			return fmt.Errorf("%s event list[%d] does not use the selected attempt journal", field, i)
+		}
+		if ref.Line <= 0 {
+			return fmt.Errorf("%s event list[%d] has nonpositive physical line %d", field, i, ref.Line)
+		}
+		if ref.At.IsZero() {
+			return fmt.Errorf("%s event list[%d] has a zero timestamp", field, i)
+		}
+		if ref.At.After(attempt.Cutoff) {
+			return fmt.Errorf("%s event list[%d] timestamp %s is after cutoff %s", field, i, ref.At.Format(time.RFC3339Nano), attempt.Cutoff.Format(time.RFC3339Nano))
+		}
+		if !typeAllowed(ref.Type) {
+			return fmt.Errorf("%s event list[%d] has unsupported event type %q", field, i, ref.Type)
+		}
+		if i > 0 && !eventRefLess(refs[i-1], ref) {
+			if refs[i-1] == ref {
+				return fmt.Errorf("%s event list repeats event identity at indices %d and %d", field, i-1, i)
+			}
+			return fmt.Errorf("%s event list is not in canonical event order at index %d", field, i)
+		}
+	}
+	return nil
+}
+
 func artifactReadingAttemptID(identity ReadingIdentity) (AttemptID, bool) {
 	if !identity.RunID.Known || !identity.Key.Known || !identity.StartedAt.Known ||
 		strings.TrimSpace(identity.RunID.Value) == "" || identity.RunID.Value != strings.TrimSpace(identity.RunID.Value) ||
@@ -566,45 +677,100 @@ func artifactReadingAttemptID(identity ReadingIdentity) (AttemptID, bool) {
 	return NewAttemptID(identity.RunID.Value, identity.Key.Value, identity.StartedAt.Value), true
 }
 
-func validRecoveredReadingRef(ref ReadingRef, cutoff time.Time, selectedSources map[string]SourceReport) bool {
+func validateRecoveredReadingRef(ref ReadingRef, cutoff time.Time, selectedSources map[string]SourceReport) error {
 	source, ok := selectedSources[ref.SourceID]
-	if !ok || ref.Row <= 0 || ref.Repository != source.Repository ||
-		ref.Path == "" || !portableRelativePath(ref.Path) ||
-		ref.RecordedAt.IsZero() || ref.RecordedAt.After(cutoff) || ValidateReadingRevision(ref.Revision) != nil {
-		return false
+	if !ok {
+		return fmt.Errorf("recovered reading source_id %q is not a selected source", ref.SourceID)
+	}
+	if source.Kind != SourceKindLiveYAML && source.Kind != SourceKindGitHistory {
+		return fmt.Errorf("recovered reading source_id %q has selected kind %q, not a YAML source", ref.SourceID, source.Kind)
+	}
+	if ref.Row <= 0 {
+		return fmt.Errorf("recovered reading row %d is not positive", ref.Row)
+	}
+	if ref.Repository != source.Repository {
+		return fmt.Errorf("recovered reading repository %q does not match selected repository %q for source_id %q", ref.Repository, source.Repository, ref.SourceID)
+	}
+	if ref.Path == "" {
+		return fmt.Errorf("recovered reading path %q is empty", ref.Path)
+	}
+	if hasASCIIDrivePrefix(ref.Path) {
+		return fmt.Errorf("recovered reading path %q has a non-portable drive prefix", ref.Path)
+	}
+	if !portableRelativePath(ref.Path) {
+		return fmt.Errorf("recovered reading path %q is not a portable repository-relative citation", ref.Path)
+	}
+	if ref.RecordedAt.IsZero() {
+		return fmt.Errorf("recovered reading recorded_at is zero for path %q", ref.Path)
+	}
+	if ref.RecordedAt.After(cutoff) {
+		return fmt.Errorf("recovered reading recorded_at %s for path %q is after cutoff %s", ref.RecordedAt.Format(time.RFC3339Nano), ref.Path, cutoff.Format(time.RFC3339Nano))
+	}
+	if err := ValidateReadingRevision(ref.Revision); err != nil {
+		return fmt.Errorf("recovered reading revision %q is invalid: %w", ref.Revision, err)
 	}
 	switch source.Kind {
 	case SourceKindLiveYAML:
 		if ref.Revision != "live" {
-			return false
+			return fmt.Errorf("recovered reading revision %q does not match live source_id %q", ref.Revision, ref.SourceID)
 		}
 	case SourceKindGitHistory:
 		if !strings.HasPrefix(ref.Revision, "git:") {
-			return false
+			return fmt.Errorf("recovered reading revision %q does not match history source_id %q", ref.Revision, ref.SourceID)
 		}
-	default:
-		return false
 	}
 	for _, root := range source.Roots {
 		if portablePathWithin(ref.Path, root) {
-			return true
+			return nil
 		}
 	}
-	return false
+	return fmt.Errorf("recovered reading path %q is not within declared roots %q for source_id %q", ref.Path, source.Roots, ref.SourceID)
 }
 
-func validAttemptJournalEvidence(evidence FieldEvidence, attempt Attempt, eventType string) bool {
-	return evidence.Source == EvidenceJournal && evidence.Event.Journal == attempt.Start.Journal &&
-		evidence.Event.Type == eventType && !evidence.Event.At.IsZero() &&
-		!evidence.Event.At.Before(attempt.ID.StartedAt) && !evidence.Event.At.After(attempt.Cutoff)
+func validateAttemptJournalEvidence(field string, evidence FieldEvidence, attempt Attempt, eventType string) error {
+	if evidence.Source != EvidenceJournal {
+		return fmt.Errorf("%s evidence source %q is not journal", field, evidence.Source)
+	}
+	if evidence.Event.Journal != attempt.Start.Journal {
+		return fmt.Errorf("%s journal citation does not match the selected attempt journal", field)
+	}
+	if evidence.Event.Type != eventType {
+		return fmt.Errorf("%s journal event type %q does not match required %q", field, evidence.Event.Type, eventType)
+	}
+	if evidence.Event.At.IsZero() {
+		return fmt.Errorf("%s journal citation has a zero timestamp", field)
+	}
+	if evidence.Event.At.Before(attempt.ID.StartedAt) {
+		return fmt.Errorf("%s journal timestamp %s precedes attempt start %s", field, evidence.Event.At.Format(time.RFC3339Nano), attempt.ID.StartedAt.Format(time.RFC3339Nano))
+	}
+	if evidence.Event.At.After(attempt.Cutoff) {
+		return fmt.Errorf("%s journal timestamp %s is after cutoff %s", field, evidence.Event.At.Format(time.RFC3339Nano), attempt.Cutoff.Format(time.RFC3339Nano))
+	}
+	return nil
 }
 
-func validArtifactJournalIdentity(journal JournalIdentity, selectedSources map[string]SourceReport) bool {
+func validateArtifactJournalIdentity(journal JournalIdentity, selectedSources map[string]SourceReport) error {
 	source, ok := selectedSources[journal.SourceID]
-	return ok && source.Kind == SourceKindJournals &&
-		portablePathComponent(journal.RunID) &&
-		journal.Producer == ProducerDispatcherV0_1_0 && portableRelativePath(journal.Path) &&
-		journal.Path == path.Join(journal.RunID, "journal.jsonl")
+	if !ok {
+		return fmt.Errorf("journal source_id %q is not a selected source", journal.SourceID)
+	}
+	if source.Kind != SourceKindJournals {
+		return fmt.Errorf("journal source_id %q has selected kind %q, not journals", journal.SourceID, source.Kind)
+	}
+	if !portablePathComponent(journal.RunID) {
+		return fmt.Errorf("journal run_id %q is not one portable direct-child directory component", journal.RunID)
+	}
+	if journal.Producer != ProducerDispatcherV0_1_0 {
+		return fmt.Errorf("journal producer %q is unsupported; want %q", journal.Producer, ProducerDispatcherV0_1_0)
+	}
+	if !portableRelativePath(journal.Path) {
+		return fmt.Errorf("journal path %q is not a portable relative path", journal.Path)
+	}
+	want := path.Join(journal.RunID, "journal.jsonl")
+	if journal.Path != want {
+		return fmt.Errorf("journal path %q does not match direct-child layout %q", journal.Path, want)
+	}
+	return nil
 }
 
 func portablePathComponent(value string) bool {
@@ -612,53 +778,68 @@ func portablePathComponent(value string) bool {
 		!strings.ContainsAny(value, `/\`) && !hasASCIIDrivePrefix(value)
 }
 
-func validArtifactAttemptJournals(attempt Attempt, selectedSources map[string]SourceReport) bool {
-	valid := func(ref EventRef) bool {
+func validateArtifactAttemptJournals(attempt Attempt, selectedSources map[string]SourceReport) error {
+	validate := func(field string, ref EventRef) error {
 		if ref == (EventRef{}) {
-			return true
+			return nil
 		}
-		return ref.Journal == attempt.Start.Journal && validArtifactJournalIdentity(ref.Journal, selectedSources)
+		if ref.Journal != attempt.Start.Journal {
+			return fmt.Errorf("%s journal identity does not match attempt start journal", field)
+		}
+		if err := validateArtifactJournalIdentity(ref.Journal, selectedSources); err != nil {
+			return fmt.Errorf("%s: %w", field, err)
+		}
+		return nil
 	}
-	for _, ref := range []EventRef{
-		attempt.Start,
-		attempt.Evidence.Role.Event,
-		attempt.Evidence.Model.Event,
-		attempt.Evidence.Start.Event,
-		attempt.Evidence.Terminal.Event,
-		attempt.Evidence.Elapsed.Event,
-		attempt.Evidence.Wall.Event,
-		attempt.Evidence.Corrections.Event,
-		attempt.Evidence.Cascades.Event,
-		attempt.Evidence.Reviews.Event,
-		attempt.Evidence.Verifications.Event,
-		attempt.Evidence.InputTokens.Event,
-		attempt.Evidence.OutputTokens.Event,
-		attempt.Evidence.Cost.Event,
+	for _, item := range []struct {
+		field string
+		ref   EventRef
+	}{
+		{"start citation", attempt.Start},
+		{"role evidence", attempt.Evidence.Role.Event},
+		{"model evidence", attempt.Evidence.Model.Event},
+		{"start evidence", attempt.Evidence.Start.Event},
+		{"terminal evidence", attempt.Evidence.Terminal.Event},
+		{"elapsed evidence", attempt.Evidence.Elapsed.Event},
+		{"wall evidence", attempt.Evidence.Wall.Event},
+		{"corrections evidence", attempt.Evidence.Corrections.Event},
+		{"cascades evidence", attempt.Evidence.Cascades.Event},
+		{"reviews evidence", attempt.Evidence.Reviews.Event},
+		{"verifications evidence", attempt.Evidence.Verifications.Event},
+		{"input_tokens evidence", attempt.Evidence.InputTokens.Event},
+		{"output_tokens evidence", attempt.Evidence.OutputTokens.Event},
+		{"cost evidence", attempt.Evidence.Cost.Event},
 	} {
-		if !valid(ref) {
-			return false
+		if err := validate(item.field, item.ref); err != nil {
+			return err
 		}
 	}
-	lists := [][]EventRef{
-		attempt.CascadeEvents,
-		attempt.CorrectionEvents,
-		attempt.ReviewEvents,
-		attempt.VerificationEvents,
-		attempt.CostEvents,
-		attempt.InputTokenEvents,
-		attempt.OutputTokenEvents,
+	lists := []struct {
+		field string
+		refs  []EventRef
+	}{
+		{"cascade_events", attempt.CascadeEvents},
+		{"correction_events", attempt.CorrectionEvents},
+		{"review_events", attempt.ReviewEvents},
+		{"verification_events", attempt.VerificationEvents},
+		{"cost_events", attempt.CostEvents},
+		{"input_token_events", attempt.InputTokenEvents},
+		{"output_token_events", attempt.OutputTokenEvents},
 	}
-	for _, interval := range attempt.Wall.Intervals {
-		lists = append(lists, interval.Evidence)
+	for i, interval := range attempt.Wall.Intervals {
+		lists = append(lists, struct {
+			field string
+			refs  []EventRef
+		}{fmt.Sprintf("wall interval %d evidence", i), interval.Evidence})
 	}
-	for _, refs := range lists {
-		for _, ref := range refs {
-			if !valid(ref) {
-				return false
+	for _, list := range lists {
+		for i, ref := range list.refs {
+			if err := validate(fmt.Sprintf("%s[%d]", list.field, i), ref); err != nil {
+				return err
 			}
 		}
 	}
-	return true
+	return nil
 }
 
 func portableRelativePath(value string) bool {
@@ -673,6 +854,9 @@ func hasASCIIDrivePrefix(value string) bool {
 }
 
 func portablePathWithin(value, root string) bool {
+	// Reject raw host-specific spellings before cleaning: path.Clean can erase
+	// a forbidden drive prefix (for example, C:/.. becomes ".") and would then
+	// incorrectly route it through the valid repository-root fast path.
 	if !portableRelativePath(value) || root == "" || path.IsAbs(root) ||
 		strings.Contains(root, `\`) || hasASCIIDrivePrefix(root) {
 		return false

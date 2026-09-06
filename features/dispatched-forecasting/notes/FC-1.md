@@ -433,3 +433,87 @@ recovered; it was not rescanned and is not a post-fix count, holdout evaluation
 or data-sufficiency claim. FC-1 remains Blocked pending the parent exact-head
 gate, independent verifier and isolated panel; this body does not mark runtime
 work Done.
+
+## Fourth-panel corrective body
+
+The final Operator F1/F4 fourth-panel ruling supersedes the earlier mistaken
+count/list exemption. In particular, the second-panel sentence that positive
+measurements remain eligible “without inventing citation/count equalities” is
+historical and no longer current where the frozen `Attempt` schema already
+declares complete counted-event lists and least-event citations. The former
+known-zero-without-contributors and weighted one-event-for-count-2/3 fixture
+interpretations are likewise superseded. The independent fixture repair keeps
+the same values, IDs, models, outcomes and thresholds while supplying the
+proof the Journal contract always required.
+
+Eligibility now checks all carried measurement/list relationships. Corrections,
+cascades, reviews and verifications equal their complete unique canonical list
+lengths; zero uses `EvidenceNone`, and nonzero cites list element zero with
+`EvidenceJournal`. Known cost and token totals, including known zero, require a
+nonempty contributor list and its least-event journal citation. Unknown totals
+remain unknown and may retain available partial contributor lists with
+`EvidenceNone`. Each list uses the selected attempt journal, declared event
+types, positive physical lines and nonzero timestamps at or before cutoff.
+`CostScope` remains `recorded_task_spawns`. Events may appear in multiple
+measurement lists; no payload sums, spawn kinds, source bytes or stricter
+terminal-clock bounds are inferred.
+
+Ambiguous diagnostic refs are copied, UTC-canonicalized and sorted with an
+FC-1-private total comparator. All refs and `Starts` remain, inputs are not
+mutated, the identity stays lost/ambiguous, and no diagnostic is admitted as a
+sample. The existing total conflict comparator and both conflict-output sorts
+remain unchanged and are exercised by the independent per-field and
+post-reconciliation cases.
+
+Private YAML and journal provenance validators now return field-, value- and
+rule-specific reasons for selected-source, repository, revision, path/root,
+cutoff, producer and journal-layout failures. Refusal still uses the existing
+`ErrNotEligible` plus `ErrSourceIncomplete` gate path and never opens the cited
+source. The portable root helper also documents why raw drive/absolute/backslash
+guards precede cleaning: cleaning `C:/..` can erase the forbidden drive prefix
+and produce `.`. Drive-dotdot remains refused while ordinary `a/..` and `.` roots
+retain their ruled behavior.
+
+### Fourth-body-panel final dispositions
+
+These IDs are specific to the fourth panel. Earlier tables remain historical;
+the count/list mistake is expressly superseded above.
+
+| Finding ID | Final disposition |
+|---|---|
+| `Claude-1` | **Corrected.** Carried counts, complete unique canonical event lists, least citations, known/unknown totals, event domains, cutoff, selected journal and cost scope now enforce the frozen Attempt contract. |
+| `Claude-2` | **Corrected.** Ambiguous refs are privately copied, UTC-canonicalized and totally sorted without changing Starts, lost status, denominator or caller inputs. |
+| `Claude-3` | **Corrected.** YAML/journal refusals now name meaningful offending fields, stored values and structural rules while retaining both typed gate sentinels and no source I/O. |
+| `Claude-4` | **Corrected/documented.** Raw nonportable-root guards explicitly precede cleaning; drive-dotdot refuses and the ordinary cleaned `a/..` and `.` controls remain valid. |
+| `Codex-1` | **Preserved and independently strengthened.** The total conflict comparator remains at both output sorts; one-field ties and reconciliation-appended conflicts pass permutation, retention, pairing and immutability seals. Replacing only the final comparator proves total ordering is required there; removing only the final sort separately proves merge ordering. Neither mutation alone proves the other, and no second valid Code or exhaustive-branch claim is invented. |
+| `Grok` | **No findings / approve.** No corrective disposition beyond preserving all ruled behavior. |
+
+### Fourth-panel corrective verification
+
+On independent seal commit `99724ab87b5db42a1b615964404c2ad0ab8df3de`,
+the uncorrected body failed 42 new leaves: 35 measurement-integrity cases, one
+ambiguous whole-output permutation case and six actionable-provenance-reason
+cases. The repaired known-zero/positive fixtures, unknown-partial-list controls,
+conflict cases, root controls and complete CLI group were green. No immutable
+assertion contradicted the corrected ruling.
+
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go test ./cmd/forecast -run '^TestFCReferenceCLIContract$' -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+- `git diff --check` — pass.
+
+The gate proves internal carried-evidence consistency, not raw-payload sum
+recomputation, finer spawn-kind authentication, original source-value truth or
+cryptographic source authenticity. Existing future-field/schema,
+validator-factoring and one-shot CLI boundaries remain disclosed; no refactor,
+reflection or repeated-singleton execution contract was added. Tests, fixtures,
+seals, schema, Source/Journal/shared helpers, scaffold, known-red and worklists
+were not edited by this body.
+
+The real coverage report remains the historical diagnostic PARTIAL result of 44
+recovered attempts out of 303. It was not rescanned and is not a post-fix count,
+holdout evaluation or data-sufficiency claim. FC-1 remains Blocked pending the
+parent exact-head gate and fifth isolated verifier/panel; this body does not mark
+runtime work Done.

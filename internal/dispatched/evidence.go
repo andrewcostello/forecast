@@ -233,7 +233,10 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 			}
 			categories[item.ID] = "ambiguous"
 			item.Refs = append([]EventRef{}, item.Refs...)
-			sortEventRefs(item.Refs)
+			for i := range item.Refs {
+				item.Refs[i] = canonicalEventRef(item.Refs[i], item.Refs[i].Journal)
+			}
+			sort.Slice(item.Refs, func(i, j int) bool { return eventRefTotalLess(item.Refs[i], item.Refs[j]) })
 			ambiguous[item.ID] = item
 			counted[item.ID] = true
 			key := runTask{RunID: item.ID.RunID, Key: item.ID.Key}

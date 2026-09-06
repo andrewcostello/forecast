@@ -1789,7 +1789,7 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 			if infoErr == nil {
 				infoErr = fmt.Errorf("not a real directory")
 			}
-			return fmt.Errorf("%w: inspect journal run %s: %v", ErrSourceMissing, runID, infoErr)
+			return fmt.Errorf("%w: inspect journal run %s: %w", ErrSourceMissing, runID, infoErr)
 		}
 		relPath := filepath.Join(runID, "journal.jsonl")
 		reader, openErr := openSourceFileFromParent(ctx, relPath, budget, true, runInfo)
@@ -1802,7 +1802,7 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 				continue
 			}
 			report.Counts.Unreadable++
-			return openErr
+			return fmt.Errorf("journal source %q repository %q run %q: %w", spec.ID, spec.Repository, runID, openErr)
 		}
 		report.Counts.Files++
 		report.Counts.Journals++

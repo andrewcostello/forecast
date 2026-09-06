@@ -54,7 +54,10 @@ func openSourceHandleNoFollow(parent *os.File, name string, directory bool) (*os
 		return nil, err
 	}
 	if openErr != nil {
-		return nil, openErr
+		if status, ok := openErr.(windows.NTStatus); ok {
+			openErr = status.Errno()
+		}
+		return nil, &os.PathError{Op: "open", Path: name, Err: openErr}
 	}
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(opened, &info); err != nil {

@@ -138,15 +138,72 @@ and shared-byte fixes are preserved rather than redesigned.
 
 ## Cumulative deviations and remaining limitations
 
-Contract deviation: none against the explicitly amended F3 contract. The operator
-separately ruled symlink omission, unborn-HEAD handling, deterministic capped
-subsets, platform helper ownership, and exact read-only metadata commands before
-implementation. The original body and correction notes are preserved by commit
-and in the operator deviation-history index attached to FC-OBS-ADJ. Earlier
-policies superseded by those rulings are historical, not current promises.
+The listed symlink, unborn-HEAD, deterministic capped-subset, platform-helper,
+and exact read-only metadata-command rulings are implemented as described. A
+separate conservative diagnostic/known-universe limitation remains for
+FC-OBS-ADJ and is recorded in the fourth-round section below; it is not hidden
+by a blanket no-deviation claim. The original body and correction notes are
+preserved by commit and in the operator deviation-history index attached to
+FC-OBS-ADJ. Earlier policies superseded by those rulings are historical, not
+current promises.
 
 Per-commit tree snapshots and repeated metadata charges remain permitted costs.
 Local common-dir graft metadata inspection is an ordinary OS filesystem call;
 no hard deadline on a pathological filesystem is claimed. Linux runtime tests
 and the listed cross-platform package builds are the portability evidence;
 cross-build success is not a claim of runtime testing on those other platforms.
+
+## Fourth bounded source-body correction
+
+Starting HEAD was `3662401d64739a7781fe357d76a590ec66bf95e6`, containing
+the parent-owned seal and fixture follow-up. This correction remains limited to
+`internal/dispatched/sources.go`, the private Windows source-file helper, and
+this note. Tests, fixtures, scaffold, module files, worklist, known-red register,
+public seams, capped-subset/HEAD behavior, and Git lifecycle behavior are
+unchanged.
+
+The fourth correction:
+
+- translates only `windows.NTStatus` returned by `NtCreateFile` through its
+  existing `Errno()` mapping and returns an `os.PathError` with operation and
+  component path. Standard Windows not-found identities therefore remain
+  reachable through `errors.Is(..., fs.ErrNotExist)`. Non-NT errors remain the
+  wrapped cause; reparse refusal, parent identity mismatch, and access errors
+  are not converted to successful absence;
+- preserves the journal run `Info` error identity with `%w` while keeping the
+  existing fail-closed inspection policy; and
+- adds source ID, repository, and run context to returned journal-open errors
+  while preserving the original typed error with `%w`.
+
+### Fourth corrected-panel dispositions
+
+Finding indices below are the per-family order from panel
+`/home/andrew/Project/dispatcher-runs/2026-09-06T04-03-09Z-FC-SOURCES-corrected-panel/panel.md`.
+The adjacent per-seat records contain the nonblocking findings omitted from the
+short cross-family rendering.
+
+| Finding | Disposition |
+|---|---|
+| `claude-1` (MEDIUM) | **Residual for FC-OBS-ADJ; no policy change here.** A present but unreadable held-out journal can surface as an unmatched selection because discovery bookkeeping follows successful open. This conservatively refuses extraction rather than admitting held-out evidence to training. Unconditionally appending before open was rejected because it would invent a journal for every empty run directory, contradicting `F3-JOURNAL-MISSING-CHILD` and the known-universe contract. A correction requires a metadata-confirmed unreadable-journal seal and contract decision. Final adjudication must either accept this limitation with a reason or require a corrective row. |
+| `claude-2` (MEDIUM) | **Corrected independently; body already correct.** The parent strengthened the immutable symlink seal to require a nil returned error, the exact retained real-run journal, and a report reason naming the symlink. Its hard-refusal mutation fails. No test change is included here. |
+| `claude-3` (LOW) | **Fixed.** Returned journal-open failures now identify source ID, repository, and run, with `%w` preserving typed errors. This is diagnostic context only. |
+| `claude-4` (LOW) | **Documented independently.** The seal author recorded `processDone` as an explicit structural dependency of the two Git lifecycle seals. A future reader redesign must re-derive that synchronization; no body or public-seam change is made here. |
+| `codex-1` (MEDIUM) | **False; no body change.** At reviewed commit `55a552d`, lines 1812-1819 record the duplicate-run error but do not return; execution falls through to `ParseEvents` and `reader.Close` at lines 1820-1821. The alleged descriptor-leak path does not exist. |
+| `codex-2` (MEDIUM) | **Fixture defect corrected independently by the parent.** The immutable fixture now uses finite loops, exits if its state directory vanishes, and acknowledges leaving the loop and closing inherited pipes before `TempDir` cleanup. This proves fixture cleanup, not that `Close` kills arbitrary non-child descendants; direct Git child reaping remains the frozen body duty. The behavioral `Close` assertion is unchanged, and the parent re-ran the old-body mutation to show it still fails. No test change is included here. |
+| `grok-1` (HIGH) | **False for the production reader; no runtime filesystem policy added.** Local Go 1.26 primary code at `/usr/lib/go-1.26/src/os/dirent_linux.go:28-50` maps `DT_UNKNOWN` to `^FileMode(0)`; `/usr/lib/go-1.26/src/os/dir_unix.go:138-150` calls `newUnixDirent`; and `/usr/lib/go-1.26/src/os/file_unix.go:468-485` falls back to `lstat` and fills `typ` and `info` before returning. Thus `Type()==0` is regular, not unresolved unknown, for this real `os.Root.FS` reader. There is no injected arbitrary-FS seam. |
+| `grok-2` (HIGH) | **Fixed.** The native `NtCreateFile` status is converted with `windows.NTStatus.Errno()` and wrapped in `os.PathError`; `F3-JOURNAL-MISSING-CHILD` remains green on Linux. Windows runtime behavior was established by code correction and compile checking only, not runtime execution. |
+| `grok-3` (MEDIUM) | **Fixed at the reviewer-permitted minimum.** Journal run inspection now wraps `infoErr` with `%w`, retaining both `ErrSourceMissing` and the underlying identity. Arbitrary unreadable candidates are still fail-closed rather than silently skipped. |
+
+### Fourth correction validation
+
+- `gofmt` and `git diff --check`: pass.
+- `GOPROXY=off go build ./...`: pass.
+- `GOPROXY=off go vet ./...`: pass.
+- `GOPROXY=off go test ./... -race -skip '^(TestFCEvidenceContract|TestFCReferenceCLIContract)$' -count=1`: pass, including `internal/dispatched`; only the two named FC-1 groups were excluded.
+- `CGO_ENABLED=0 GOPROXY=off go build ./internal/dispatched`: pass for
+  `windows/amd64`, `darwin/amd64`, and `freebsd/amd64`.
+
+No Windows, Darwin, or FreeBSD runtime was available. Cross-builds do not prove
+runtime behavior on those platforms. No network, credentials, external
+messages, subagents, push, immutable-file edits, or runtime Done transition
+were used.

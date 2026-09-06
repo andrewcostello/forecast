@@ -28,6 +28,8 @@ forecast dispatched-reference build \
   --runs-dir ~/Project/dispatcher-runs \
   --features-repo ~/Project/claude-workflow \
   --features-repo ~/Project/claude-dispatcher \
+  --task-root features/dogfood-go \
+  --task-root features/model-matrix \
   --tasks path/to/target-tasks.yaml \
   --fail-on-uncovered-required \
   --out .forecast/dispatched-reference.json
@@ -37,16 +39,29 @@ forecast dispatched-reference build \
 task YAML and every revision of it in git history, on `dispatcher_run_id` plus
 task key and the exact start instant. Ambiguous or unmatched starts never borrow
 another attempt's evidence. Repeat `--features-repo` for every source repository;
-omitting it retains the `~/Project/claude-workflow` default. `git` must be on
-`PATH`, and each supplied path must be a git repository with a `features/`
-directory. The report names each source and its matched attempts; coverage
-reflects only the repositories supplied, not all possible sources.
+at least one repository is required and there is no home-directory default. `git` must be on
+`PATH`, and each supplied path must be a git repository. Repeat `--task-root`
+to select repository-relative directories; its legacy
+default is `features`. The report names each source and its matched attempts;
+coverage reflects only the repositories and roots supplied, not all possible
+sources.
+
+The JSON artifact uses evidence schema 4. Its source manifest records the
+extraction cutoff, effective bounds, requested and resolved Git refs, holdouts,
+per-source outcomes, and every reason the selected corpus is partial. The
+structured evidence payload retains reading dispositions and lost, ambiguous,
+or conflicting attempts. Flat observations and cell summaries are compatibility
+projections of those joint records; eligibility never substitutes legacy
+coverage counters for structured evidence.
 
 Targets must contain a `tasks` sequence with unique keys, valid roles, and
 nonblank models. Both coverage gates require `--tasks`. The uncovered-cell
 gate checks completed observations against `--min-observations`; blocked rows
 do not satisfy it. The empty-cell gate checks only whether any observations
 exist. Both write the report and artifact before returning a coverage error.
+An empty or partial source selection is diagnostic output only and cannot pass
+a coverage/prediction gate. Source and coverage data errors do not print Cobra
+usage text.
 
 It reports rather than predicts:
 
@@ -58,14 +73,15 @@ It reports rather than predicts:
 * The model is the one the dispatcher **stamped** on an implementing spawn, not
   the one authored in the YAML and not the one planned on `task_started`. A row
   no spawn stamped is unattributable and is counted, not guessed at.
-* Every shortfall is a printed number: rows recovered versus rows started,
-  restarts, starts with no model, journal lines that would not parse, and rows
-  with no recoverable YAML.
+* Every selected source and its outcome is printed, followed by every reading
+  disposition and the recovered, lost, ambiguous, and conflicting attempt
+  counts. The report makes no completeness claim beyond its manifest.
 
 | flag | effect |
 |---|---|
 | `--min-observations` | completed rows a required cell needs before it counts as covered (default 2 — one row is a sample) |
-| `--features-repo` | repeat for each source repository; live and historical readings are unioned |
+| `--features-repo` | required and repeatable; each explicit repository contributes live and reachable-history readings under the selected roots |
+| `--task-root` | repeatable repository-relative directory; replaces the legacy `features` root when supplied |
 | `--fail-on-empty-required` | exit non-zero only when a required cell has no observations |
 | `--fail-on-uncovered-required` | exit non-zero when a required cell has fewer completed observations than `--min-observations` |
 | `--max-history-commits` | cap commits per source repository (default 5000); truncated history is explicitly reported |

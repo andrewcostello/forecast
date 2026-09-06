@@ -8,8 +8,11 @@ package dispatched
 // JoinEvidence, so the artifact does not change under the move.
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -157,7 +160,425 @@ type EvidenceJoin struct {
 // and F1/F3 rows. FC-1 body; ReadSources supplies the universe via Journals plus
 // ExcludedJournals, so valid held-out runs remain checkable after event removal.
 func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection, journals []JournalIdentity) (EvidenceJoin, error) {
-	return EvidenceJoin{}, fmt.Errorf("%w: JoinEvidence(%d attempt sets, %d readings, %d journals)", ErrNotImplemented, len(attempts), len(readings), len(journals))
+	out := emptyEvidenceJoin(selection)
+	if err := selection.Validate(); err != nil {
+		return out, err
+	}
+	selection.Cutoff = canonicalTime(selection.Cutoff)
+	out.CutoffApplied = selection.Cutoff
+
+	holdouts := make(map[string]bool, len(selection.HoldoutRunIDs))
+	for _, runID := range selection.HoldoutRunIDs {
+		holdouts[runID] = true
+	}
+	universe := make(map[string]JournalIdentity, len(journals))
+	discovered := make([]string, 0, len(journals))
+	for _, journal := range journals {
+		if strings.TrimSpace(journal.RunID) == "" || strings.TrimSpace(journal.SourceID) == "" || strings.TrimSpace(journal.Path) == "" {
+			return emptyEvidenceJoin(selection), fmt.Errorf("%w: journal universe contains an incomplete identity", ErrInvalidSelection)
+		}
+		if previous, ok := universe[journal.RunID]; ok {
+			return emptyEvidenceJoin(selection), fmt.Errorf("%w: run %q occurs in %s and %s", ErrDuplicateJournalRun, journal.RunID, previous.Path, journal.Path)
+		}
+		universe[journal.RunID] = journal
+		discovered = append(discovered, journal.RunID)
+		if holdouts[journal.RunID] {
+			out.ExcludedJournals = append(out.ExcludedJournals, journal)
+		}
+	}
+	if err := selection.UnmatchedHoldouts(discovered); err != nil {
+		return emptyEvidenceJoin(selection), err
+	}
+	sort.Slice(out.ExcludedJournals, func(i, j int) bool {
+		return journalIdentityLess(out.ExcludedJournals[i], out.ExcludedJournals[j])
+	})
+
+	byID := make(map[AttemptID]Attempt)
+	ambiguous := make(map[AttemptID]AmbiguousAttempt)
+	conflicts := make(map[AttemptID][]AttemptConflict)
+	counted := make(map[AttemptID]bool)
+	rows := make(map[runTask]bool)
+	for _, set := range attempts {
+		journal, ok := universe[set.Journal.RunID]
+		if !ok || journal != set.Journal || holdouts[set.Journal.RunID] {
+			return emptyEvidenceJoin(selection), fmt.Errorf("%w: attempt set journal %q is outside the selected universe", ErrInvalidSelection, set.Journal.RunID)
+		}
+		for _, attempt := range set.Attempts {
+			attempt = canonicalAttempt(attempt)
+			if err := validateJoinedAttempt(attempt, set.Journal, selection); err != nil {
+				return emptyEvidenceJoin(selection), err
+			}
+			if _, duplicate := byID[attempt.ID]; duplicate || counted[attempt.ID] {
+				return emptyEvidenceJoin(selection), fmt.Errorf("%w: duplicate normalized attempt %s/%s", ErrEvidenceConflict, attempt.ID.RunID, attempt.ID.Key)
+			}
+			byID[attempt.ID] = attempt
+			counted[attempt.ID] = true
+			rows[runTask{RunID: attempt.ID.RunID, Key: attempt.ID.Key}] = true
+		}
+		for _, item := range set.Ambiguous {
+			item.ID = canonicalAttemptID(item.ID)
+			if err := validateAttemptIDForSet(item.ID, set.Journal, selection); err != nil {
+				return emptyEvidenceJoin(selection), err
+			}
+			sortEventRefs(item.Refs)
+			ambiguous[item.ID] = item
+			counted[item.ID] = true
+			rows[runTask{RunID: item.ID.RunID, Key: item.ID.Key}] = true
+		}
+		for _, conflict := range set.Conflicts {
+			conflict.ID = canonicalAttemptID(conflict.ID)
+			if err := validateAttemptIDForSet(conflict.ID, set.Journal, selection); err != nil {
+				return emptyEvidenceJoin(selection), err
+			}
+			conflicts[conflict.ID] = append(conflicts[conflict.ID], conflict)
+			counted[conflict.ID] = true
+			rows[runTask{RunID: conflict.ID.RunID, Key: conflict.ID.Key}] = true
+		}
+		out.StartsAfterCutoff += set.StartsAfterCutoff
+	}
+	out.Attempts = len(counted)
+	out.UniqueRows = len(rows)
+	for _, item := range ambiguous {
+		out.Ambiguous = append(out.Ambiguous, item)
+	}
+	sort.Slice(out.Ambiguous, func(i, j int) bool { return attemptIDLess(out.Ambiguous[i].ID, out.Ambiguous[j].ID) })
+	for _, list := range conflicts {
+		out.Conflicts = append(out.Conflicts, list...)
+	}
+	sort.Slice(out.Conflicts, func(i, j int) bool { return attemptConflictLess(out.Conflicts[i], out.Conflicts[j]) })
+
+	grouped := make(map[AttemptID][]int)
+	for i := range readings {
+		reading := canonicalReading(readings[i])
+		examined := Examined{Identity: reading.Identity, CompletedAt: reading.CompletedAt, Reading: reading.Ref}
+		disposition, id, reason, err := classifyReading(reading, selection, holdouts, byID, ambiguous, conflicts)
+		if err != nil {
+			return emptyEvidenceJoin(selection), err
+		}
+		examined.Attempt = id
+		examined.Disposition = disposition
+		examined.Reason = reason
+		out.Examined = append(out.Examined, examined)
+		if disposition == "" {
+			grouped[id] = append(grouped[id], len(out.Examined)-1)
+		}
+	}
+
+	ids := make([]AttemptID, 0, len(grouped))
+	for id := range grouped {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return attemptIDLess(ids[i], ids[j]) })
+	var joinErrors []error
+	if len(out.Ambiguous) > 0 {
+		joinErrors = append(joinErrors, fmt.Errorf("%w: %d ambiguous attempt identities", ErrAmbiguousAttempt, len(out.Ambiguous)))
+	}
+	if len(out.Conflicts) > 0 {
+		joinErrors = append(joinErrors, fmt.Errorf("%w: %d journal evidence conflicts", ErrEvidenceConflict, len(out.Conflicts)))
+	}
+	for _, id := range ids {
+		indexes := grouped[id]
+		sort.SliceStable(indexes, func(i, j int) bool {
+			return readingRefLess(out.Examined[indexes[i]].Reading, out.Examined[indexes[j]].Reading)
+		})
+		attempt := byID[id]
+		recovered, conflict, err := reconcileAttempt(attempt, readingsForExamined(readings, out.Examined, indexes))
+		if err != nil {
+			if conflict != nil {
+				out.Conflicts = append(out.Conflicts, *conflict)
+			}
+			for _, index := range indexes {
+				out.Examined[index].Disposition = DispositionConflictingEvidence
+				out.Examined[index].Reason = err.Error()
+			}
+			joinErrors = append(joinErrors, err)
+			continue
+		}
+		if !recovered.Attempt.Model.Known || strings.TrimSpace(recovered.Attempt.Model.Value) == "" {
+			for _, index := range indexes {
+				out.Examined[index].Disposition = DispositionAbsentStamp
+				out.Examined[index].Reason = "attempt has no recorded implementing-model stamp"
+			}
+			continue
+		}
+		if !recovered.Cell.Role.Valid() || recovered.Cell.Model == "" {
+			for _, index := range indexes {
+				out.Examined[index].Disposition = DispositionUnrecoverable
+				out.Examined[index].Reason = "reconciled attempt has no valid role/model cell"
+			}
+			continue
+		}
+		out.Observations = append(out.Observations, recovered)
+		if recovered.Attempt.Evidence.Terminal.Source == EvidenceYAML {
+			out.RowsWithYAMLOnlyTerminal++
+		}
+		for position, index := range indexes {
+			if position == 0 {
+				out.Examined[index].Disposition = DispositionRecovered
+				out.Examined[index].Reason = "least canonical compatible reading"
+			} else {
+				out.Examined[index].Disposition = DispositionDuplicateReading
+				out.Examined[index].Reason = "additional compatible reading of recovered attempt"
+			}
+		}
+	}
+
+	sort.Slice(out.Observations, func(i, j int) bool {
+		return attemptIDLess(out.Observations[i].Attempt.ID, out.Observations[j].Attempt.ID)
+	})
+	sort.Slice(out.Conflicts, func(i, j int) bool { return attemptConflictLess(out.Conflicts[i], out.Conflicts[j]) })
+	recoveredIDs := make(map[AttemptID]bool, len(out.Observations))
+	for _, observation := range out.Observations {
+		recoveredIDs[observation.Attempt.ID] = true
+	}
+	for id := range counted {
+		if !recoveredIDs[id] {
+			out.LostAttempts = append(out.LostAttempts, id)
+		}
+	}
+	sort.Slice(out.LostAttempts, func(i, j int) bool { return attemptIDLess(out.LostAttempts[i], out.LostAttempts[j]) })
+	out.Recovered = len(out.Observations)
+	sort.SliceStable(out.Examined, func(i, j int) bool { return examinedLess(out.Examined[i], out.Examined[j]) })
+	counts := make(map[Disposition]int)
+	for _, examined := range out.Examined {
+		counts[examined.Disposition]++
+	}
+	for _, disposition := range Dispositions() {
+		out.Dispositions = append(out.Dispositions, DispositionCount{Disposition: disposition, Count: counts[disposition]})
+	}
+	return out, errors.Join(joinErrors...)
+}
+
+func emptyEvidenceJoin(selection Selection) EvidenceJoin {
+	return EvidenceJoin{
+		Observations: []RecoveredAttempt{}, Examined: []Examined{}, Dispositions: []DispositionCount{},
+		Conflicts: []AttemptConflict{}, LostAttempts: []AttemptID{}, Ambiguous: []AmbiguousAttempt{},
+		ExcludedJournals: []JournalIdentity{}, HeldOutRuns: append([]string{}, selection.HoldoutRunIDs...),
+		CutoffApplied: canonicalTime(selection.Cutoff),
+	}
+}
+
+func canonicalAttemptID(id AttemptID) AttemptID {
+	id.StartedAt = canonicalTime(id.StartedAt)
+	return id
+}
+
+func validateAttemptIDForSet(id AttemptID, journal JournalIdentity, selection Selection) error {
+	if id.RunID == "" || id.Key == "" || id.StartedAt.IsZero() || id.RunID != journal.RunID {
+		return fmt.Errorf("%w: attempt identity disagrees with journal %q", ErrInvalidSelection, journal.RunID)
+	}
+	if !id.StartedAt.Equal(canonicalTime(id.StartedAt)) || id.StartedAt.After(selection.Cutoff) {
+		return fmt.Errorf("%w: attempt %s/%s has an invalid selected start", ErrInvalidSelection, id.RunID, id.Key)
+	}
+	return nil
+}
+
+func validateJoinedAttempt(attempt Attempt, journal JournalIdentity, selection Selection) error {
+	if err := validateAttemptIDForSet(attempt.ID, journal, selection); err != nil {
+		return err
+	}
+	if attempt.Start.Journal != journal || attempt.Start.Type != EventTaskStarted || !attempt.Start.At.Equal(attempt.ID.StartedAt) {
+		return fmt.Errorf("%w: attempt %s/%s start citation disagrees with its journal identity", ErrInvalidSelection, attempt.ID.RunID, attempt.ID.Key)
+	}
+	if !attempt.Cutoff.Equal(selection.Cutoff) {
+		return fmt.Errorf("%w: attempt %s/%s cutoff differs from selection", ErrInvalidSelection, attempt.ID.RunID, attempt.ID.Key)
+	}
+	if !attempt.Outcome.Valid() {
+		return fmt.Errorf("%w: attempt %s/%s", ErrInvalidOutcome, attempt.ID.RunID, attempt.ID.Key)
+	}
+	if attempt.Elapsed < 0 {
+		return fmt.Errorf("%w: attempt %s/%s has negative elapsed", ErrNegativeValue, attempt.ID.RunID, attempt.ID.Key)
+	}
+	if err := validateAttemptWall(attempt); err != nil {
+		return err
+	}
+	return nil
+}
+
+func canonicalReading(reading Reading) Reading {
+	reading.Ref.RecordedAt = canonicalTime(reading.Ref.RecordedAt)
+	if reading.Identity.StartedAt.Known {
+		reading.Identity.StartedAt.Value = canonicalTime(reading.Identity.StartedAt.Value)
+	}
+	if reading.CompletedAt.Known {
+		reading.CompletedAt.Value = canonicalTime(reading.CompletedAt.Value)
+	}
+	return reading
+}
+
+func classifyReading(reading Reading, selection Selection, holdouts map[string]bool, attempts map[AttemptID]Attempt, ambiguous map[AttemptID]AmbiguousAttempt, conflicts map[AttemptID][]AttemptConflict) (Disposition, AttemptID, string, error) {
+	if reading.Kind == DocumentNotTasks {
+		return DispositionNotTaskDocument, AttemptID{}, "YAML document has no tasks sequence", nil
+	}
+	run, runKnown := reading.Identity.RunID.Get()
+	key, keyKnown := reading.Identity.Key.Get()
+	start, startKnown := reading.Identity.StartedAt.Get()
+	if reading.Excluded != "" && reading.Excluded != DispositionHeldOut && reading.Excluded != DispositionAfterCutoff {
+		return "", AttemptID{}, "", fmt.Errorf("%w: reading has unsupported exclusion %q", ErrInvalidSelection, reading.Excluded)
+	}
+	if runKnown && holdouts[run] {
+		if reading.Excluded == DispositionAfterCutoff {
+			return "", AttemptID{}, "", fmt.Errorf("%w: held-out reading is marked after-cutoff", ErrInvalidSelection)
+		}
+		return DispositionHeldOut, AttemptID{}, "reading belongs to a predeclared held-out run", nil
+	}
+	after := (!reading.Ref.RecordedAt.IsZero() && reading.Ref.RecordedAt.After(selection.Cutoff)) ||
+		(startKnown && start.After(selection.Cutoff)) ||
+		(reading.CompletedAt.Known && reading.CompletedAt.Value.After(selection.Cutoff))
+	if reading.Excluded == DispositionHeldOut {
+		return "", AttemptID{}, "", fmt.Errorf("%w: held-out marker lacks matching independently decoded run", ErrInvalidSelection)
+	}
+	if after {
+		return DispositionAfterCutoff, AttemptID{}, "reading contains evidence after the extraction cutoff", nil
+	}
+	if reading.Excluded == DispositionAfterCutoff {
+		return "", AttemptID{}, "", fmt.Errorf("%w: after-cutoff marker has no retained cutoff proof", ErrInvalidSelection)
+	}
+	invalidIdentity := runKnown && (strings.TrimSpace(run) == "" || run != strings.TrimSpace(run)) ||
+		keyKnown && (strings.TrimSpace(key) == "" || key != strings.TrimSpace(key)) ||
+		startKnown && start.IsZero() || reading.CompletedAt.Known && reading.CompletedAt.Value.IsZero()
+	invalidRef := strings.TrimSpace(reading.Ref.SourceID) == "" || strings.TrimSpace(reading.Ref.Repository) == "" ||
+		strings.TrimSpace(reading.Ref.Path) == "" || reading.Ref.RecordedAt.IsZero() ||
+		(reading.Kind == DocumentTaskRow && reading.Ref.Row <= 0) || ValidateReadingRevision(reading.Ref.Revision) != nil
+	if reading.Kind == DocumentMalformed || reading.Err != nil || invalidIdentity || invalidRef {
+		return DispositionMalformed, AttemptID{}, "reading or citation is malformed", nil
+	}
+	if !reading.Present.Complete() || !runKnown || !keyKnown || !startKnown {
+		return DispositionMissingJoinKeys, AttemptID{}, "reading lacks a complete run/key/start identity", nil
+	}
+	id := NewAttemptID(run, key, start)
+	if _, ok := ambiguous[id]; ok {
+		return DispositionAmbiguousStart, id, "multiple journal starts share this exact attempt identity", nil
+	}
+	if _, ok := conflicts[id]; ok {
+		return DispositionConflictingEvidence, id, "journal attempt contains conflicting evidence", nil
+	}
+	if _, ok := attempts[id]; ok {
+		return "", id, "", nil
+	}
+	for candidate := range attempts {
+		if candidate.RunID == run && candidate.Key == key {
+			return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
+		}
+	}
+	for candidate := range ambiguous {
+		if candidate.RunID == run && candidate.Key == key {
+			return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
+		}
+	}
+	for candidate := range conflicts {
+		if candidate.RunID == run && candidate.Key == key {
+			return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
+		}
+	}
+	return DispositionNoMatchingRun, AttemptID{}, "no journal attempt has this run and task key", nil
+}
+
+func readingsForExamined(all []Reading, examined []Examined, indexes []int) []Reading {
+	// Locate by complete portable envelope rather than the original position: the
+	// audit is canonicalized independently from caller order.
+	out := make([]Reading, 0, len(indexes))
+	used := make([]bool, len(all))
+	for _, index := range indexes {
+		want := examined[index]
+		for i := range all {
+			candidate := canonicalReading(all[i])
+			if !used[i] && candidate.Ref == want.Reading && candidate.Identity == want.Identity && candidate.CompletedAt == want.CompletedAt {
+				used[i] = true
+				out = append(out, candidate)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func reconcileAttempt(attempt Attempt, readings []Reading) (RecoveredAttempt, *AttemptConflict, error) {
+	canonical := append([]Reading{}, readings...)
+	sort.SliceStable(canonical, func(i, j int) bool { return readingRefLess(canonical[i].Ref, canonical[j].Ref) })
+	refs := make([]ReadingRef, 0, len(canonical))
+	var role Role
+	var roleEvidence FieldEvidence
+	var yamlOutcome Outcome
+	var yamlTerminal time.Time
+	var yamlEvidence FieldEvidence
+	for _, reading := range canonical {
+		refs = append(refs, reading.Ref)
+		candidateRole := reading.Snapshot.Role
+		candidateEvidence := FieldEvidence{Source: EvidenceYAML, Reading: reading.Ref}
+		if role == "" {
+			role, roleEvidence = candidateRole, candidateEvidence
+		} else if role != candidateRole {
+			conflict := evidenceConflict(attempt.ID, "role", string(role), roleEvidence, string(candidateRole), candidateEvidence)
+			return RecoveredAttempt{}, &conflict, conflict.Err
+		}
+		if outcome, terminal := terminalStatus(reading.Snapshot.Status); terminal && reading.CompletedAt.Known {
+			if yamlOutcome == 0 {
+				yamlOutcome, yamlTerminal, yamlEvidence = outcome, reading.CompletedAt.Value, candidateEvidence
+			} else if yamlOutcome != outcome || !yamlTerminal.Equal(reading.CompletedAt.Value) {
+				a := map[string]any{"outcome": yamlOutcome.String(), "terminal_at": yamlTerminal, "elapsed_ns": yamlTerminal.Sub(attempt.ID.StartedAt).Nanoseconds()}
+				b := map[string]any{"outcome": outcome.String(), "terminal_at": reading.CompletedAt.Value, "elapsed_ns": reading.CompletedAt.Value.Sub(attempt.ID.StartedAt).Nanoseconds()}
+				conflict := evidenceConflict(attempt.ID, "terminal", a, yamlEvidence, b, candidateEvidence)
+				return RecoveredAttempt{}, &conflict, conflict.Err
+			}
+		}
+	}
+	attempt = canonicalAttempt(attempt)
+	attempt.Evidence.Role = roleEvidence
+	if attempt.Evidence.Terminal.Source == EvidenceNone && yamlOutcome.Valid() && yamlOutcome != OutcomeUnfinished {
+		if yamlTerminal.Before(attempt.ID.StartedAt) {
+			return RecoveredAttempt{}, nil, fmt.Errorf("%w: YAML terminal precedes attempt start", ErrReversedInterval)
+		}
+		attempt.Outcome = yamlOutcome
+		attempt.TerminalAt = yamlTerminal
+		attempt.Elapsed = yamlTerminal.Sub(attempt.ID.StartedAt)
+		attempt.Wall.Elapsed = attempt.Elapsed
+		retained := attempt.Wall.Intervals[:0]
+		withheld := false
+		for _, interval := range attempt.Wall.Intervals {
+			if interval.Start.Before(attempt.ID.StartedAt) || interval.End.After(yamlTerminal) {
+				withheld = true
+				continue
+			}
+			retained = append(retained, interval)
+		}
+		attempt.Wall.Intervals = retained
+		if withheld {
+			attempt.Wall.Complete = false
+		}
+		attempt.Evidence.Terminal = yamlEvidence
+		attempt.Evidence.Elapsed = yamlEvidence
+	}
+	if err := validateAttemptWall(attempt); err != nil {
+		return RecoveredAttempt{}, nil, err
+	}
+	return RecoveredAttempt{Attempt: attempt, Cell: Cell{Role: role, Model: attempt.Model.Value}, Readings: refs}, nil, nil
+}
+
+func evidenceConflict(id AttemptID, field string, aValue any, a FieldEvidence, bValue any, b FieldEvidence) AttemptConflict {
+	aRaw, _ := json.Marshal(aValue)
+	bRaw, _ := json.Marshal(bValue)
+	if bytes.Compare(aRaw, bRaw) > 0 {
+		aRaw, bRaw, a, b = bRaw, aRaw, b, a
+	}
+	reason := fmt.Sprintf("%s evidence conflicts within %s/%s", field, id.RunID, id.Key)
+	err := fmt.Errorf("%w: %s", ErrEvidenceConflict, reason)
+	return AttemptConflict{Code: EvidenceConflictCode, ID: id, Field: field,
+		AValue: ConflictValue{Kind: field, Value: aRaw}, BValue: ConflictValue{Kind: field, Value: bRaw},
+		A: a, B: b, Err: err, Reason: reason}
+}
+
+func examinedLess(a, b Examined) bool {
+	if readingRefLess(a.Reading, b.Reading) {
+		return true
+	}
+	if readingRefLess(b.Reading, a.Reading) {
+		return false
+	}
+	if a.Disposition != b.Disposition {
+		return a.Disposition < b.Disposition
+	}
+	return attemptIDLess(a.Attempt, b.Attempt)
 }
 
 // ---------------------------------------------------------------------------

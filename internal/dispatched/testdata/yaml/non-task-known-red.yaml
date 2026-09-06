@@ -1,0 +1,6 @@
+# Ordinary config YAML that is not a tasks document. F3-NON-TASK-DOCUMENT.
+entries:
+  - rows:
+      - TestFCJournalContract
+    seals_task: FC-SEALS
+    body_task: FC-JOURNAL

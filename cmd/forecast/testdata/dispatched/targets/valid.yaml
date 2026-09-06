@@ -1,0 +1,7 @@
+tasks:
+  - key: T1
+    role: bodies
+    model: stamp
+  - key: T2
+    role: seals
+    model: never-seen

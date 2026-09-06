@@ -594,3 +594,36 @@ Final-component symlinks require atomic refusal relative to the confined parent
 descriptor; a pre-open Lstat alone is not proof. Platform-specific private file
 open helpers are permitted to preserve portable package builds; frozen public
 seams and test ownership do not change. Their implementations belong to FC-SOURCES.
+
+## Operator F3 ruling: incomplete discovery and capped subsets
+
+A direct-child symbolic link in a requested journal-runs root is not traversed
+and is not silently discarded: report a source reason naming the entry and
+PARTIAL state. This conservative rule also covers convenience aliases; no
+implicit `latest` exception is promised. Ordinary non-directory, non-symlink
+entries remain non-candidates. Directory components used for actual journal
+opens must also be opened atomically no-follow relative to held confined
+directory handles, so a discovered run directory cannot turn into an alias.
+
+Only a verified unborn symbolic HEAD may be absent. A malformed symbolic target
+or corrupt existing target remains ErrGitHistory/PARTIAL; missing detached
+objects already fail the captured-ID peel and must keep doing so. Allow the
+exact read-only metadata form `symbolic-ref --quiet HEAD` (and no write/delete
+forms), plus `show-ref --verify --quiet <canonical-ref>` to distinguish absent
+from corrupt symbolic targets. These are read-only inspections under the same
+Git environment, process and byte controls. Public signatures do not change.
+
+When MaxCommits binds, retained commits are a deterministic traversal-order
+subset and the manifest is PARTIAL with a bound reason. There is no promise
+of a global newest-N ranking or of retaining HEAD within a capped subset. A
+COMPLETE result must still include the full captured tip set, including HEAD.
+The already-authorized bounded tip batches preserve these semantics; do not
+change the contract to satisfy a reviewer assumption about newest-N selection.
+Repeated metadata reads consume the actual total-byte budget and may cause
+PARTIAL; no optimal metadata-cost claim is made.
+
+Caller-initiated Close must not turn its own internal cancellation into a fake
+Git stderr fault. Genuine child failure, parent cancellation and bounds remain
+typed errors. Unix support should use the unix build set where the same safe
+primitives exist. Nonblocking type-probe opens may prevent FIFO-open hangs,
+but accepted regular evidence files must have ordinary blocking read semantics.

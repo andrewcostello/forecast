@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -416,5 +418,192 @@ func testF4EligibleMeasurement(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			requireRefuseInvalid(t, mutateObservation(recoveredArtifact(2), tc.mutate))
 		})
+	}
+
+	// Physical identity is selected JournalIdentity plus positive Line, independent
+	// of At/HasSeq/Seq/Type/Hash/PrevHash. Existing duplicate-* cases stay
+	// byte-identical and are not rewritten. Distinct lines and cross-list reuse
+	// remain legal; there is no global dedup or clock-within-terminal rule.
+	t.Run("parent-1ns-two-cascade-probe", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 4, 5, EventAgentFallback)
+			second := first
+			second.At = first.At.Add(time.Nanosecond)
+			obs.Attempt.Cascades = 2
+			obs.Attempt.CascadeEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Cascades = journalCite(first)
+			refs = obs.Attempt.CascadeEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "cascades", 5)
+	})
+	t.Run("corrections-same-line-allowed-type", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 6, 7, EventPanelIterate)
+			second := first
+			second.Type = EventVerificationIterate
+			obs.Attempt.Corrections = 2
+			obs.Attempt.CorrectionEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Corrections = journalCite(first)
+			refs = obs.Attempt.CorrectionEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "corrections", 7)
+	})
+	t.Run("reviews-same-line-seq-metadata", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 8, 9, EventPanelStarted)
+			second := first
+			second.Seq = first.Seq + 1
+			obs.Attempt.Reviews = 2
+			obs.Attempt.ReviewEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Reviews = journalCite(first)
+			refs = obs.Attempt.ReviewEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "reviews", 9)
+	})
+	t.Run("verifications-same-line-hash", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 9, 10, EventVerificationStarted)
+			second := first
+			second.Hash = "bbbb"
+			obs.Attempt.Verifications = 2
+			obs.Attempt.VerificationEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Verifications = journalCite(first)
+			refs = obs.Attempt.VerificationEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "verifications", 10)
+	})
+	t.Run("cost-same-line-timestamp", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 4, 5, EventTaskSpawnFinished)
+			second := first
+			second.At = first.At.Add(time.Nanosecond)
+			obs.Attempt.CostUSD = Known(1.5)
+			obs.Attempt.CostEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Cost = journalCite(first)
+			refs = obs.Attempt.CostEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "cost", 5)
+	})
+	t.Run("input-tokens-same-line-seq", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 5, 6, EventTaskSpawnFinished)
+			second := first
+			second.Seq = first.Seq + 1
+			obs.Attempt.InputTokens = Known(int64(3))
+			obs.Attempt.InputTokenEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.InputTokens = journalCite(first)
+			refs = obs.Attempt.InputTokenEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "input_tokens", 6)
+	})
+	t.Run("output-tokens-same-line-prevhash", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 5, 6, EventTaskSpawnFinished)
+			second := first
+			second.PrevHash = "aaaa"
+			obs.Attempt.OutputTokens = Known(int64(4))
+			obs.Attempt.OutputTokenEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.OutputTokens = journalCite(first)
+			refs = obs.Attempt.OutputTokenEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "output_tokens", 6)
+	})
+	t.Run("unknown-partial-cost-same-line", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 4, 5, EventTaskSpawnFinished)
+			second := first
+			second.At = first.At.Add(time.Nanosecond)
+			obs.Attempt.CostUSD = Unknown[float64]()
+			obs.Attempt.CostEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Cost = FieldEvidence{}
+			refs = obs.Attempt.CostEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "cost", 5)
+	})
+	t.Run("nonadjacent-same-line-corrections", func(t *testing.T) {
+		var refs []EventRef
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 6, 7, EventPanelIterate)
+			middle := typedCitation(obs.Attempt, 7, 8, EventVerificationIterate)
+			third := typedCitation(obs.Attempt, 8, 7, EventTaskSpawnFinished)
+			obs.Attempt.Corrections = 3
+			obs.Attempt.CorrectionEvents = []EventRef{first, middle, third}
+			obs.Attempt.Evidence.Corrections = journalCite(first)
+			refs = obs.Attempt.CorrectionEvents
+		})
+		requireRepeatedPhysicalLineRefused(t, art, refs, "corrections", 7)
+	})
+	t.Run("distinct-physical-lines-remain-eligible", func(t *testing.T) {
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			first := typedCitation(obs.Attempt, 4, 5, EventAgentFallback)
+			second := typedCitation(obs.Attempt, 5, 6, EventAgentFallback)
+			second.At = first.At.Add(time.Nanosecond)
+			obs.Attempt.Cascades = 2
+			obs.Attempt.CascadeEvents = []EventRef{first, second}
+			obs.Attempt.Evidence.Cascades = journalCite(first)
+		})
+		got := art.Evidence.Observations[0].Attempt.CascadeEvents
+		if len(got) != 2 || got[0].Line == got[1].Line {
+			t.Fatal("distinct-line control lost two different physical lines")
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+}
+
+func requireStrictPhysicalDuplicateFixture(t *testing.T, refs []EventRef, line int) {
+	t.Helper()
+	if len(refs) < 2 {
+		t.Fatal("physical-duplicate fixture needs at least two refs")
+	}
+	journal := refs[0].Journal
+	matches := 0
+	for i, ref := range refs {
+		if ref.Journal != journal {
+			t.Fatal("physical-duplicate fixture changed JournalIdentity; identity is selected journal plus line")
+		}
+		if ref.Line <= 0 {
+			t.Fatal("physical-duplicate fixture used a nonpositive line")
+		}
+		if i > 0 {
+			if refs[i-1] == ref {
+				t.Fatal("fixture is byte-identical; existing duplicate-* tests already cover that shape")
+			}
+			if !eventRefLess(refs[i-1], ref) {
+				t.Fatalf("fixture is not strictly comparator-ordered at index %d", i)
+			}
+		}
+		if ref.Line == line {
+			matches++
+		}
+	}
+	if matches < 2 {
+		t.Fatalf("fixture does not repeat physical line %d", line)
+	}
+}
+
+func requireRepeatedPhysicalLineRefused(t *testing.T, art Artifact, refs []EventRef, field string, line int) {
+	t.Helper()
+	requireStrictPhysicalDuplicateFixture(t, refs, line)
+	got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
+	if got.Eligible {
+		t.Fatal("invalid payload marked eligible")
+	}
+	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) {
+		t.Fatalf("invalid payload refuse = %v, want ErrNotEligible and ErrSourceIncomplete", err)
+	}
+	blob := strings.ToLower(strings.Join(got.Reasons, "\n"))
+	if !strings.Contains(blob, strings.ToLower(field)) {
+		t.Fatalf("reasons %q do not name field %q", got.Reasons, field)
+	}
+	if !strings.Contains(blob, strconv.Itoa(line)) {
+		t.Fatalf("reasons %q do not name physical line %d", got.Reasons, line)
 	}
 }

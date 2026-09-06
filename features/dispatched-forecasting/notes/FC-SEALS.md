@@ -933,3 +933,100 @@ shared production oracle.
 | F4-ELIGIBLE-PROVENANCE/drive-dotdot-root | Both sentinels; ordinary relative citation under root `C:/..` | Clean `C:/..` to `.` and accept |
 | F4-ELIGIBLE-PROVENANCE/cleaned-relative-dotdot-root | Eligible; root `a/..` | Refuse a non-drive relative root that cleans to `.` |
 | F4-ELIGIBLE-PROVENANCE/root-dot | Eligible (existing control) | Refuse ordinary root `.` |
+
+## FC-1 fifth-panel corrective seals
+
+Independent seals for the Operator F1/F4 fifth-panel ruling at the end of
+`FC-SCAFFOLD.md` on panel `2026-09-06T09-00-56Z-FC-1-corrected-panel`
+(reviewed head `00fed57`, current checkout `11f783b` = body plus operator
+notes). The fourth-panel restoration of complete count/list/least-citation
+evidence remains authoritative. Earlier count-exemption notes stay
+historical and are not current policy.
+
+No implementation, fixture, shared-helper, schema, known-red, worklist,
+Source/Journal, or command edits. The repaired `known-zero` and
+`known-positive-with-citations` fixtures are unchanged. Existing
+byte-identical `duplicate-*` measurement cases are unchanged. No skip or
+xfail. No new top-level group. Artifacts are hand-built except the
+existing local Build control.
+
+Allowed files only:
+
+- `internal/dispatched/evidence_measurement_contract_test.go`
+- `internal/dispatched/evidence_final_review_contract_test.go`
+- append this note
+
+`evidence_contract_test.go` needed no new registration: every case stays
+inside `TestFCEvidenceContract`.
+
+### Fifth-panel finding dispositions
+
+| Finding | Sealed? | Disposition |
+|---|---|---|
+| Codex-1 physical-event uniqueness | Yes | Per-list identity is selected `JournalIdentity` plus positive `Line`. Repeated locations are refused even when At/Seq/type/hash differ, including nonadjacent repeats and unknown partial lists. Distinct lines stay eligible; the same event across different lists stays legal |
+| Codex-2 journal mismatch context | Yes | Structurally valid selected `run-b/run-b/journal.jsonl` on a `run-a` attempt must name field plus actual and expected `source_id`/`run_id`/`path`/`producer`. Typed sentinels stay `ErrNotEligible` and `ErrSourceIncomplete` |
+| Codex-3 diagnostic assertion strength | Yes | Existing provenance rule alternatives no longer share field-name tokens. Stored values and both sentinels are kept. One overlay mutation removing the rule while keeping field/value fails `wrong-yaml-repository` |
+| Claude-1 attempt context | Yes (tests) | The same run-b/run-a case requires canonical attempt run/key/start in the structured-observation wrapper. Production wrapper text is a later body edit |
+| Claude-2 redundant root guard | Existing green controls | `drive-dotdot-root` refuses; `cleaned-relative-dotdot-root` and `root-dot` stay eligible. Production cleanup of the post-clean `..`/`../` check is a later body edit |
+| Grok | No findings | Approve |
+
+### Physical-event uniqueness
+
+A physical event is located by selected journal plus positive line.
+Complete-struct inequality and comparator order are not distinct events.
+Fixtures stay strictly `eventRefLess`-ordered and count/least-citation
+consistent; they are not byte-identical. No global cross-field
+deduplication, raw-payload authentication, or clock-within-terminal rule.
+
+The parent public-gate overlay in
+`/home/andrew/Project/dispatcher-runs/2026-09-06T09-00-56Z-FC-1-corrected-panel/operator-probes`
+is reproduced as `parent-1ns-two-cascade-probe`.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-MEASUREMENT/parent-1ns-two-cascade-probe | Both sentinels; reasons name `cascades` and line 5 | Accept two ordered cascades that share journal/line/seq/type and differ by 1ns |
+| F4-ELIGIBLE-MEASUREMENT/corrections-same-line-allowed-type | Both sentinels; name `corrections` and line 7 | Treat allowed type as a distinct physical event |
+| F4-ELIGIBLE-MEASUREMENT/reviews-same-line-seq-metadata | Both sentinels; name `reviews` and line 9 | Treat Seq as a distinct physical event |
+| F4-ELIGIBLE-MEASUREMENT/verifications-same-line-hash | Both sentinels; name `verifications` and line 10 | Treat Hash as a distinct physical event |
+| F4-ELIGIBLE-MEASUREMENT/cost-same-line-timestamp | Both sentinels; name `cost` and line 5 | Count one spawn twice in the cost list |
+| F4-ELIGIBLE-MEASUREMENT/input-tokens-same-line-seq | Both sentinels; name `input_tokens` and line 6 | Count one spawn twice in the input-token list |
+| F4-ELIGIBLE-MEASUREMENT/output-tokens-same-line-prevhash | Both sentinels; name `output_tokens` and line 6 | Treat PrevHash as a distinct physical event |
+| F4-ELIGIBLE-MEASUREMENT/unknown-partial-cost-same-line | Both sentinels; unknown total, EvidenceNone, repeated line | Exempt unknown partial lists from per-list uniqueness |
+| F4-ELIGIBLE-MEASUREMENT/nonadjacent-same-line-corrections | Both sentinels; first and third share line 7 | Detect only adjacent complete-struct equality |
+| F4-ELIGIBLE-MEASUREMENT/distinct-physical-lines-remain-eligible | Eligible; two cascade lines plus 1ns | Refuse distinct physical lines |
+| F4-ELIGIBLE-MEASUREMENT/same-spawn-across-cost-token-correction-lists | Eligible (existing control) | Demand global cross-list deduplication |
+| F4-ELIGIBLE-MEASUREMENT/duplicate-correction-list and duplicate-cost-list | Both sentinels (existing byte-identical cases, unchanged) | Drop complete-struct duplicate detection |
+
+### Journal mismatch and attempt wrapper
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/selected-run-b-journal-on-run-a-attempt | Both sentinels; reasons name model, actual `run-b`/`run-b/journal.jsonl`, expected `run-a/journal.jsonl`, `source_id`/`run_id`/`path`/`producer`, and wrapper `run-a`/`KA`/start | Keep `does not match attempt start journal` without stored identities, or omit attempt run/key/start from the observation wrapper |
+
+### Strengthened provenance rule tokens
+
+Existing cases keep their stored values and both sentinels. Rule
+alternatives are independent of the field name.
+
+| Case | Field tokens | Rule tokens (non-overlapping) |
+|---|---|---|
+| drive-prefix | path, citation | drive, portable, prefix |
+| ghost-yaml-source | source, source_id, sourceid | selected, unknown, missing, not selected |
+| wrong-yaml-repository | repository | match, selected, mismatch |
+| yaml-path-out-of-root | path | outside, within, declared |
+| unknown-journal-producer | producer | unsupported |
+| journal-path-not-direct-child | path | layout, direct, child |
+
+Overlay mutation (external copy of `build.go` only): keep
+`recovered reading repository %q` and drop the match/selected rule.
+Tracked body is not edited. This fails `wrong-yaml-repository` on the
+rule check. Previous finalized conflict-sort mutations stay historical.
+
+### Existing Claude-2 root-guard controls
+
+No new path cases. Production may delete the post-clean `..`/`../`
+branch later. Behavior is already sealed by:
+
+- `F4-ELIGIBLE-PROVENANCE/drive-dotdot-root` (refuses)
+- `F4-ELIGIBLE-PROVENANCE/cleaned-relative-dotdot-root` (eligible)
+- `F4-ELIGIBLE-PROVENANCE/root-dot` (eligible)

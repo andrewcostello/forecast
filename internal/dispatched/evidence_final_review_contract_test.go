@@ -68,6 +68,13 @@ func testF1AmbiguousRefPermutation(t *testing.T) {
 
 func requireDiagnosticComponents(t *testing.T, art Artifact, value string, fieldTokens, ruleTokens []string) {
 	t.Helper()
+	for _, field := range fieldTokens {
+		for _, rule := range ruleTokens {
+			if field != "" && strings.EqualFold(field, rule) {
+				t.Fatalf("field token %q also appears in rule tokens; a field name cannot satisfy the rule check", field)
+			}
+		}
+	}
 	got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
 	if got.Eligible {
 		t.Fatal("invalid payload marked eligible")
@@ -124,7 +131,7 @@ func testF4EligibleProvenanceDiagnostics(t *testing.T) {
 			ref.Repository = repo
 			return ref
 		})
-		requireDiagnosticComponents(t, art, repo, []string{"repository"}, []string{"repository", "match", "selected", "mismatch"})
+		requireDiagnosticComponents(t, art, repo, []string{"repository"}, []string{"match", "selected", "mismatch"})
 	})
 
 	t.Run("yaml-path-out-of-root", func(t *testing.T) {
@@ -133,7 +140,7 @@ func testF4EligibleProvenanceDiagnostics(t *testing.T) {
 			ref.Path = yamlPath
 			return ref
 		})
-		requireDiagnosticComponents(t, art, yamlPath, []string{"path", "root"}, []string{"root", "within", "declared"})
+		requireDiagnosticComponents(t, art, yamlPath, []string{"path"}, []string{"outside", "within", "declared"})
 	})
 
 	t.Run("unknown-journal-producer", func(t *testing.T) {
@@ -142,7 +149,7 @@ func testF4EligibleProvenanceDiagnostics(t *testing.T) {
 			j.Producer = producer
 			return j
 		})
-		requireDiagnosticComponents(t, art, producer, []string{"producer"}, []string{"producer", "supported", "0.1.0"})
+		requireDiagnosticComponents(t, art, producer, []string{"producer"}, []string{"unsupported"})
 	})
 
 	t.Run("journal-path-not-direct-child", func(t *testing.T) {
@@ -151,7 +158,80 @@ func testF4EligibleProvenanceDiagnostics(t *testing.T) {
 			j.Path = journalPath
 			return j
 		})
-		requireDiagnosticComponents(t, art, journalPath, []string{"path"}, []string{"path", "layout", "direct", "journal.jsonl"})
+		requireDiagnosticComponents(t, art, journalPath, []string{"path"}, []string{"layout", "direct", "child"})
+	})
+
+	t.Run("selected-run-b-journal-on-run-a-attempt", func(t *testing.T) {
+		other := JournalIdentity{
+			RunID: "run-b", SourceID: "journals", Path: "run-b/journal.jsonl", Producer: ProducerDispatcherV0_1_0,
+		}
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			ev := obs.Attempt.Evidence.Model
+			ev.Event.Journal = other
+			obs.Attempt.Evidence.Model = ev
+		})
+		att := art.Evidence.Observations[0].Attempt
+		if att.Start.Journal.RunID != "run-a" || att.Start.Journal.Path != "run-a/journal.jsonl" ||
+			att.Start.Journal.SourceID != "journals" || att.Start.Journal.Producer != ProducerDispatcherV0_1_0 {
+			t.Fatalf("fixture changed attempt start journal: %+v", att.Start.Journal)
+		}
+		if att.ID.RunID != "run-a" || att.ID.Key != "KA" {
+			t.Fatalf("fixture attempt identity = %s/%s, want run-a/KA", att.ID.RunID, att.ID.Key)
+		}
+		if att.Evidence.Model.Event.Journal != other {
+			t.Fatalf("model journal = %+v, want structurally valid selected run-b identity", att.Evidence.Model.Event.Journal)
+		}
+
+		got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
+		if got.Eligible {
+			t.Fatal("invalid payload marked eligible")
+		}
+		if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) {
+			t.Fatalf("invalid payload refuse = %v, want ErrNotEligible and ErrSourceIncomplete", err)
+		}
+		blob := strings.ToLower(strings.Join(got.Reasons, "\n"))
+		if !strings.Contains(blob, "structured observation") {
+			t.Fatalf("reasons %q lack structured-observation wrapper", got.Reasons)
+		}
+		if !strings.Contains(blob, "ka") {
+			t.Fatalf("reasons %q do not name attempt key KA", got.Reasons)
+		}
+		start := recoveredStart().UTC()
+		if !reasonContainsAny(blob, []string{strings.ToLower(start.Format(time.RFC3339)), strings.ToLower(start.Format(time.RFC3339Nano))}) {
+			t.Fatalf("reasons %q do not name attempt start %s", got.Reasons, start.Format(time.RFC3339))
+		}
+		if !strings.Contains(blob, "run-a") {
+			t.Fatalf("reasons %q do not name attempt/expected run-a", got.Reasons)
+		}
+		if !strings.Contains(blob, "model") {
+			t.Fatalf("reasons %q do not name field model", got.Reasons)
+		}
+		for _, token := range []string{"actual", "expected"} {
+			if !strings.Contains(blob, token) {
+				t.Fatalf("reasons %q do not name %s journal identity", got.Reasons, token)
+			}
+		}
+		if !reasonContainsAny(blob, []string{"source_id", "sourceid"}) {
+			t.Fatalf("reasons %q do not name source_id", got.Reasons)
+		}
+		if !reasonContainsAny(blob, []string{"run_id", "runid"}) {
+			t.Fatalf("reasons %q do not name run_id", got.Reasons)
+		}
+		if !strings.Contains(blob, "path") {
+			t.Fatalf("reasons %q do not name path", got.Reasons)
+		}
+		if !strings.Contains(blob, "producer") {
+			t.Fatalf("reasons %q do not name producer", got.Reasons)
+		}
+		if !strings.Contains(blob, "run-b") || !strings.Contains(blob, "run-b/journal.jsonl") {
+			t.Fatalf("reasons %q do not name actual run-b journal", got.Reasons)
+		}
+		if !strings.Contains(blob, "run-a/journal.jsonl") {
+			t.Fatalf("reasons %q do not name expected run-a journal path", got.Reasons)
+		}
+		if !strings.Contains(blob, "journals") || !strings.Contains(blob, strings.ToLower(ProducerDispatcherV0_1_0)) {
+			t.Fatalf("reasons %q do not name source_id/producer values", got.Reasons)
+		}
 	})
 }
 

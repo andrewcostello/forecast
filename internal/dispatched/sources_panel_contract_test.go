@@ -1344,7 +1344,7 @@ func testF3HeadSymbolicInvalid(t *testing.T) {
 		}
 	})
 
-	t.Run("missing-symbolic-target", func(t *testing.T) {
+	t.Run("unborn-with-existing-refs", func(t *testing.T) {
 		repo := initGitRepo(t)
 		repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
 		mainCommit := repo.commit("seed", "features")
@@ -1357,8 +1357,14 @@ func testF3HeadSymbolicInvalid(t *testing.T) {
 		if hist.State == SourceComplete || manifest.State == SourceComplete {
 			t.Fatalf("symbolic HEAD to missing refs/heads/does-not-exist with valid main %s produced COMPLETE: hist=%+v err=%v", mainCommit, hist, err)
 		}
-		if !errors.Is(err, ErrGitHistory) {
-			t.Fatalf("missing symbolic HEAD target = %v (state=%s), want typed ErrGitHistory", err, hist.State)
+		if errors.Is(err, ErrGitHistory) {
+			t.Fatalf("valid unborn symbolic HEAD with existing refs was classified as corrupt: %v", err)
+		}
+		if hist.State != SourcePartial || len(hist.Reasons) == 0 {
+			t.Fatalf("unborn history must be PARTIAL with a reason: %+v", hist)
+		}
+		if got, ok := panelResolvedRef(hist.ResolvedRefs, "refs/heads/main"); !ok || got != mainCommit {
+			t.Fatalf("unborn HEAD discarded valid main ref: %+v", hist.ResolvedRefs)
 		}
 	})
 
@@ -1483,7 +1489,10 @@ func testF3OpenSourceSymlinkParent(t *testing.T) {
 		t.Fatalf("legitimate journal payload = %q, want %q", data, payload)
 	}
 
-	_, err = openSourceFile(ctx, "alias-run/journal.jsonl", budget, true)
+	reader, err = openSourceFile(ctx, "alias-run/journal.jsonl", budget, true)
+	if reader != nil {
+		_ = closeSourceReader(t, reader, "unexpected symlink-parent reader")
+	}
 	if err == nil {
 		t.Fatal("openSourceFile followed an in-root symlink parent")
 	}

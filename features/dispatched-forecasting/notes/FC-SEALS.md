@@ -489,7 +489,7 @@ only. Bodies cannot edit these seals.
 | Finding | Disposition |
 |---|---|
 | Journal discovery silently drops direct-child symlinks | `F3-JOURNAL-SYMLINK-CHILD`. One real run plus a direct-child symlink (named `latest`, targeting the in-root real run) must be PARTIAL with a reason naming `latest`, never COMPLETE. No traversal. No `latest` exemption. Local fixture target only. |
-| Invalid/corrupt HEAD treated as unborn | `F3-HEAD-SYMBOLIC-INVALID`. `ref: refs/heads/main..bad` and a simple missing symbolic target in a repo that still has `refs/heads/main` must be typed `ErrGitHistory`/PARTIAL, never COMPLETE. Genuine unborn symbolic HEAD remains a valid absence control. Missing detached object is a GREEN typed-`ErrGitHistory` control: `rev-parse --verify --quiet HEAD` returns the missing ID with exit 0 and the existing captured-ID peel already fails; that is not a new red defect. |
+| Invalid/corrupt HEAD treated as unborn | `F3-HEAD-SYMBOLIC-INVALID`. `ref: refs/heads/main..bad` must be typed `ErrGitHistory`/PARTIAL, never COMPLETE. A canonical absent symbolic target with other valid refs is legitimate unborn state: PARTIAL with a reason, not ErrGitHistory. Genuine unborn symbolic HEAD remains a valid absence control. Missing detached object is a GREEN typed-`ErrGitHistory` control: `rev-parse --verify --quiet HEAD` returns the missing ID with exit 0 and the existing captured-ID peel already fails; that is not a new red defect. |
 | Final journal parent follows in-root directory symlink | `F3-OPEN-SOURCE-SYMLINK-PARENT`. Direct `openSourceFile` of `journal.jsonl` under an in-root symlink parent is refused. Deterministic static layout, not a rename race. Held confined root uses existing budget helpers. Legitimate `real-run/journal.jsonl` still opens. |
 | Caller `Close` after successful exit becomes incomplete-stderr | `F3-GIT-CLOSE-SELF-CANCEL`. Close without Read after a 0-exit child must not return `ErrGitHistory` incomplete-stderr caused solely by `ioCtx` cancellation. Controlled inherited stderr pipe, bounded wait on private `processDone`, release of the descendant. Existing `F3-GIT-CLOSE-ERRORS` nonzero-exit, parent-cancel, and bound seals stay. |
 | Buffered-exit read not synchronized on `processDone` | `F3-GIT-BUFFERED-EXIT-READ` tightened: wait on private `processDone` before crossing the old cleanup deadline; require exact full payload **and** nil terminal read error. No public hook. No stronger scheduling claim than `processDone` then a wall delay. |
@@ -503,7 +503,7 @@ only. Bodies cannot edit these seals.
 | Case | Expected | Mutation that must fail |
 |---|---|---|
 | F3-HEAD-SYMBOLIC-INVALID/invalid-double-dot-target | Repo with valid `refs/heads/main` and HEAD `ref: refs/heads/main..bad` is typed `ErrGitHistory` and not COMPLETE. | Treat `rev-parse --verify --quiet HEAD` exit 1 as unborn and return COMPLETE |
-| F3-HEAD-SYMBOLIC-INVALID/missing-symbolic-target | Symbolic HEAD to `refs/heads/does-not-exist` while `main` exists is typed `ErrGitHistory` and not COMPLETE. | Omit HEAD and walk only `main` as COMPLETE |
+| F3-HEAD-SYMBOLIC-INVALID/unborn-with-existing-refs | Canonical absent symbolic HEAD with existing main is PARTIAL with a reason, not ErrGitHistory; retain main. | Mark COMPLETE, discard main, or misclassify a normal orphan branch as corrupt |
 | F3-HEAD-SYMBOLIC-INVALID/unborn-absence-control | Verified unborn symbolic HEAD is omitted, PARTIAL, and not a typed `ErrGitHistory` fault. | Record HEAD, mark COMPLETE, or classify unborn as corrupt Git history |
 | F3-HEAD-SYMBOLIC-INVALID/missing-detached-peel-control | Missing detached object ID is typed `ErrGitHistory`/not COMPLETE via the existing captured-ID peel. Green control. | Ignore peel failure and return COMPLETE |
 | F3-GIT-REQUEST-READONLY/symbolic-ref-readonly | Exact `symbolic-ref --quiet HEAD` and `show-ref --verify --quiet refs/heads/main` are valid. Write/delete `symbolic-ref` forms wrap `ErrInvalidSourceSpec`. | Reject the read-only inspections; allow `symbolic-ref HEAD <ref>` / `-d` / `--delete` |
@@ -513,3 +513,10 @@ only. Bodies cannot edit these seals.
 | F3-GIT-BUFFERED-EXIT-READ | After `processDone` and the old one-second cleanup deadline, delayed Read returns the exact payload and a nil terminal error. | Timer-close stdout; return short data; return full data with a non-nil read error |
 
 Exact allowlisted inspections are `symbolic-ref --quiet HEAD` and `show-ref --verify --quiet <canonical-ref>`. Directory-component no-follow for actual journal opens is sealed by the static `F3-OPEN-SOURCE-SYMLINK-PARENT` case, not a flaky rename race. Unix tag restoration and regular-file blocking-mode restoration remain **body code-review**. No newest-N/HEAD-first cap test. No remaining-capacity batching test.
+
+Operator seal adjudication before third body: the original missing-symbolic-target
+corruption assertion was contradicted by a local `git checkout --orphan` control.
+The preceding FC-SCAFFOLD ruling preserves PARTIAL and adds valid-ref retention
+and non-corruption assertions. No body code changed; all other red cases and
+green controls remain. The symlink-parent red path now closes an unexpectedly
+returned reader so the deliberate failure does not leak its descriptor.

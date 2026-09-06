@@ -627,3 +627,16 @@ Git stderr fault. Genuine child failure, parent cancellation and bounds remain
 typed errors. Unix support should use the unix build set where the same safe
 primitives exist. Nonblocking type-probe opens may prevent FIFO-open hangs,
 but accepted regular evidence files must have ordinary blocking read semantics.
+
+### Operator clarification: unborn HEAD with existing branches
+
+A canonical absent symbolic HEAD target is a valid unborn branch even when
+other refs contain commits: ordinary `git checkout --orphan new-branch` creates
+this state. It must not become ErrGitHistory solely because other refs exist.
+Keep the earlier conservative unborn-history PARTIAL policy with an explicit
+unborn-HEAD reason, while retaining the valid other refs and their readings.
+Invalid ref syntax or an existing corrupt target still is ErrGitHistory.
+The draft missing-symbolic-target seal incorrectly called the legitimate
+orphan state corrupt; amend that exact assertion before the body changes.
+Local Git counterexample is recorded in the third operator ruling audit as
+`unborn-with-other-refs.json`; no holdout or live service was used.

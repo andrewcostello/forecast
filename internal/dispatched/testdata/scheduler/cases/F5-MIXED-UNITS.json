@@ -1,0 +1,45 @@
+{
+  "name": "F5-MIXED-UNITS",
+  "provenance": "synthetic",
+  "note": "Subsecond values are compared as exact parsed durations.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1500ms"
+    },
+    {
+      "key": "B",
+      "duration": "2s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "3.5s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1.5s"
+      },
+      {
+        "key": "B",
+        "start": "1.5s",
+        "finish": "3.5s"
+      }
+    ],
+    "dependency_path": [
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "resource"
+      }
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "name": "F5-NANOSECOND-GRAIN",
+  "provenance": "synthetic",
+  "note": "Nanosecond arithmetic remains exact across resource and dependency edges.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "130841899126ns"
+    },
+    {
+      "key": "B",
+      "duration": "250ns"
+    },
+    {
+      "key": "C",
+      "duration": "1.5s",
+      "blocked_by": [
+        "B"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "132341899376ns",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "130841899126ns"
+      },
+      {
+        "key": "B",
+        "start": "130841899126ns",
+        "finish": "130841899376ns"
+      },
+      {
+        "key": "C",
+        "start": "130841899376ns",
+        "finish": "132341899376ns",
+        "blocked_by": [
+          "B"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "B",
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "resource"
+      },
+      {
+        "key": "C",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

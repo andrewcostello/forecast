@@ -1,0 +1,29 @@
+{
+  "name": "F5-PRECEDENCE-CAP",
+  "provenance": "synthetic",
+  "note": "Invalid concurrency precedes all graph errors.",
+  "concurrency": 0,
+  "nodes": [
+    {
+      "key": "  ",
+      "duration": "-1s",
+      "blocked_by": [
+        "Z"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "ErrInvalidConcurrency"
+  }
+}

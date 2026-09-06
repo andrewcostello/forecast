@@ -1,0 +1,15 @@
+{
+  "name": "F5-NEGATIVE",
+  "provenance": "synthetic",
+  "note": "Negative sampled durations are refused.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "-1s"
+    }
+  ],
+  "expect": {
+    "error": "ErrNegativeValue"
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "F5-BLOCKED-BY-KEY-ORDER",
+  "provenance": "synthetic",
+  "note": "Trace dependency order and path ties use declaration order, not keys or input order.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "B",
+      "duration": "1s"
+    },
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "C",
+      "duration": "1s",
+      "blocked_by": [
+        "A",
+        "B"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "2s",
+    "trace": [
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "C",
+        "start": "1s",
+        "finish": "2s",
+        "blocked_by": [
+          "B",
+          "A"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "B",
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "B",
+        "edge": "start"
+      },
+      {
+        "key": "C",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

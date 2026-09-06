@@ -1,0 +1,89 @@
+{
+  "name": "F5-CAP-OVER-N",
+  "provenance": "synthetic",
+  "note": "A cap larger than the graph is valid and behaves as cap free.",
+  "concurrency": 10,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "B",
+      "duration": "2s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "C",
+      "duration": "3s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "D",
+      "duration": "1s",
+      "blocked_by": [
+        "B",
+        "C"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "5s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "B",
+        "start": "1s",
+        "finish": "3s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "C",
+        "start": "1s",
+        "finish": "4s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "D",
+        "start": "4s",
+        "finish": "5s",
+        "blocked_by": [
+          "B",
+          "C"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "A",
+      "C",
+      "D"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "C",
+        "edge": "dependency"
+      },
+      {
+        "key": "D",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

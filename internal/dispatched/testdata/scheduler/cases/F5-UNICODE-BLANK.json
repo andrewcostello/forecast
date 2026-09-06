@@ -1,0 +1,15 @@
+{
+  "name": "F5-UNICODE-BLANK",
+  "provenance": "synthetic",
+  "note": "Go Unicode whitespace is blank under strings.TrimSpace.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "\t\r\n  ",
+      "duration": "0s"
+    }
+  ],
+  "expect": {
+    "error": "ErrBlankKey"
+  }
+}

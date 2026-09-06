@@ -1,0 +1,53 @@
+{
+  "name": "F5-DUP-DEPENDENCY",
+  "provenance": "synthetic",
+  "note": "BlockedBy is normalized as a set without mutating input.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "B",
+      "duration": "1s",
+      "blocked_by": [
+        "A",
+        "A"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "2s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "B",
+        "start": "1s",
+        "finish": "2s",
+        "blocked_by": [
+          "A"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "A",
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

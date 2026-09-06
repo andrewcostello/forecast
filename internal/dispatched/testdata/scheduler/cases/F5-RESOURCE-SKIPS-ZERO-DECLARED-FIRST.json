@@ -1,0 +1,60 @@
+{
+  "name": "F5-RESOURCE-SKIPS-ZERO-DECLARED-FIRST",
+  "provenance": "synthetic",
+  "note": "Zero-duration candidates cannot be resource predecessors even when declared first.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "Z",
+      "duration": "0s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "2s"
+    },
+    {
+      "key": "B",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "3s",
+    "trace": [
+      {
+        "key": "Z",
+        "start": "2s",
+        "finish": "2s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "B",
+        "start": "2s",
+        "finish": "3s"
+      }
+    ],
+    "dependency_path": [
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "resource"
+      }
+    ]
+  }
+}

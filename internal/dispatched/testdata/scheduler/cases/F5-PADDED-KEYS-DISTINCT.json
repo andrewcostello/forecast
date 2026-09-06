@@ -1,0 +1,52 @@
+{
+  "name": "F5-PADDED-KEYS-DISTINCT",
+  "provenance": "synthetic",
+  "note": "Nonblank padded keys retain byte-exact identity.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": " A ",
+      "duration": "2s",
+      "blocked_by": [
+        "A"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "3s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": " A ",
+        "start": "1s",
+        "finish": "3s",
+        "blocked_by": [
+          "A"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "A",
+      " A "
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": " A ",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

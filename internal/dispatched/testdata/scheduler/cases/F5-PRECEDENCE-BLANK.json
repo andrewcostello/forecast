@@ -1,0 +1,29 @@
+{
+  "name": "F5-PRECEDENCE-BLANK",
+  "provenance": "synthetic",
+  "note": "Blank key precedes duplicate, unknown, negative, and cycle errors.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "  ",
+      "duration": "-1s",
+      "blocked_by": [
+        "Z"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "ErrBlankKey"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "name": "F5-ZERO-RETIRE-BEFORE-READY",
+  "provenance": "synthetic",
+  "note": "A started zero holds its slot until the next same-time COMPLETE phase.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "0s"
+    },
+    {
+      "key": "B",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "C",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "D",
+      "duration": "2s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "2s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "0s"
+      },
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "1s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "C",
+        "start": "1s",
+        "finish": "2s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "D",
+        "start": "0s",
+        "finish": "2s"
+      }
+    ],
+    "dependency_path": [
+      "A",
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "dependency"
+      },
+      {
+        "key": "C",
+        "edge": "resource"
+      }
+    ]
+  }
+}

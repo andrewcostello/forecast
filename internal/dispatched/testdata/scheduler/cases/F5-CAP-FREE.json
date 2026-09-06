@@ -1,0 +1,41 @@
+{
+  "name": "F5-CAP-FREE",
+  "provenance": "synthetic",
+  "note": "Independent work starts together when the cap is free.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "2s"
+    },
+    {
+      "key": "B",
+      "duration": "3s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "3s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "3s"
+      }
+    ],
+    "dependency_path": [
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "B",
+        "edge": "start"
+      }
+    ]
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "F5-NEGATIVE-BEFORE-OVERFLOW",
+  "provenance": "synthetic",
+  "note": "A later negative wins before checking an overflowing positive prefix.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "9223372036854775807ns"
+    },
+    {
+      "key": "B",
+      "duration": "9223372036854775807ns"
+    },
+    {
+      "key": "C",
+      "duration": "-1ns"
+    }
+  ],
+  "expect": {
+    "error": "ErrNegativeValue"
+  }
+}

@@ -1,0 +1,63 @@
+{
+  "name": "F5-DEP-SET-ORDER",
+  "provenance": "synthetic",
+  "note": "Normalized dependencies use referenced declaration order, not input order.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "B",
+      "duration": "1s"
+    },
+    {
+      "key": "C",
+      "duration": "1s",
+      "blocked_by": [
+        "B",
+        "A"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "2s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "C",
+        "start": "1s",
+        "finish": "2s",
+        "blocked_by": [
+          "A",
+          "B"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "A",
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "C",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

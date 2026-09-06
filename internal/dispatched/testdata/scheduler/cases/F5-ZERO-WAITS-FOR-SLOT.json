@@ -1,0 +1,41 @@
+{
+  "name": "F5-ZERO-WAITS-FOR-SLOT",
+  "provenance": "synthetic",
+  "note": "Independent zero work can wait for a resource without extending makespan.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "2s"
+    },
+    {
+      "key": "Z",
+      "duration": "0s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "2s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "Z",
+        "start": "2s",
+        "finish": "2s"
+      }
+    ],
+    "dependency_path": [
+      "A"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      }
+    ]
+  }
+}

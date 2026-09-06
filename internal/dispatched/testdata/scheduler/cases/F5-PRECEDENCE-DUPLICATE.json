@@ -1,0 +1,29 @@
+{
+  "name": "F5-PRECEDENCE-DUPLICATE",
+  "provenance": "synthetic",
+  "note": "Duplicate key precedes unknown, negative, and cycle errors.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "K",
+      "duration": "-1s",
+      "blocked_by": [
+        "Z"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "A",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "ErrDuplicateKey"
+  }
+}

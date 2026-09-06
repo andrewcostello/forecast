@@ -1,0 +1,32 @@
+{
+  "name": "F5-OVERFLOW-BOUNDARY",
+  "provenance": "synthetic",
+  "note": "A duration sum exactly equal to MaxInt64 is representable and must succeed.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "9223372036854775807ns"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "9223372036854775807ns",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "9223372036854775807ns"
+      }
+    ],
+    "dependency_path": [
+      "A"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      }
+    ]
+  }
+}

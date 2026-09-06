@@ -1,0 +1,54 @@
+{
+  "name": "F5-RESOURCE-TIE-KEY-ORDER",
+  "provenance": "synthetic",
+  "note": "Resource ties use declaration order rather than lexical key order.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "B",
+      "duration": "3s"
+    },
+    {
+      "key": "A",
+      "duration": "3s"
+    },
+    {
+      "key": "C",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "4s",
+    "trace": [
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "3s"
+      },
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "3s"
+      },
+      {
+        "key": "C",
+        "start": "3s",
+        "finish": "4s"
+      }
+    ],
+    "dependency_path": [
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "B",
+        "edge": "start"
+      },
+      {
+        "key": "C",
+        "edge": "resource"
+      }
+    ]
+  }
+}

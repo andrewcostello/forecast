@@ -1,0 +1,52 @@
+{
+  "name": "F5-REVERSE-DECLARATION",
+  "provenance": "synthetic",
+  "note": "A dependent may be declared before its dependency; trace stays positional.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "2s",
+      "blocked_by": [
+        "B"
+      ]
+    },
+    {
+      "key": "B",
+      "duration": "3s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "5s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "3s",
+        "finish": "5s",
+        "blocked_by": [
+          "B"
+        ]
+      },
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "3s"
+      }
+    ],
+    "dependency_path": [
+      "B",
+      "A"
+    ],
+    "execution_chain": [
+      {
+        "key": "B",
+        "edge": "start"
+      },
+      {
+        "key": "A",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

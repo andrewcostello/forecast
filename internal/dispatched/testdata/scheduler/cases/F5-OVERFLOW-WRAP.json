@@ -1,0 +1,23 @@
+{
+  "name": "F5-OVERFLOW-WRAP",
+  "provenance": "synthetic",
+  "note": "Per-add checking catches a sum that wraps twice to positive three.",
+  "concurrency": 3,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "9223372036854775807ns"
+    },
+    {
+      "key": "B",
+      "duration": "9223372036854775807ns"
+    },
+    {
+      "key": "C",
+      "duration": "5ns"
+    }
+  ],
+  "expect": {
+    "error": "ErrScheduleOverflow"
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "name": "F5-ZERO-WIDTH-NONBLANK",
+  "provenance": "synthetic",
+  "note": "U+200B is not whitespace under strings.TrimSpace.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "​",
+      "duration": "0s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "0s",
+    "trace": [
+      {
+        "key": "​",
+        "start": "0s",
+        "finish": "0s"
+      }
+    ],
+    "dependency_path": [
+      "​"
+    ],
+    "execution_chain": [
+      {
+        "key": "​",
+        "edge": "start"
+      }
+    ]
+  }
+}

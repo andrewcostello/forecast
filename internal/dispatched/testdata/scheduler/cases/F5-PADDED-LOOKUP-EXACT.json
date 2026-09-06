@@ -1,0 +1,22 @@
+{
+  "name": "F5-PADDED-LOOKUP-EXACT",
+  "provenance": "synthetic",
+  "note": "Dependency lookup never trims bytes.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "B",
+      "duration": "1s",
+      "blocked_by": [
+        "A "
+      ]
+    }
+  ],
+  "expect": {
+    "error": "ErrUnknownDependency"
+  }
+}

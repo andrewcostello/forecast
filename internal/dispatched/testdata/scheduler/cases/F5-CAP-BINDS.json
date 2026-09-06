@@ -1,0 +1,45 @@
+{
+  "name": "F5-CAP-BINDS",
+  "provenance": "synthetic",
+  "note": "Independent work serializes under cap one.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "2s"
+    },
+    {
+      "key": "B",
+      "duration": "3s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "5s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "B",
+        "start": "2s",
+        "finish": "5s"
+      }
+    ],
+    "dependency_path": [
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "resource"
+      }
+    ]
+  }
+}

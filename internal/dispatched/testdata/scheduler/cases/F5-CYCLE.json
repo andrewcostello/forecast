@@ -1,0 +1,25 @@
+{
+  "name": "F5-CYCLE",
+  "provenance": "synthetic",
+  "note": "A multi-node dependency cycle is refused.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s",
+      "blocked_by": [
+        "B"
+      ]
+    },
+    {
+      "key": "B",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "ErrCycle"
+  }
+}

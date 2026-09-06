@@ -1,0 +1,72 @@
+{
+  "name": "F5-ZERO-DRAIN",
+  "provenance": "synthetic",
+  "note": "Zero-duration dependency chains drain at one timestamp.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "0s"
+    },
+    {
+      "key": "B",
+      "duration": "0s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "C",
+      "duration": "1s",
+      "blocked_by": [
+        "B"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "1s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "0s"
+      },
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "0s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "C",
+        "start": "0s",
+        "finish": "1s",
+        "blocked_by": [
+          "B"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "A",
+      "B",
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "dependency"
+      },
+      {
+        "key": "C",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

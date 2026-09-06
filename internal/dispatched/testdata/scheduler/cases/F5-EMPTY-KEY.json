@@ -1,0 +1,15 @@
+{
+  "name": "F5-EMPTY-KEY",
+  "provenance": "synthetic",
+  "note": "The empty node key is blank.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "",
+      "duration": "0s"
+    }
+  ],
+  "expect": {
+    "error": "ErrBlankKey"
+  }
+}

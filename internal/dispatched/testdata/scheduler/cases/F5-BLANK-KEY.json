@@ -1,0 +1,15 @@
+{
+  "name": "F5-BLANK-KEY",
+  "provenance": "synthetic",
+  "note": "Whitespace-only node keys are blank.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "  ",
+      "duration": "0s"
+    }
+  ],
+  "expect": {
+    "error": "ErrBlankKey"
+  }
+}

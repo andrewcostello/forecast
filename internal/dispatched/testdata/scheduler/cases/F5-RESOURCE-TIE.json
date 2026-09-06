@@ -1,0 +1,54 @@
+{
+  "name": "F5-RESOURCE-TIE",
+  "provenance": "synthetic",
+  "note": "Declaration order breaks resource-predecessor ties.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "3s"
+    },
+    {
+      "key": "B",
+      "duration": "3s"
+    },
+    {
+      "key": "C",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "4s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "3s"
+      },
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "3s"
+      },
+      {
+        "key": "C",
+        "start": "3s",
+        "finish": "4s"
+      }
+    ],
+    "dependency_path": [
+      "C"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "C",
+        "edge": "resource"
+      }
+    ]
+  }
+}

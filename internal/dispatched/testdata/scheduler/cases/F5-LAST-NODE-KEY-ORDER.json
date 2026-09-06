@@ -1,0 +1,41 @@
+{
+  "name": "F5-LAST-NODE-KEY-ORDER",
+  "provenance": "synthetic",
+  "note": "Last-node ties use declaration order even when keys sort oppositely.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "B",
+      "duration": "2s"
+    },
+    {
+      "key": "A",
+      "duration": "2s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "2s",
+    "trace": [
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "2s"
+      }
+    ],
+    "dependency_path": [
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "B",
+        "edge": "start"
+      }
+    ]
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "name": "F5-SIMULTANEOUS-COMPLETIONS",
+  "provenance": "synthetic",
+  "note": "All completions at a timestamp precede declaration-order filling.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "X",
+      "duration": "2s"
+    },
+    {
+      "key": "Y",
+      "duration": "2s"
+    },
+    {
+      "key": "P",
+      "duration": "1s",
+      "blocked_by": [
+        "Y"
+      ]
+    },
+    {
+      "key": "Q",
+      "duration": "1s",
+      "blocked_by": [
+        "Y"
+      ]
+    },
+    {
+      "key": "R",
+      "duration": "1s",
+      "blocked_by": [
+        "X"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "4s",
+    "trace": [
+      {
+        "key": "X",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "Y",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "P",
+        "start": "2s",
+        "finish": "3s",
+        "blocked_by": [
+          "Y"
+        ]
+      },
+      {
+        "key": "Q",
+        "start": "2s",
+        "finish": "3s",
+        "blocked_by": [
+          "Y"
+        ]
+      },
+      {
+        "key": "R",
+        "start": "3s",
+        "finish": "4s",
+        "blocked_by": [
+          "X"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "X",
+      "R"
+    ],
+    "execution_chain": [
+      {
+        "key": "Y",
+        "edge": "start"
+      },
+      {
+        "key": "P",
+        "edge": "dependency"
+      },
+      {
+        "key": "R",
+        "edge": "resource"
+      }
+    ]
+  }
+}

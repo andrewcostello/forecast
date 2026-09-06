@@ -1,0 +1,19 @@
+{
+  "name": "F5-DUPLICATE-KEY",
+  "provenance": "synthetic",
+  "note": "Duplicate exact node keys are refused.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "A",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "ErrDuplicateKey"
+  }
+}

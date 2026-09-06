@@ -1,0 +1,14 @@
+{
+  "name": "F5-EMPTY",
+  "provenance": "synthetic",
+  "note": "An empty valid graph has a zero schedule.",
+  "concurrency": 1,
+  "nodes": [],
+  "expect": {
+    "error": "",
+    "makespan": "0s",
+    "trace": [],
+    "dependency_path": [],
+    "execution_chain": []
+  }
+}

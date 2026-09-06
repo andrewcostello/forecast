@@ -1,0 +1,25 @@
+{
+  "name": "F5-CYCLE-BEFORE-OVERFLOW",
+  "provenance": "synthetic",
+  "note": "A cycle wins before checking the overflowing duration sum.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "9223372036854775807ns",
+      "blocked_by": [
+        "B"
+      ]
+    },
+    {
+      "key": "B",
+      "duration": "9223372036854775807ns",
+      "blocked_by": [
+        "A"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "ErrCycle"
+  }
+}

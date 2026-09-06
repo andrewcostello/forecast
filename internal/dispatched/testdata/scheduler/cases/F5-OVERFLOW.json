@@ -1,0 +1,19 @@
+{
+  "name": "F5-OVERFLOW",
+  "provenance": "synthetic",
+  "note": "Overflow is checked on the duration-sum bound even when cap-free makespan fits.",
+  "concurrency": 2,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "4611686018427387904ns"
+    },
+    {
+      "key": "B",
+      "duration": "4611686018427387904ns"
+    }
+  ],
+  "expect": {
+    "error": "ErrScheduleOverflow"
+  }
+}

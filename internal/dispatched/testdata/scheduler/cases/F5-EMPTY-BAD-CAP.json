@@ -1,0 +1,10 @@
+{
+  "name": "F5-EMPTY-BAD-CAP",
+  "provenance": "synthetic",
+  "note": "Concurrency validation applies to an empty graph.",
+  "concurrency": 0,
+  "nodes": [],
+  "expect": {
+    "error": "ErrInvalidConcurrency"
+  }
+}

@@ -1,0 +1,45 @@
+{
+  "name": "F5-READY-DECLARATION-ORDER",
+  "provenance": "synthetic",
+  "note": "Reordered declarations, not lexical keys, choose the first slot.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "B",
+      "duration": "3s"
+    },
+    {
+      "key": "A",
+      "duration": "2s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "5s",
+    "trace": [
+      {
+        "key": "B",
+        "start": "0s",
+        "finish": "3s"
+      },
+      {
+        "key": "A",
+        "start": "3s",
+        "finish": "5s"
+      }
+    ],
+    "dependency_path": [
+      "A"
+    ],
+    "execution_chain": [
+      {
+        "key": "B",
+        "edge": "start"
+      },
+      {
+        "key": "A",
+        "edge": "resource"
+      }
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "F5-UNKNOWN-DEPENDENCY",
+  "provenance": "synthetic",
+  "note": "Dependencies must name a declared key.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s",
+      "blocked_by": [
+        "B"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "ErrUnknownDependency"
+  }
+}

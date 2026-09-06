@@ -1,0 +1,10 @@
+{
+  "name": "F5-NEGATIVE-CAP",
+  "provenance": "synthetic",
+  "note": "Every concurrency below one is invalid, including a negative cap on an empty graph.",
+  "concurrency": -1,
+  "nodes": [],
+  "expect": {
+    "error": "ErrInvalidConcurrency"
+  }
+}

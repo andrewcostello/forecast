@@ -1,0 +1,54 @@
+{
+  "name": "F5-RESOURCE-SKIPS-ZERO",
+  "provenance": "synthetic",
+  "note": "Plain zero drain followed by resource waiting.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "2s"
+    },
+    {
+      "key": "Z",
+      "duration": "0s"
+    },
+    {
+      "key": "B",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "3s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "2s"
+      },
+      {
+        "key": "Z",
+        "start": "2s",
+        "finish": "2s"
+      },
+      {
+        "key": "B",
+        "start": "2s",
+        "finish": "3s"
+      }
+    ],
+    "dependency_path": [
+      "B"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "resource"
+      }
+    ]
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "F5-PRECEDENCE-CYCLE",
+  "provenance": "synthetic",
+  "note": "Cycle detection precedes duration-sum overflow.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "K",
+      "duration": "1s"
+    },
+    {
+      "key": "A",
+      "duration": "1s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "C",
+      "duration": "1s"
+    }
+  ],
+  "expect": {
+    "error": "ErrCycle"
+  }
+}

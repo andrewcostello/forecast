@@ -1,0 +1,50 @@
+{
+  "name": "F5-ZERO-DECLARATION-ORDER",
+  "provenance": "synthetic",
+  "note": "A later zero does not overtake earlier positive work.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "P",
+      "duration": "0s"
+    },
+    {
+      "key": "Q",
+      "duration": "3s"
+    },
+    {
+      "key": "R",
+      "duration": "0s"
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "3s",
+    "trace": [
+      {
+        "key": "P",
+        "start": "0s",
+        "finish": "0s"
+      },
+      {
+        "key": "Q",
+        "start": "0s",
+        "finish": "3s"
+      },
+      {
+        "key": "R",
+        "start": "3s",
+        "finish": "3s"
+      }
+    ],
+    "dependency_path": [
+      "Q"
+    ],
+    "execution_chain": [
+      {
+        "key": "Q",
+        "edge": "start"
+      }
+    ]
+  }
+}

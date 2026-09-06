@@ -1,0 +1,93 @@
+{
+  "name": "F5-FORK-JOIN-CAP1",
+  "provenance": "synthetic",
+  "note": "Fork resource wait appears only in execution chain.",
+  "concurrency": 1,
+  "nodes": [
+    {
+      "key": "A",
+      "duration": "1s"
+    },
+    {
+      "key": "B",
+      "duration": "2s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "C",
+      "duration": "3s",
+      "blocked_by": [
+        "A"
+      ]
+    },
+    {
+      "key": "D",
+      "duration": "1s",
+      "blocked_by": [
+        "B",
+        "C"
+      ]
+    }
+  ],
+  "expect": {
+    "error": "",
+    "makespan": "7s",
+    "trace": [
+      {
+        "key": "A",
+        "start": "0s",
+        "finish": "1s"
+      },
+      {
+        "key": "B",
+        "start": "1s",
+        "finish": "3s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "C",
+        "start": "3s",
+        "finish": "6s",
+        "blocked_by": [
+          "A"
+        ]
+      },
+      {
+        "key": "D",
+        "start": "6s",
+        "finish": "7s",
+        "blocked_by": [
+          "B",
+          "C"
+        ]
+      }
+    ],
+    "dependency_path": [
+      "A",
+      "C",
+      "D"
+    ],
+    "execution_chain": [
+      {
+        "key": "A",
+        "edge": "start"
+      },
+      {
+        "key": "B",
+        "edge": "dependency"
+      },
+      {
+        "key": "C",
+        "edge": "resource"
+      },
+      {
+        "key": "D",
+        "edge": "dependency"
+      }
+    ]
+  }
+}

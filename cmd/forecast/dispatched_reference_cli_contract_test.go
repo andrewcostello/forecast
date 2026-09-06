@@ -23,6 +23,8 @@ func TestFCReferenceCLIContract(t *testing.T) {
 	t.Run("F4-NOT-ELIGIBLE-PARTIAL", testCLIPartialCorpusRefusal)
 	t.Run("F4-DATA-ERROR-NO-USAGE", testCLIDataErrorNoUsage)
 	t.Run("F4-HAND-FINISHED-LIMIT", testCLIHandFinishedLimit)
+	t.Run("F4-GATE-REQUIRES-TASKS", testCLIGateRequiresTasks)
+	t.Run("F4-GATE-BYPASS-EMPTY-TARGET", testCLIGateBypassEmptyTarget)
 }
 
 func cliTestdata(t *testing.T, parts ...string) string {

@@ -564,3 +564,63 @@ metadata on a recorded journal. No prior assertion, event measurement, test
 registration, known-red entry, or implementation changed. The observed failures
 and subsequent gate/mutation evidence are recorded at
 `/home/andrew/Project/dispatcher-runs/2026-09-06T04-57-54Z-FC-1-resolution`.
+
+## FC-1 corrective panel seals
+
+Independent seals for the operator F1/F4 ruling at the end of `FC-SCAFFOLD.md`
+on panel `2026-09-06T05-02-54Z-FC-1-corrected-panel`. Existing top-level
+`TestFCEvidenceContract` / `TestFCReferenceCLIContract` names, assertions,
+signatures, and helpers are unchanged. New cases register in those groups
+(`evidence_panel_contract_test.go`, `dispatched_reference_panel_contract_test.go`).
+Bodies cannot edit these seals. No known-red or worklist change.
+
+### recoveredArtifact fixture change
+
+Hand-built only; never via `JoinEvidence` or `Build`.
+
+| | Before | After |
+|---|---|---|
+| `n`, IDs, model, outcome, elapsed, cutoff, threshold | `run-a` / `K`+`A..`, `stamp`, `OutcomeDone`, 10m | unchanged |
+| `RecoveredAttempt.Readings` | empty | one synthetic `live` `ReadingRef` per row (`features/study/tasks.yaml`, `Row=i+1`) |
+| `Attempt.Evidence.Role` | zero | `EvidenceYAML` citing that ref |
+| `Examined` | empty | one `DispositionRecovered` envelope per observation |
+| `Dispositions` | empty | every `Dispositions()` value; `Recovered=n`, others 0 |
+| optional measurements | unknown cost/tokens | still unknown; not required |
+
+### Panel dispositions (operator ruling, not the raw findings)
+
+| Finding | Disposition |
+|---|---|
+| Claude-1 / Codex-5 role absence | Empty/null role is unknown, not a conflict. Valid sibling supplies the role in both citation orders. Nonempty invalid role is Malformed after exclusions. All-absent role is Unrecoverable with an explicit role reason; not AbsentStamp. |
+| Codex-4 / Claude-4 / Grok-2 envelope association | Equal Ref/Identity/CompletedAt do not make malformed/valid payloads interchangeable. Preserve both audit envelopes and permutation equality. |
+| Claude-2 / Claude-3 EMPTY and source diagnostics | AllowEmpty Build must remain `SourceEmpty` and ineligible. Early invalid bounds/spec stay PARTIAL with an actionable reason. |
+| Codex-2 / Claude-6 structured eligibility | Invalid-payload refusal for missing required citations, invalid walls, contradictory counters/audit, conflicts/ambiguity/malformed on COMPLETE. Unknown optional measurements stay unknown. Legitimate no-YAML/absent-stamp losses remain eligible. |
+| Codex-3 attempt universe | No bijection. Missing selected set is valid. Repeated set identity is `ErrInvalidSelection`. Duplicate regular/ambiguous IDs are `ErrEvidenceConflict`. Multiple distinct conflict facts for one ID are retained. |
+| Codex-6 interval mutation | False positive for YAML-terminal filtering: `canonicalAttempt` already copies intervals and nested evidence. Repeated-join unchanged-input control. Ambiguous `Refs` sorting is a separate caller-owned-slice gap. |
+| Codex-1 CLI missing `--tasks` | False positive on RunE: existing guard refuses both gate flags. Direct `buildDispatchedReference` bypass with omitted `TargetTasks` must still write diagnostics then fail `ErrEmptyTarget`+`ErrNotEligible`. |
+| Grok-1 nil-manifest panic | False positive; existing `F4-NOT-ELIGIBLE-PARTIAL` nil case. No new panic seal. |
+| Grok-4 zero Outcome | False positive; `OutcomeDone=iota+1`, zero is invalid. No seal treating it as valid. |
+| Codex-7, Claude-5/7/8, Grok-3/5, Claude-9 | Documentation or deferred CLI flags; not sealed here. |
+
+### Corrective cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F1-ROLE-ABSENCE/missing-and-valid | Both citation orders and input permutations recover `bodies` from the valid reading; no conflict | Treat empty role as authoritative; order-dependent conflict |
+| F1-ROLE-ABSENCE/invalid-with-valid-sibling | Invalid role is Malformed; valid sibling recovered | Conflict or recover the invalid role |
+| F1-ROLE-ABSENCE/invalid-heldout-wins | HeldOut beats Malformed | Classify held-out invalid role as in-sample malformed |
+| F1-ROLE-ABSENCE/all-absent | No sample; Unrecoverable names role | Infer a role or emit a false conflict |
+| F1-ENVELOPE-ASSOCIATION | Same Ref/Identity/CompletedAt valid+`DocumentMalformed` (malformed Snapshot role/status differ): valid recovered, malformed audited, outputs equal | Reconcile the malformed payload; order-dependent attribution |
+| F3-BUILD-ALLOW-EMPTY-STATE | `State=EMPTY`, ineligible | Relabel EMPTY to COMPLETE |
+| F3-BUILD-EARLY-SOURCE-REASON | PARTIAL plus nonempty sorted unique reasons | Drop reasons on early spec/bounds failure |
+| F4-ELIGIBLE-STRUCTURE | Positive fixture eligible; listed mutations refuse with both sentinels | Count a citation-less or contradictory COMPLETE artifact |
+| F4-ELIGIBLE-LEGITIMATE-LOSS | COMPLETE + no-YAML lost attempt stays eligible | Blanket-reject any lost attempt |
+| F1-ATTEMPT-UNIVERSE/missing-selected-set | Valid diagnostic (no bijection) | Require one set per journal |
+| F1-ATTEMPT-UNIVERSE/repeated-set | `ErrInvalidSelection` including empty/disjoint | Merge or overwrite repeated sets |
+| F1-ATTEMPT-UNIVERSE/duplicate-ambiguous-ids | `ErrEvidenceConflict` | Overwrite duplicate ambiguous IDs |
+| F1-ATTEMPT-UNIVERSE/regular-vs-ambiguous | Same-set duplicate categories `ErrEvidenceConflict`; two-set same journal both orders `ErrInvalidSelection` | Accept one order |
+| F1-ATTEMPT-UNIVERSE/multiple-conflict-facts-retained | Two distinct facts for one ID kept | Drop to one conflict |
+| F2-JOIN-INPUT-IMMUTABLE/yaml-terminal-wall | Repeated `JoinEvidence` leaves inputs (including nested citations) and outputs unchanged | Filter in place on caller slices |
+| F2-JOIN-INPUT-IMMUTABLE/ambiguous-refs | Caller-owned ambiguous Refs unchanged | `sort.Slice` on the input backing array |
+| CLI F4-GATE-REQUIRES-TASKS | Missing `--tasks` under either gate flag refuses (RunE) | Succeed without `--tasks` |
+| CLI F4-GATE-BYPASS-EMPTY-TARGET | Direct helper writes diagnostics then `ErrEmptyTarget`+`ErrNotEligible` | Vacuous gate success when `TargetTasks` is omitted |

@@ -62,6 +62,14 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F4-ARTIFACT-JOINT-RECORD", testF4ArtifactJointRecord)
 	t.Run("F4-STRUCTURED-THIN-CELL", testF4StructuredThinCell)
 	t.Run("F4-CELL-EMPTY-N0", testF4CellEmptyN0)
+	t.Run("F1-ROLE-ABSENCE", testF1RoleAbsence)
+	t.Run("F1-ENVELOPE-ASSOCIATION", testF1EnvelopeAssociation)
+	t.Run("F3-BUILD-ALLOW-EMPTY-STATE", testF3BuildAllowEmptyState)
+	t.Run("F3-BUILD-EARLY-SOURCE-REASON", testF3BuildEarlySourceReason)
+	t.Run("F4-ELIGIBLE-STRUCTURE", testF4EligibleStructure)
+	t.Run("F4-ELIGIBLE-LEGITIMATE-LOSS", testF4EligibleLegitimateLoss)
+	t.Run("F1-ATTEMPT-UNIVERSE", testF1AttemptUniverse)
+	t.Run("F2-JOIN-INPUT-IMMUTABLE", testF2JoinInputImmutable)
 }
 
 func twoRunUniverse(t *testing.T) (sets []AttemptSet, readings []Reading, journals []JournalIdentity) {
@@ -555,17 +563,54 @@ func eligibleTargets() []TargetRow {
 	return []TargetRow{{Key: "T1", Role: RoleBodies, Model: "stamp"}}
 }
 
+// recoveredArtifact is a hand-built schema-4 joint record. It is constructed
+// directly rather than via JoinEvidence or Build.
 func recoveredArtifact(n int) Artifact {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	obs := make([]RecoveredAttempt, 0, n)
+	examined := make([]Examined, 0, n)
 	for i := 0; i < n; i++ {
-		att := journalAttempt("run-a", "K"+string(rune('A'+i)), start, 10*time.Minute, "stamp", OutcomeDone)
-		obs = append(obs, RecoveredAttempt{Attempt: att, Cell: Cell{Role: RoleBodies, Model: "stamp"}, Readings: []ReadingRef{}})
+		key := "K" + string(rune('A'+i))
+		att := journalAttempt("run-a", key, start, 10*time.Minute, "stamp", OutcomeDone)
+		ref := ReadingRef{
+			SourceID:   "live",
+			Repository: "repo",
+			Path:       "features/study/tasks.yaml",
+			Revision:   "live",
+			Row:        i + 1,
+			RecordedAt: start,
+		}
+		att.Evidence.Role = FieldEvidence{Source: EvidenceYAML, Reading: ref}
+		obs = append(obs, RecoveredAttempt{
+			Attempt:  att,
+			Cell:     Cell{Role: RoleBodies, Model: "stamp"},
+			Readings: []ReadingRef{ref},
+		})
+		examined = append(examined, Examined{
+			Identity: ReadingIdentity{
+				RunID:     Known("run-a"),
+				Key:       Known(key),
+				StartedAt: Known(start),
+			},
+			CompletedAt: Known(start.Add(10 * time.Minute)),
+			Reading:     ref,
+			Attempt:     att.ID,
+			Disposition: DispositionRecovered,
+			Reason:      "least canonical compatible reading",
+		})
+	}
+	dispositions := make([]DispositionCount, 0, len(Dispositions()))
+	for _, d := range Dispositions() {
+		count := 0
+		if d == DispositionRecovered {
+			count = n
+		}
+		dispositions = append(dispositions, DispositionCount{Disposition: d, Count: count})
 	}
 	ev := &ArtifactEvidence{
 		Observations:     obs,
-		Examined:         []Examined{},
-		Dispositions:     []DispositionCount{},
+		Examined:         examined,
+		Dispositions:     dispositions,
 		Conflicts:        []AttemptConflict{},
 		Ambiguous:        []AmbiguousAttempt{},
 		LostAttempts:     []AttemptID{},

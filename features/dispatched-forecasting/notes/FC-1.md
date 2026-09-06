@@ -258,3 +258,78 @@ follow-up is known. The historical real corpus report remains diagnostic
 PARTIAL at 44/303 recovered; it was not rescanned and is not a post-fix count,
 data-sufficiency claim, or completed holdout evaluation. FC-1 remains Blocked
 pending the parent exact-head gate, independent verifier, and full panel.
+
+## Second-panel corrective body
+
+The five High findings from the panel on `42c80ae` are corrected together at
+the schema-4 reconciliation and eligibility boundary. Recovered and duplicate
+audit envelopes now carry a complete run/key/start identity equal to their UTC
+`AttemptID`; every citation occurrence has a disposition, and every same-ref
+envelope remains indexed. A YAML terminal is supported when at least one
+corresponding envelope has known `CompletedAt` equal to `TerminalAt`; compatible
+duplicates with unknown completion remain legal and cannot overwrite that
+support. The earlier recovered-reading, terminal, completion, and unfinished
+cutoff checks remain in force, with equality allowed and AfterCutoff diagnostics
+still excluded from sampling rather than rejected.
+
+Recovered YAML citations now resolve structurally to the selected live/history
+source, exact declared repository, source kind and declared root. Journal
+citations resolve to the selected journals source, the direct-child
+`run/journal.jsonl` layout and producer `0.1.0`. Stored paths are checked as
+portable relative paths without filesystem access; legal spaces remain valid,
+and a history reading may cite an ancestor rather than a captured tip. This is
+source-namespace and carried-evidence integrity validation, not cryptographic
+authentication, raw-event recomputation, source reopening, or a new corpus
+completeness definition.
+
+FC-1-private comparators retain `ReadingRef` as the primary order and then order
+all reconciliation-relevant reading content. Portable `Examined` ties are
+ordered by identity, optional completion, attempt, disposition and reason.
+Compatible identical references remain distinct evidence with deterministic
+Recovered/DuplicateReading assignments. Eligibility also refuses known
+non-finite or negative cost, known negative token totals, and negative
+correction, cascade, review or verification counts through the existing invalid
+payload sentinels. Unknown optional quantities, known zero, and valid positive
+measurements remain eligible without inventing citation/count equalities.
+
+The CLI now validates a nonpositive timeout before enabling RunE usage
+suppression. Unknown or parse-invalid flags and invalid timeouts therefore keep
+usage output, while missing `--tasks` and source/coverage data refusals retain
+the established silent behavior.
+
+### Second-body-panel final dispositions
+
+These IDs are from the second panel only and are separate from the first-panel
+table above.
+
+| Finding ID | Final disposition |
+|---|---|
+| `Claude-1` | **Corrected.** Known cost is finite/nonnegative, known token totals are nonnegative, and all four recorded attempt counts are nonnegative; unknown optionals remain allowed. |
+| `Claude-2` | **Corrected.** Recovered YAML and journal citations bind to selected source kind, exact repository where represented, portable declared paths, and supported producer without I/O. |
+| `Claude-3` | **Accepted boundary, not implemented.** The private legacy projection remains all-or-nothing; validated Build input cannot send malformed walls to it, and defensive failure leaves the artifact PARTIAL and ineligible. |
+| `Claude-4` | **Corrected.** Every recovered/duplicate envelope identity binds to its UTC attempt and holdout selection; all same-ref envelopes are indexed for exact YAML completion support. |
+| `Claude-5` | **Corrected.** Missing-task errors still name `--tasks` without usage; flag/timeout misuse retains usage and data errors remain silent. |
+| `Codex-1` | **Corrected.** Complete audit identity and known matching YAML-terminal completion proof are required without treating unknown compatible duplicates as conflicts. |
+| `Codex-2` | **Corrected.** Selected source namespace, repository, root, revision kind, journal layout, and producer are structurally bound; history ancestors remain valid. |
+| `Codex-3` | **Corrected.** Matched same-ref readings and every portable Examined tie field now have a semantic total canonical order independent of caller permutation. |
+| `Grok-1` | **Deferred as ruled.** Direct malformed normalized `AttemptSet` salvage is not added; `JoinEvidence` remains fail-closed while Build retains reducer-produced usable attempts and aggregate diagnostics. |
+| `Grok-2` | **Deferred as ruled.** A bounded target snapshot/read contract remains FC-PREDICT-SCAFFOLD/FC-4 work; no target cap or new CLI surface was added here. |
+| `Grok-3` | **Corrected.** Nonpositive timeout is rejected before RunE suppresses usage; the existing unknown-flag and data-error behaviors are preserved. |
+
+### Second-panel corrective verification
+
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go test ./cmd/forecast -run '^TestFCReferenceCLIContract$' -count=1` — pass.
+- `go test ./internal/dispatched -count=1` — pass.
+- `go test ./cmd/forecast -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+
+No ruled second-panel body deviation is known. The accepted/deferred projection,
+direct-set salvage and bounded-target items above are explicit future boundaries,
+not hidden acceptance. The historical real corpus report remains diagnostic
+PARTIAL at 44/303 recovered; it was not rescanned, is not a post-fix count or a
+data-sufficiency claim, and is not a completed holdout evaluation. FC-1 remains
+Blocked pending the parent exact-head gate, independent verifier and full panel;
+this body does not mark runtime work Done.

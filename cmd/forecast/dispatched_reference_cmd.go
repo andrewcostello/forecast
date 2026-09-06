@@ -27,9 +27,6 @@ func newDispatchedReferenceBuildCmd() *cobra.Command {
 			"with n=0, never filled with a default or a pooled distribution.\n\n" +
 			"git must be on PATH and --features-repo must name a git repository.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// Cobra otherwise prints command syntax for source/coverage data
-			// failures, obscuring the diagnostic report the command just wrote.
-			cmd.SilenceUsage = true
 			runsDir, _ := cmd.Flags().GetString("runs-dir")
 			out, _ := cmd.Flags().GetString("out")
 			featuresRepo, _ := cmd.Flags().GetStringSlice("features-repo")
@@ -41,6 +38,10 @@ func newDispatchedReferenceBuildCmd() *cobra.Command {
 			if timeout <= 0 {
 				return fmt.Errorf("--timeout must be positive")
 			}
+			// Cobra otherwise prints command syntax for source/coverage data
+			// failures, obscuring the diagnostic report the command just wrote.
+			// Flag-shape and timeout errors above retain usage.
+			cmd.SilenceUsage = true
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 			failOnEmpty, _ := cmd.Flags().GetBool("fail-on-empty-required")

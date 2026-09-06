@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -296,8 +298,28 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 		add("structured evidence has a negative starts-after-cutoff count")
 	}
 
+	selectedSources := make(map[string]SourceReport, len(manifest.Sources))
+	for _, source := range manifest.Sources {
+		selectedSources[source.ID] = source
+	}
+	holdouts := make(map[string]bool, len(manifest.HoldoutRunIDs))
+	for _, runID := range manifest.HoldoutRunIDs {
+		holdouts[runID] = true
+	}
+
+	type auditKey struct {
+		Attempt AttemptID
+		Reading ReadingRef
+	}
+	canonicalAuditKey := func(id AttemptID, ref ReadingRef) auditKey {
+		id = canonicalAttemptID(id)
+		ref.RecordedAt = canonicalTime(ref.RecordedAt)
+		return auditKey{Attempt: id, Reading: ref}
+	}
 	seenAttempts := make(map[AttemptID]bool, len(evidence.Observations)+len(evidence.LostAttempts))
 	recoveredReadings := make(map[AttemptID]map[ReadingRef]bool, len(evidence.Observations))
+	expectedAudit := make(map[auditKey]int)
+	auditEnvelopes := make(map[auditKey][]Examined)
 	recoveredExamined := make(map[AttemptID]int, len(evidence.Observations))
 	rows := make(map[runTask]bool)
 	yamlOnly := 0
@@ -310,9 +332,11 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 		rows[runTask{RunID: id.RunID, Key: id.Key}] = true
 		recoveredReadings[id] = make(map[ReadingRef]bool, len(recovered.Readings))
 		for _, ref := range recovered.Readings {
+			ref.RecordedAt = canonicalTime(ref.RecordedAt)
 			recoveredReadings[id][ref] = true
+			expectedAudit[canonicalAuditKey(id, ref)]++
 		}
-		if err := validateRecoveredEvidence(recovered, manifest); err != nil {
+		if err := validateRecoveredEvidence(recovered, manifest, selectedSources); err != nil {
 			add("structured observation %d is invalid: %v", i, err)
 		}
 		if recovered.Attempt.Evidence.Terminal.Source == EvidenceYAML {
@@ -346,13 +370,23 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 		}
 		actualDispositions[examined.Disposition]++
 		if examined.Disposition == DispositionRecovered || examined.Disposition == DispositionDuplicateReading {
+			id := canonicalAttemptID(examined.Attempt)
+			identityID, identityOK := artifactReadingAttemptID(examined.Identity)
+			if !identityOK || identityID != id {
+				add("examined recovered reading %d identity does not agree with its attempt", i)
+			} else if holdouts[identityID.RunID] {
+				add("examined recovered reading %d claims a held-out identity", i)
+			}
 			if examined.CompletedAt.Known && (examined.CompletedAt.Value.IsZero() || examined.CompletedAt.Value.After(manifest.Cutoff)) {
 				add("examined recovered reading %d has completion proof after the extraction cutoff", i)
 			}
-			id := canonicalAttemptID(examined.Attempt)
+			examined.Reading.RecordedAt = canonicalTime(examined.Reading.RecordedAt)
 			refs, ok := recoveredReadings[id]
 			if !ok || !refs[examined.Reading] {
 				add("examined recovered reading %d does not belong to its structured observation", i)
+			} else {
+				key := canonicalAuditKey(id, examined.Reading)
+				auditEnvelopes[key] = append(auditEnvelopes[key], examined)
 			}
 			if examined.Disposition == DispositionRecovered {
 				recoveredExamined[id]++
@@ -389,6 +423,28 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 			add("structured observation %s/%s has %d recovered audit envelopes; want one", id.RunID, id.Key, recoveredExamined[id])
 		}
 	}
+	for key, want := range expectedAudit {
+		if got := len(auditEnvelopes[key]); got != want {
+			add("structured observation %s/%s reading has %d audit envelopes; want %d", key.Attempt.RunID, key.Attempt.Key, got, want)
+		}
+	}
+	for i, recovered := range evidence.Observations {
+		attempt := canonicalAttempt(recovered.Attempt)
+		if attempt.Evidence.Terminal.Source != EvidenceYAML {
+			continue
+		}
+		key := canonicalAuditKey(attempt.ID, attempt.Evidence.Terminal.Reading)
+		matched := false
+		for _, examined := range auditEnvelopes[key] {
+			if examined.CompletedAt.Known && examined.CompletedAt.Value.Equal(attempt.TerminalAt) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			add("structured observation %d YAML terminal lacks matching known completion audit", i)
+		}
+	}
 
 	if manifest.State == SourceComplete {
 		if len(evidence.Conflicts) != 0 || actualDispositions[DispositionConflictingEvidence] != 0 {
@@ -404,14 +460,17 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 	return canonicalStrings(reasons)
 }
 
-func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManifest) error {
-	attempt := recovered.Attempt
+func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManifest, selectedSources map[string]SourceReport) error {
+	attempt := canonicalAttempt(recovered.Attempt)
 	if attempt.ID.RunID == "" || attempt.ID.Key == "" || attempt.ID.StartedAt.IsZero() {
 		return fmt.Errorf("attempt identity is incomplete")
 	}
-	if !validArtifactJournalIdentity(attempt.Start.Journal) || attempt.Start.Journal.RunID != attempt.ID.RunID || attempt.Start.Type != EventTaskStarted ||
+	if !validArtifactJournalIdentity(attempt.Start.Journal, selectedSources) || attempt.Start.Journal.RunID != attempt.ID.RunID || attempt.Start.Type != EventTaskStarted ||
 		!attempt.Start.At.Equal(attempt.ID.StartedAt) {
 		return fmt.Errorf("start citation disagrees with attempt identity")
+	}
+	if !validArtifactAttemptJournals(attempt, selectedSources) {
+		return fmt.Errorf("attempt contains a journal citation outside its selected run source")
 	}
 	if attempt.Evidence.Start.Source != EvidenceJournal || attempt.Evidence.Start.Event != attempt.Start {
 		return fmt.Errorf("required start provenance is missing or inconsistent")
@@ -421,6 +480,15 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	}
 	if !attempt.Outcome.Valid() || attempt.Elapsed < 0 {
 		return fmt.Errorf("attempt outcome or elapsed value is invalid")
+	}
+	if attempt.CostUSD.Known && (attempt.CostUSD.Value < 0 || math.IsNaN(attempt.CostUSD.Value) || math.IsInf(attempt.CostUSD.Value, 0)) {
+		return fmt.Errorf("%w: known attempt cost is not finite and nonnegative", ErrNegativeValue)
+	}
+	if (attempt.InputTokens.Known && attempt.InputTokens.Value < 0) || (attempt.OutputTokens.Known && attempt.OutputTokens.Value < 0) {
+		return fmt.Errorf("%w: known attempt token total is negative", ErrNegativeValue)
+	}
+	if attempt.Corrections < 0 || attempt.Cascades < 0 || attempt.Reviews < 0 || attempt.Verifications < 0 {
+		return fmt.Errorf("%w: attempt contains a negative recorded count", ErrNegativeValue)
 	}
 	if attempt.Outcome.terminal() && attempt.TerminalAt.After(manifest.Cutoff) {
 		return fmt.Errorf("terminal attempt ends after the extraction cutoff")
@@ -440,7 +508,8 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	}
 	refs := make(map[ReadingRef]bool, len(recovered.Readings))
 	for _, ref := range recovered.Readings {
-		if !validRecoveredReadingRef(ref, manifest.Cutoff) {
+		ref.RecordedAt = canonicalTime(ref.RecordedAt)
+		if !validRecoveredReadingRef(ref, manifest.Cutoff, selectedSources) {
 			return fmt.Errorf("recovered reading citation is malformed")
 		}
 		refs[ref] = true
@@ -487,11 +556,41 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	return nil
 }
 
-func validRecoveredReadingRef(ref ReadingRef, cutoff time.Time) bool {
-	return ref.Row > 0 && ref.SourceID != "" && ref.SourceID == strings.TrimSpace(ref.SourceID) &&
-		ref.Repository != "" && ref.Repository == strings.TrimSpace(ref.Repository) &&
-		ref.Path != "" && ref.Path == strings.TrimSpace(ref.Path) && !ref.RecordedAt.IsZero() && !ref.RecordedAt.After(cutoff) &&
-		ValidateReadingRevision(ref.Revision) == nil
+func artifactReadingAttemptID(identity ReadingIdentity) (AttemptID, bool) {
+	if !identity.RunID.Known || !identity.Key.Known || !identity.StartedAt.Known ||
+		strings.TrimSpace(identity.RunID.Value) == "" || identity.RunID.Value != strings.TrimSpace(identity.RunID.Value) ||
+		strings.TrimSpace(identity.Key.Value) == "" || identity.Key.Value != strings.TrimSpace(identity.Key.Value) ||
+		identity.StartedAt.Value.IsZero() {
+		return AttemptID{}, false
+	}
+	return NewAttemptID(identity.RunID.Value, identity.Key.Value, identity.StartedAt.Value), true
+}
+
+func validRecoveredReadingRef(ref ReadingRef, cutoff time.Time, selectedSources map[string]SourceReport) bool {
+	source, ok := selectedSources[ref.SourceID]
+	if !ok || ref.Row <= 0 || ref.Repository != source.Repository ||
+		ref.Path == "" || !portableRelativePath(ref.Path) ||
+		ref.RecordedAt.IsZero() || ref.RecordedAt.After(cutoff) || ValidateReadingRevision(ref.Revision) != nil {
+		return false
+	}
+	switch source.Kind {
+	case SourceKindLiveYAML:
+		if ref.Revision != "live" {
+			return false
+		}
+	case SourceKindGitHistory:
+		if !strings.HasPrefix(ref.Revision, "git:") {
+			return false
+		}
+	default:
+		return false
+	}
+	for _, root := range source.Roots {
+		if portablePathWithin(ref.Path, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func validAttemptJournalEvidence(evidence FieldEvidence, attempt Attempt, eventType string) bool {
@@ -500,11 +599,80 @@ func validAttemptJournalEvidence(evidence FieldEvidence, attempt Attempt, eventT
 		!evidence.Event.At.Before(attempt.ID.StartedAt) && !evidence.Event.At.After(attempt.Cutoff)
 }
 
-func validArtifactJournalIdentity(journal JournalIdentity) bool {
-	return journal.RunID != "" && journal.RunID == strings.TrimSpace(journal.RunID) &&
-		journal.SourceID != "" && journal.SourceID == strings.TrimSpace(journal.SourceID) &&
-		journal.Path != "" && journal.Path == strings.TrimSpace(journal.Path) &&
-		journal.Producer != "" && journal.Producer == strings.TrimSpace(journal.Producer)
+func validArtifactJournalIdentity(journal JournalIdentity, selectedSources map[string]SourceReport) bool {
+	source, ok := selectedSources[journal.SourceID]
+	return ok && source.Kind == SourceKindJournals &&
+		journal.RunID != "" && journal.RunID == strings.TrimSpace(journal.RunID) &&
+		journal.Producer == ProducerDispatcherV0_1_0 && portableRelativePath(journal.Path) &&
+		journal.Path == path.Join(journal.RunID, "journal.jsonl")
+}
+
+func validArtifactAttemptJournals(attempt Attempt, selectedSources map[string]SourceReport) bool {
+	valid := func(ref EventRef) bool {
+		if ref == (EventRef{}) {
+			return true
+		}
+		return ref.Journal == attempt.Start.Journal && validArtifactJournalIdentity(ref.Journal, selectedSources)
+	}
+	for _, ref := range []EventRef{
+		attempt.Start,
+		attempt.Evidence.Role.Event,
+		attempt.Evidence.Model.Event,
+		attempt.Evidence.Start.Event,
+		attempt.Evidence.Terminal.Event,
+		attempt.Evidence.Elapsed.Event,
+		attempt.Evidence.Wall.Event,
+		attempt.Evidence.Corrections.Event,
+		attempt.Evidence.Cascades.Event,
+		attempt.Evidence.Reviews.Event,
+		attempt.Evidence.Verifications.Event,
+		attempt.Evidence.InputTokens.Event,
+		attempt.Evidence.OutputTokens.Event,
+		attempt.Evidence.Cost.Event,
+	} {
+		if !valid(ref) {
+			return false
+		}
+	}
+	lists := [][]EventRef{
+		attempt.CascadeEvents,
+		attempt.CorrectionEvents,
+		attempt.ReviewEvents,
+		attempt.VerificationEvents,
+		attempt.CostEvents,
+		attempt.InputTokenEvents,
+		attempt.OutputTokenEvents,
+	}
+	for _, interval := range attempt.Wall.Intervals {
+		lists = append(lists, interval.Evidence)
+	}
+	for _, refs := range lists {
+		for _, ref := range refs {
+			if !valid(ref) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func portableRelativePath(value string) bool {
+	return value != "" && !path.IsAbs(value) && !strings.Contains(value, `\`) &&
+		path.Clean(value) == value && value != "." && value != ".." && !strings.HasPrefix(value, "../")
+}
+
+func portablePathWithin(value, root string) bool {
+	if !portableRelativePath(value) {
+		return false
+	}
+	cleanRoot := path.Clean(root)
+	if cleanRoot == "." {
+		return true
+	}
+	if !portableRelativePath(cleanRoot) {
+		return false
+	}
+	return value == cleanRoot || strings.HasPrefix(value, cleanRoot+"/")
 }
 
 // ReferenceObservation is one stored row as the artifact serialises it.

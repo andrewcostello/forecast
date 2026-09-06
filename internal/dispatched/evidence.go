@@ -449,12 +449,11 @@ func validateJoinedAttempt(attempt Attempt, journal JournalIdentity, selection S
 
 func canonicalReading(reading Reading) Reading {
 	reading.Ref.RecordedAt = canonicalTime(reading.Ref.RecordedAt)
-	if reading.Identity.StartedAt.Known {
-		reading.Identity.StartedAt.Value = canonicalTime(reading.Identity.StartedAt.Value)
-	}
-	if reading.CompletedAt.Known {
-		reading.CompletedAt.Value = canonicalTime(reading.CompletedAt.Value)
-	}
+	// Measured values are serialized even when Known is false. Normalize their
+	// time representation as part of the private portable ordering while
+	// preserving the caller's envelope and its availability bit.
+	reading.Identity.StartedAt.Value = canonicalTime(reading.Identity.StartedAt.Value)
+	reading.CompletedAt.Value = canonicalTime(reading.CompletedAt.Value)
 	return reading
 }
 
@@ -522,8 +521,32 @@ func readingLess(a, b Reading) bool {
 	if readingRefLess(b.Ref, a.Ref) {
 		return false
 	}
+	if readingIdentityLess(a.Identity, b.Identity) {
+		return true
+	}
+	if readingIdentityLess(b.Identity, a.Identity) {
+		return false
+	}
+	if measuredTimeLess(a.CompletedAt, b.CompletedAt) {
+		return true
+	}
+	if measuredTimeLess(b.CompletedAt, a.CompletedAt) {
+		return false
+	}
 	if a.Kind != b.Kind {
 		return a.Kind < b.Kind
+	}
+	if a.Excluded != b.Excluded {
+		return a.Excluded < b.Excluded
+	}
+	if a.Present.Key != b.Present.Key {
+		return !a.Present.Key
+	}
+	if a.Present.RunID != b.Present.RunID {
+		return !a.Present.RunID
+	}
+	if a.Present.StartedAt != b.Present.StartedAt {
+		return !a.Present.StartedAt
 	}
 	if a.Snapshot.Role != b.Snapshot.Role {
 		return a.Snapshot.Role < b.Snapshot.Role
@@ -534,12 +557,21 @@ func readingLess(a, b Reading) bool {
 	if a.Snapshot.Status != b.Snapshot.Status {
 		return a.Snapshot.Status < b.Snapshot.Status
 	}
-	return a.Snapshot.IterationCount < b.Snapshot.IterationCount
+	if a.Snapshot.IterationCount != b.Snapshot.IterationCount {
+		return a.Snapshot.IterationCount < b.Snapshot.IterationCount
+	}
+	if (a.Err == nil) != (b.Err == nil) {
+		return a.Err == nil
+	}
+	if a.Err != nil && a.Err.Error() != b.Err.Error() {
+		return a.Err.Error() < b.Err.Error()
+	}
+	return false
 }
 
 func reconcileAttempt(attempt Attempt, readings []Reading) (RecoveredAttempt, *AttemptConflict, error) {
 	canonical := append([]Reading{}, readings...)
-	sort.SliceStable(canonical, func(i, j int) bool { return readingRefLess(canonical[i].Ref, canonical[j].Ref) })
+	sort.SliceStable(canonical, func(i, j int) bool { return readingLess(canonical[i], canonical[j]) })
 	refs := make([]ReadingRef, 0, len(canonical))
 	var role Role
 	var roleEvidence FieldEvidence
@@ -621,10 +653,62 @@ func examinedLess(a, b Examined) bool {
 	if readingRefLess(b.Reading, a.Reading) {
 		return false
 	}
+	if readingIdentityLess(a.Identity, b.Identity) {
+		return true
+	}
+	if readingIdentityLess(b.Identity, a.Identity) {
+		return false
+	}
+	if measuredTimeLess(a.CompletedAt, b.CompletedAt) {
+		return true
+	}
+	if measuredTimeLess(b.CompletedAt, a.CompletedAt) {
+		return false
+	}
+	if attemptIDLess(a.Attempt, b.Attempt) {
+		return true
+	}
+	if attemptIDLess(b.Attempt, a.Attempt) {
+		return false
+	}
 	if a.Disposition != b.Disposition {
 		return a.Disposition < b.Disposition
 	}
-	return attemptIDLess(a.Attempt, b.Attempt)
+	return a.Reason < b.Reason
+}
+
+func readingIdentityLess(a, b ReadingIdentity) bool {
+	if measuredStringLess(a.RunID, b.RunID) {
+		return true
+	}
+	if measuredStringLess(b.RunID, a.RunID) {
+		return false
+	}
+	if measuredStringLess(a.Key, b.Key) {
+		return true
+	}
+	if measuredStringLess(b.Key, a.Key) {
+		return false
+	}
+	return measuredTimeLess(a.StartedAt, b.StartedAt)
+}
+
+func measuredStringLess(a, b Measured[string]) bool {
+	if a.Known != b.Known {
+		return !a.Known
+	}
+	return a.Value < b.Value
+}
+
+func measuredTimeLess(a, b Measured[time.Time]) bool {
+	if a.Known != b.Known {
+		return !a.Known
+	}
+	aTime, bTime := canonicalTime(a.Value), canonicalTime(b.Value)
+	if !aTime.Equal(bTime) {
+		return aTime.Before(bTime)
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

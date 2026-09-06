@@ -1,8 +1,8 @@
 // Package schedulea is scheduler arm A of the F5 differential pair.
 //
 // FC-2A implements this file, and only this file, from the frozen contract
-// in internal/dispatched/scheduler.go, scheduler_errors.go and
-// features/dispatched-forecasting/notes/FC-SCHED-SCAFFOLD.md. It must not
+// in features/dispatched-forecasting/notes/FC-SCHED-SCAFFOLD.md;
+// scheduler.go and scheduler_errors.go define the shared shapes and registry. It must not
 // read, import or reason from internal/dispatched/scheduleb, its tests,
 // traces or notes. The arms share the dispatched types and sentinels and
 // nothing else: no validation helper, no normalization helper, no
@@ -29,7 +29,7 @@ func (Scheduler) Schedule(g dispatched.Graph, maxParallel int) (dispatched.Sched
 
 // Schedule validates g and maxParallel in the precedence frozen by
 // dispatched.SchedulerSentinels, then runs the list-scheduling process
-// documented on dispatched.Scheduler and returns the complete schedule:
+// defined in the authoritative handoff and returns the complete schedule:
 // makespan, per-node trace, dependency path and execution chain.
 //
 // Scaffold hole: FC-2A replaces this body. The parameters are named even

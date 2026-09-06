@@ -1432,7 +1432,13 @@ func testF3JournalSymlinkChild(t *testing.T) {
 	if journal.State != SourcePartial {
 		t.Fatalf("journal symlink child state = %q, want PARTIAL; err=%v", journal.State, err)
 	}
-	if !reasonNamesEntry(journal, err, "latest") {
+	if err != nil {
+		t.Fatalf("symlink omission must retain the real sibling as a PARTIAL disposition, not a hard error: %v", err)
+	}
+	if journal.Counts.Journals != 1 || readings == nil || len(readings.Journals) != 1 || readings.Journals[0].Journal.RunID != "run-real" {
+		t.Fatalf("symlink omission dropped the real sibling: report=%+v readings=%+v", journal, readings)
+	}
+	if !reasonNamesEntry(journal, nil, "latest") {
 		t.Fatalf("PARTIAL journal reasons do not name omitted symlink entry latest: reasons=%v err=%v", journal.Reasons, err)
 	}
 	if readings != nil {
@@ -1511,9 +1517,10 @@ func testF3GitCloseSelfCancel(t *testing.T) {
 	state := t.TempDir()
 	marker := filepath.Join(state, "holding-stderr")
 	release := filepath.Join(state, "release")
+	finished := filepath.Join(state, "fixture-finished")
 	installFixtureGitWrapper(t, fmt.Sprintf(
-		"trap '' HUP\n( : > %s\n  while [ ! -e %s ]; do sleep 1; done\n) </dev/null >&2 &\nwhile [ ! -e %s ]; do sleep 1; done\nprintf 'OK'",
-		shellQuote(marker), shellQuote(release), shellQuote(marker),
+		"trap '' HUP\n( : > %s\n  attempts=0\n  while [ -d %s ] && [ ! -e %s ] && [ \"$attempts\" -lt 1000 ]; do sleep 0.01; attempts=$((attempts+1)); done\n  exec 1>&- 2>&-\n  : > %s\n) </dev/null >&2 &\nattempts=0\nwhile [ ! -e %s ] && [ \"$attempts\" -lt 1000 ]; do sleep 0.01; attempts=$((attempts+1)); done\nprintf 'OK'",
+		shellQuote(marker), shellQuote(state), shellQuote(release), shellQuote(finished), shellQuote(marker),
 	))
 	budget, err := newSourceBudget(ReadBounds{MaxProcesses: 1, MaxTotalBytes: 1024})
 	if err != nil {
@@ -1525,6 +1532,12 @@ func testF3GitCloseSelfCancel(t *testing.T) {
 	var reader io.ReadCloser
 	t.Cleanup(func() {
 		releaseFixturePath(t, release)
+		// Wait for the fixture to acknowledge leaving its finite loop and
+		// closing inherited pipes before TempDir cleanup can remove release.
+		// This proves fixture cleanup, not that Close kills arbitrary descendants.
+		if _, err := os.Stat(marker); err == nil && !fixturePathAppears(finished, fixtureHarnessWait) {
+			t.Error("inherited-pipe fixture did not acknowledge bounded cleanup")
+		}
 		cancel()
 		if pending {
 			if completed, ok := waitFixtureGit(call, fixtureHarnessWait); ok {
@@ -1550,6 +1563,9 @@ func testF3GitCloseSelfCancel(t *testing.T) {
 		t.Fatal("controlled child never held the inherited stderr pipe")
 	}
 	waitSourceGitProcessDone(t, reader)
+	if _, err := os.Stat(finished); err == nil {
+		t.Fatal("inherited-pipe fixture exited before the Close assertion")
+	}
 	err = closeSourceReader(t, reader, "caller-close after successful exit")
 	reader = nil
 	if err != nil && errors.Is(err, ErrGitHistory) && (strings.Contains(err.Error(), "incomplete stderr") || errors.Is(err, ErrSourceCancelled)) {
@@ -1557,5 +1573,19 @@ func testF3GitCloseSelfCancel(t *testing.T) {
 	}
 	if err != nil {
 		t.Fatalf("Close after successful child exit = %v, want nil", err)
+	}
+}
+
+func testF3JournalMissingChild(t *testing.T) {
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-real", "synthetic-utc-offset.jsonl")
+	mustMkdirAllT(t, filepath.Join(runs, "run-pending"))
+	manifest, readings, err := readContractSources(t, []SourceSpec{journalSpec("j", runs)}, defaultSelection(), ReadBounds{})
+	if err != nil || manifest == nil || readings == nil {
+		t.Fatalf("ordinary run directory without a journal must be ignored: manifest=%+v readings=%+v err=%v", manifest, readings, err)
+	}
+	journal := panelSourceByID(t, manifest, "j")
+	if journal.State != SourceComplete || journal.Counts.Journals != 1 || len(readings.Journals) != 1 || readings.Journals[0].Journal.RunID != "run-real" {
+		t.Fatalf("missing journal lost or degraded its valid sibling: report=%+v readings=%+v", journal, readings)
 	}
 }

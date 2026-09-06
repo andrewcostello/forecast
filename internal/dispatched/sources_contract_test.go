@@ -171,6 +171,7 @@ func TestFCSourcesContract(t *testing.T) {
 	t.Run("F3-GIT-GRAFT-INSPECT-ERROR", testF3GitGraftInspectError)
 	t.Run("F3-HEAD-SYMBOLIC-INVALID", testF3HeadSymbolicInvalid)
 	t.Run("F3-JOURNAL-SYMLINK-CHILD", testF3JournalSymlinkChild)
+	t.Run("F3-JOURNAL-MISSING-CHILD", testF3JournalMissingChild)
 	t.Run("F3-OPEN-SOURCE-SYMLINK-PARENT", testF3OpenSourceSymlinkParent)
 	t.Run("F3-GIT-CLOSE-SELF-CANCEL", testF3GitCloseSelfCancel)
 }

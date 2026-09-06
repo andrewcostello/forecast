@@ -520,3 +520,36 @@ The preceding FC-SCAFFOLD ruling preserves PARTIAL and adds valid-ref retention
 and non-corruption assertions. No body code changed; all other red cases and
 green controls remain. The symlink-parent red path now closes an unexpectedly
 returned reader so the deliberate failure does not leak its descriptor.
+
+## Operator fourth-panel seal follow-up
+
+Panel `2026-09-06T04-03-09Z-FC-SOURCES-corrected-panel`:
+
+- `codex-1` is contradicted by the exact source: the duplicate-run branch records
+  the error and falls through to ParseEvents and reader.Close; it does not return.
+- `codex-2` exposed a real fixture cleanup defect: release could be removed by
+  TempDir before the sleeper observed it. Confirmed orphan fixture processes were
+  stopped and recorded in that panel's orphan-fixture-cleanup.json. The fixture
+  now has finite polling loops, exits if its state directory disappears, closes
+  inherited pipes, and acknowledges cleanup before TempDir removal. The behavioral
+  Close assertion is unchanged; the acknowledgement proves fixture cleanup, not
+  that Close kills arbitrary non-child descendants. A pre-Close check prevents
+  the fixture's own time cap from silently making the behavioral assertion green.
+- `claude-2`: the symlink case now also requires nil error, one retained real-run
+  journal, and a naming reason in the report itself. No prior assertion is removed.
+- `claude-4`: processDone is an explicit structural synchronization dependency of
+  the two Git lifecycle seals; a future reader redesign must re-derive those
+  assertions. No public lifecycle hook exists and no broader proof is claimed.
+- `grok-1` is contradicted by local Go 1.26 os/dirent_linux.go, dir_unix.go and
+  file_unix.go: DT_UNKNOWN maps to the unknown sentinel, then newUnixDirent does
+  lstat and fills the actual mode before a DirEntry is returned. Type()==0 means
+  a regular file here; this production reader is os.Root.FS, not an injected FS.
+- `grok-2` is valid: x/sys/windows.NTStatus has Errno() but no Is/Unwrap mapping.
+  F3-JOURNAL-MISSING-CHILD freezes the existing cross-platform behavior: a pending
+  directory without journal.jsonl is ignored while its real sibling survives.
+  It is a green Linux control; Windows failure is established by code inspection,
+  not a claimed Windows runtime test. The body must translate NTStatus to the
+  standard OS errno identity so errors.Is(fs.ErrNotExist) works. No new public seam.
+
+Other nonblocking source findings remain for explicit body/adjudication
+assessment; these test changes do not authorize a silent contract change.

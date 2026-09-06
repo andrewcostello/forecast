@@ -164,6 +164,11 @@ func TestFCSourcesContract(t *testing.T) {
 	t.Run("F3-IDENTITY-STRUCTURE", testF3IdentityStructure)
 	t.Run("F3-MISSING-REVISION-TIME-INGEST", testF3MissingRevisionTimeIngest)
 	t.Run("F3-GIT-REQUEST-READONLY", testF3GitRequestReadonly)
+	t.Run("F3-DETACHED-HEAD-ALL-REFS", testF3DetachedHeadAllRefs)
+	t.Run("F3-GIT-BUFFERED-EXIT-READ", testF3GitBufferedExitRead)
+	t.Run("F3-BOUND-METADATA-FRAGMENT", testF3BoundMetadataFragment)
+	t.Run("F3-NONCOMMIT-REF-PEEL", testF3NoncommitRefPeel)
+	t.Run("F3-GIT-GRAFT-INSPECT-ERROR", testF3GitGraftInspectError)
 }
 
 func contractSourceTree(t *testing.T) (runs string, repo gitRepo) {

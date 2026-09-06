@@ -69,6 +69,15 @@ func panelSourceByID(t *testing.T, manifest *SourceManifest, id string) SourceRe
 	return SourceReport{}
 }
 
+func panelResolvedRef(refs []ResolvedRef, name string) (ResolvedRef, bool) {
+	for _, ref := range refs {
+		if ref.Name == name {
+			return ref, true
+		}
+	}
+	return ResolvedRef{}, false
+}
+
 func gitArgvHasCommitLimiter(argv string, n int) bool {
 	want := fmt.Sprintf("%d", n)
 	fields := strings.Fields(argv)
@@ -303,6 +312,12 @@ func testF3GitCloseErrors(t *testing.T) {
 // F3-BOUND-TOTAL-CONCURRENT: shared MaxTotalBytes is charged before collection
 // across concurrent streams. One overflow probe byte is counted as consumed
 // and is the only slack; retained payload stays at the inclusive cap.
+//
+// Readiness is established before reservation, so this frozen seam cannot
+// prove both readers have acquired allowance. The short pause only keeps
+// children from completing before release; it is not a serialization proof.
+// The demonstrated old-body failure (bytesRead=130 against cap 64) is
+// positive mutation evidence that check-then-charge over-allocates.
 func testF3BoundTotalConcurrent(t *testing.T) {
 	const capBytes int64 = 64
 	payload := strings.Repeat("a", int(capBytes)) + "Z"
@@ -368,9 +383,9 @@ func testF3BoundTotalConcurrent(t *testing.T) {
 	readB := startFixtureRead(notifyB)
 	waitClosedChan(t, notifyA.started, "concurrent reader A")
 	waitClosedChan(t, notifyB.started, "concurrent reader B")
-	// Both Reads have entered; children still withhold data, so both streams
-	// have taken allowance and are blocked in the physical read. That is the
-	// frozen-seam window where a check-then-charge budget over-allocates.
+	// Both Reads have entered waitSourceReadable. Because readiness is
+	// checked before reservation, that is not proof both streams hold
+	// allowance. Keep the pause so children stay blocked until release.
 	time.Sleep(100 * time.Millisecond)
 	if got, ok := waitFixtureRead(readA, 50*time.Millisecond); ok {
 		t.Fatalf("reader A completed before release: len=%d err=%v", len(got.data), got.err)
@@ -516,6 +531,30 @@ func testF3CompleteResolution(t *testing.T) {
 				m.Reasons = []string{"reduce: ErrReversedInterval: wall"}
 			},
 		},
+		{
+			name: "all-refs-double-dot-name",
+			mutate: func(m *SourceManifest) {
+				m.Sources[1].ResolvedRefs = []ResolvedRef{{Name: "refs/heads/a..b", Commit: sha}}
+			},
+		},
+		{
+			name: "all-refs-lock-suffix",
+			mutate: func(m *SourceManifest) {
+				m.Sources[1].ResolvedRefs = []ResolvedRef{{Name: "refs/heads/main.lock", Commit: sha}}
+			},
+		},
+		{
+			name: "all-refs-control-char",
+			mutate: func(m *SourceManifest) {
+				m.Sources[1].ResolvedRefs = []ResolvedRef{{Name: "refs/heads/main\x01", Commit: sha}}
+			},
+		},
+		{
+			name: "all-refs-outside-refs",
+			mutate: func(m *SourceManifest) {
+				m.Sources[1].ResolvedRefs = []ResolvedRef{{Name: "heads/main", Commit: sha}}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -527,6 +566,26 @@ func testF3CompleteResolution(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("all-refs-head-pseudoref-accepted", func(t *testing.T) {
+		m := validCompleteManifest()
+		m.Sources[1].ResolvedRefs = []ResolvedRef{
+			{Name: "HEAD", Commit: sha},
+			{Name: "refs/heads/main", Commit: sha2},
+		}
+		if err := m.ValidateComplete(); err != nil {
+			t.Fatalf("all-ref HEAD pseudoref rejected: %v", err)
+		}
+	})
+	t.Run("explicit-requested-head-accepted", func(t *testing.T) {
+		m := validCompleteManifest()
+		m.Sources[1].RequestedRef = "HEAD"
+		m.Sources[1].ResolvedRef = sha
+		m.Sources[1].ResolvedRefs = []ResolvedRef{{Name: "HEAD", Commit: sha}}
+		if err := m.ValidateComplete(); err != nil {
+			t.Fatalf("explicit requested HEAD rejected: %v", err)
+		}
+	})
 }
 
 func testF3EmptyHistoryConsistent(t *testing.T) {
@@ -557,6 +616,36 @@ func testF3EmptyHistoryConsistent(t *testing.T) {
 	if !errors.Is(validateErr, ErrSourceIncomplete) && manifest.State == SourceComplete {
 		t.Fatalf("COMPLETE empty history ValidateComplete = %v", validateErr)
 	}
+	if hist.State != SourcePartial {
+		t.Fatalf("empty all-refs history state = %q, want PARTIAL with a diagnostic", hist.State)
+	}
+	if len(hist.Reasons) == 0 {
+		t.Fatal("empty all-refs history missing diagnostic reason")
+	}
+	if hist.ResolvedRefs == nil {
+		t.Fatal("empty all-refs ResolvedRefs is nil, want canonical empty list")
+	}
+	if len(hist.ResolvedRefs) != 0 {
+		t.Fatalf("unborn history invented resolved refs: %+v", hist.ResolvedRefs)
+	}
+	if !errors.Is(validateErr, ErrSourceIncomplete) {
+		t.Fatalf("empty all-refs ValidateComplete = %v, want ErrSourceIncomplete", validateErr)
+	}
+	raw, marshalErr := json.Marshal(hist)
+	if marshalErr != nil {
+		t.Fatal(marshalErr)
+	}
+	var object map[string]json.RawMessage
+	if unmarshalErr := json.Unmarshal(raw, &object); unmarshalErr != nil {
+		t.Fatal(unmarshalErr)
+	}
+	if len(requireJSONPresentArray(t, object, "resolved_refs")) != 0 {
+		t.Fatalf("empty all-refs resolved_refs serialized nonempty: %s", raw)
+	}
+	if len(requireJSONPresentArray(t, object, "reasons")) == 0 {
+		t.Fatalf("empty all-refs reasons serialized empty: %s", raw)
+	}
+	requireJSONPresentArray(t, object, "roots")
 }
 
 func testF3BoundCommitsLimiter(t *testing.T) {
@@ -937,4 +1026,227 @@ func testF3GitRequestReadonly(t *testing.T) {
 	}
 	_, err = runSourceGit(context.Background(), t.TempDir(), budget, SourceGitRequest{Args: []string{"show", "--output=/tmp/evil", "-s"}})
 	requireSentinel(t, err, ErrInvalidSourceSpec)
+
+	t.Run("bounded-rev-list-without-topo", func(t *testing.T) {
+		for _, request := range []SourceGitRequest{
+			{Args: []string{"rev-list", "--max-count=4", "--format=%cI", "--all"}},
+			{Args: []string{"rev-list", "--max-count=4", "--format=%cI", sha}},
+			{Args: []string{"rev-list", "--parents", "--max-count=4", "--format=%cI", "--all"}},
+			{Args: []string{"rev-list", "--parents", "--max-count=4", "--format=%cI", sha}},
+		} {
+			if err := validateSourceGitRequest(request); err != nil {
+				t.Errorf("bounded rev-list form %v rejected: %v", request.Args, err)
+			}
+		}
+	})
+}
+
+func testF3DetachedHeadAllRefs(t *testing.T) {
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-root", "synthetic-utc-offset.jsonl")
+	repo := initGitRepo(t)
+	repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+	mainCommit := repo.commit("on-main", "features")
+	runGit(t, repo.path, "checkout", "-q", "--detach", "HEAD")
+	repo.writeTestdata("features/study/tasks.yaml", "yaml", "dispatcher-root.yaml")
+	detached := repo.commit("detached-only", "features")
+	if detached == "" || detached == mainCommit {
+		t.Fatalf("detached commit %q was not distinct from main %q", detached, mainCommit)
+	}
+	if head := strings.TrimSpace(gitOutput(t, repo.path, "rev-parse", "HEAD")); head != detached {
+		t.Fatalf("fixture HEAD = %q, want detached %s", head, detached)
+	}
+	if branch := strings.TrimSpace(gitOutput(t, repo.path, "rev-parse", "refs/heads/main")); branch != mainCommit {
+		t.Fatalf("fixture main = %q, want %s", branch, mainCommit)
+	}
+
+	manifest, readings, err := readContractSources(t, []SourceSpec{
+		journalSpec("j", runs),
+		historySpec("hist", repo.path, "", "features"),
+	}, defaultSelection(), ReadBounds{})
+	if manifest == nil {
+		t.Fatalf("nil manifest on detached HEAD history: %v", err)
+	}
+	hist := panelSourceByID(t, manifest, "hist")
+	headRef, haveHEAD := panelResolvedRef(hist.ResolvedRefs, "HEAD")
+	if !haveHEAD || headRef.Commit != detached {
+		t.Fatalf("HEAD captured commit missing: refs=%+v want %s", hist.ResolvedRefs, detached)
+	}
+	mainRef, haveMain := panelResolvedRef(hist.ResolvedRefs, "refs/heads/main")
+	if !haveMain || mainRef.Commit != mainCommit {
+		t.Fatalf("main tip missing from all-ref snapshot: refs=%+v want %s", hist.ResolvedRefs, mainCommit)
+	}
+
+	foundDetached := false
+	if readings != nil {
+		for _, reading := range readings.Readings {
+			if reading.Ref.Revision == "git:"+detached {
+				foundDetached = true
+				break
+			}
+		}
+	}
+	if !foundDetached {
+		if hist.State == SourceComplete {
+			t.Fatalf("COMPLETE all-ref history silently omitted a detached-HEAD commit; refs=%+v", hist.ResolvedRefs)
+		}
+		t.Fatalf("commit reachable only from detached HEAD was not enumerated; state=%s refs=%+v err=%v", hist.State, hist.ResolvedRefs, err)
+	}
+}
+
+func testF3GitBufferedExitRead(t *testing.T) {
+	payload := "BUFFERED-EXIT-PAYLOAD-" + strings.Repeat("b", 200)
+	state := t.TempDir()
+	marker := filepath.Join(state, "wrote")
+	installFixtureGitWrapper(t, fmt.Sprintf(
+		"printf '%%s' %s\n: > %s",
+		shellQuote(payload), shellQuote(marker),
+	))
+	budget, err := newSourceBudget(ReadBounds{MaxProcesses: 1, MaxTotalBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	call := startFixtureGit(ctx, t.TempDir(), budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
+	pending := true
+	var reader io.ReadCloser
+	t.Cleanup(func() {
+		cancel()
+		if pending {
+			if completed, ok := waitFixtureGit(call, fixtureHarnessWait); ok {
+				pending = false
+				reader = completed.reader
+			}
+		}
+		_ = closeSourceReader(t, reader, "buffered-exit git reader cleanup")
+	})
+	started, ok := waitFixtureGit(call, fixtureHarnessWait)
+	if !ok {
+		t.Fatal("runSourceGit did not return a reader within the harness bound")
+	}
+	pending = false
+	if started.err != nil {
+		t.Fatal(started.err)
+	}
+	reader = started.reader
+	if reader == nil {
+		t.Fatal("nil git reader")
+	}
+	if !fixturePathAppears(marker, fixtureHarnessWait) {
+		t.Fatal("controlled child never wrote its successful payload")
+	}
+	deadline := time.NewTimer(time.Second + 400*time.Millisecond)
+	<-deadline.C
+	deadline.Stop()
+	got, ok := waitFixtureRead(startFixtureRead(reader), fixtureHarnessWait)
+	if !ok {
+		t.Fatal("delayed read after successful child exit did not finish within the harness bound")
+	}
+	if string(got.data) != payload {
+		t.Fatalf("delayed read lost buffered git output after successful exit: got %q (%d bytes) err=%v, want full %d-byte payload", got.data, len(got.data), got.err, len(payload))
+	}
+	if got.err != nil && errors.Is(got.err, io.EOF) && len(got.data) < len(payload) {
+		t.Fatalf("forced pipe close became a clean truncated EOF: err=%v len=%d", got.err, len(got.data))
+	}
+	if err := closeSourceReader(t, reader, "buffered-exit git reader"); err != nil {
+		t.Errorf("close after delayed successful read = %v, want nil", err)
+	}
+	reader = nil
+}
+
+func testF3BoundMetadataFragment(t *testing.T) {
+	sha := strings.Repeat("ab", 20)
+	header := "commit " + sha + "\n"
+	timestamp := "2025-12-01T00:00:00Z\n"
+	payload := header + timestamp
+	cases := []struct {
+		name     string
+		maxTotal int64
+	}{
+		{name: "commit-header", maxTotal: 20},
+		{name: "committer-timestamp", maxTotal: int64(len(header) + 5)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			installFixtureGitWrapper(t, fmt.Sprintf("printf '%%s' %s", shellQuote(payload)))
+			budget, err := newSourceBudget(ReadBounds{
+				MaxCommits:    3,
+				MaxTotalBytes: tc.maxTotal,
+				MaxBlobBytes:  1024,
+				MaxProcesses:  1,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			_, _, readErr := readHistoryCommits(ctx, t.TempDir(), []string{sha}, budget, 3)
+			if !errors.Is(readErr, ErrBoundExceeded) {
+				t.Fatalf("metadata cap cutting %s = %v, want ErrBoundExceeded (not reclassified Git syntax)", tc.name, readErr)
+			}
+		})
+	}
+}
+
+func testF3NoncommitRefPeel(t *testing.T) {
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-root", "synthetic-utc-offset.jsonl")
+	repo := initGitRepo(t)
+	repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+	repo.commit("seed", "features")
+	blob := strings.TrimSpace(gitOutput(t, repo.path, "hash-object", "-w", "features/study/tasks.yaml"))
+	if !validObjectID(blob) {
+		t.Fatalf("hash-object blob id %q is not a full object ID", blob)
+	}
+	runGit(t, repo.path, "update-ref", "refs/odd/blob", blob)
+
+	logPath := filepath.Join(t.TempDir(), "git-argv.log")
+	installFixtureGitWrapper(t, fmt.Sprintf("printf '%%s\\n' \"$*\" >> %s\nexec \"$real_git\" \"$@\"", shellQuote(logPath)))
+	manifest, _, err := readContractSources(t, []SourceSpec{
+		journalSpec("j", runs),
+		historySpec("hist", repo.path, "", "features"),
+	}, defaultSelection(), ReadBounds{})
+	if manifest != nil && (manifest.State == SourceComplete || panelSourceByID(t, manifest, "hist").State == SourceComplete) {
+		t.Fatalf("noncommit ref produced COMPLETE: err=%v hist=%+v", err, panelSourceByID(t, manifest, "hist"))
+	}
+	raw, readErr := os.ReadFile(logPath)
+	if readErr != nil {
+		t.Fatalf("read git argv log: %v", readErr)
+	}
+	argv := string(raw)
+	if strings.Contains(argv, "refs/odd/blob^{commit}") {
+		t.Fatalf("noncommit fallback peeled mutable ref name, not captured object ID; argv log:\n%s", argv)
+	}
+	if !strings.Contains(argv, blob+"^{commit}") {
+		t.Fatalf("noncommit fallback never peeled captured object ID %s^{commit}; argv log:\n%s", blob, argv)
+	}
+}
+
+func testF3GitGraftInspectError(t *testing.T) {
+	runs, repo := contractSourceTree(t)
+	infoDir := filepath.Join(repo.path, ".git", "info")
+	mustMkdirAllT(t, infoDir)
+	grafts := filepath.Join(infoDir, "grafts")
+	_ = os.Remove(grafts)
+	if err := os.Symlink("grafts", grafts); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(grafts); err == nil || errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("graft symlink loop was inspectable as missing-or-present: %v", err)
+	}
+
+	manifest, _, err := readContractSources(t, []SourceSpec{
+		journalSpec("j", runs),
+		historySpec("hist", repo.path, "", "features"),
+	}, defaultSelection(), ReadBounds{})
+	if manifest == nil {
+		t.Fatalf("nil manifest on uninspectable grafts: %v", err)
+	}
+	hist := panelSourceByID(t, manifest, "hist")
+	if hist.State == SourceComplete || manifest.State == SourceComplete {
+		t.Fatalf("graft inspection error other than NotExist produced COMPLETE: hist=%+v err=%v", hist, err)
+	}
+	if validateErr := manifest.ValidateComplete(); !errors.Is(validateErr, ErrSourceIncomplete) {
+		t.Fatalf("uninspectable grafts ValidateComplete = %v, want ErrSourceIncomplete", validateErr)
+	}
 }

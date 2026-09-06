@@ -753,3 +753,77 @@ that does not waive these newly demonstrated gaps.
 
 All substantive changes follow independent seals then a separate pinned body
 correction. Preserve every previous assertion, historical review and cost record.
+
+## Operator F1/F4 third-panel ruling, 2026-09-06
+
+Applies to panel 2026-09-06T07-22-04Z-FC-1-corrected-panel on
+12a0e11ffcef34c9ada4d5949c472560b3c3e200. Claude/Codex request changes;
+Grok approves; consensus blocks with two High findings and no Critical.
+The verifier returned VERIFIED, the full gate and 356 offline cases passed,
+and statement coverage was 83.22%; none of that waives the demonstrated gaps.
+
+1. **Codex-1 / Grok-1, drive-qualified provenance:** confirmed by a parent
+   read-only eligibility overlay after all reviewers exited. A YAML citation
+   C:/outside/tasks.yaml under selected root '.' and a fully linked journal
+   RunID C: / Path C:/journal.jsonl both remain eligible. The artifact gate
+   must interpret its stored relative paths independently of the current host.
+   Explicitly reject ASCII-letter-plus-colon drive prefixes (upper/lowercase,
+   absolute C:/... and drive-relative C:...) in stored citation paths and
+   run-directory components, in addition to the existing slash-absolute,
+   backslash, traversal and dot/run nesting refusals. Apply the same portable
+   root interpretation before root matching. Do not use host filepath.IsAbs
+   or filesystem IO as the cross-platform proof. Preserve ordinary legal spaces
+   and ordinary relative paths. This is a narrow eligibility portability rule,
+   not a new Windows filename validator or a blanket ban on every colon in a
+   POSIX filename. The raw source reader can still retain native-platform
+   diagnostics; a drive-qualified spelling is not licensed as portable evidence
+   for prediction merely because the extraction host accepted that filename.
+   Do not change SourceSpec/ReadSources or public schemas in this correction.
+2. **Claude-1, total conflict ordering:** confirmed public JoinEvidence contract
+   gap. Multiple different conflict facts for one conflict-category identity
+   remain legal and retained. The Journal comparator is intentionally not a
+   complete order for that input shape. Add an FC-1-private total comparator
+   used at BOTH conflict-output sort sites, retaining attemptConflictLess as
+   the primary order and breaking its ties using every remaining serialized
+   field of the complete A/B citations, both typed values, Code and Reason.
+   Err is not serialized and need not order otherwise identical portable facts.
+   Do not edit journal.go, discard conflict facts, swap value/citation pairings,
+   or substitute stable sort for a complete comparator. Seal whole EvidenceJoin
+   JSON equality for two and three same-ID/same-A facts with different B sides,
+   plus tie cases differing on retained citation/Reason content. Assert facts
+   are all retained, one attempt remains one denominator entry, and input
+   slices/candidate bytes stay unchanged. Cover both ordinary and empty-reading
+   paths as relevant to the two existing sort sites.
+3. **Claude-2, future field enumeration:** recorded nonblocking maintenance
+   boundary. The current schema's event citations are enumerated and checked;
+   this finding concerns a hypothetical future field, not an unvalidated field
+   in today's schema. Do not share a production enumerator with independent
+   fixture construction or introduce reflection/schema changes here. A future
+   Attempt/AttemptEvidence field must amend its owning scaffold/seals and both
+   provenance enumerations. FC-OBS-ADJ must explicitly accept with this reason
+   or require separately scoped schema work.
+4. **Claude-3, carried role disclosure:** accepted structural-validation
+   boundary, to be disclosed in Artifact.Limits and FC-1 notes. Eligibility
+   validates internal consistency and citations of carried values; the source
+   snapshots/original event payloads are not retained and it cannot independently
+   prove that those original rows/events asserted the role or other carried
+   values. JoinEvidence derives the role from its input reading. Do not expand
+   Examined/schema, refetch originals, or claim cryptographic authenticity.
+5. **Claude-4, validator factoring:** nonblocking maintainability suggestion,
+   deferred. No behavior change or broad refactor is required to release this
+   task; retain the tested indices/invariants while fixing the concrete gaps.
+6. **Claude-5 / Grok-2, repeated command execution:** accepted with reason for
+   the shipped one-shot CLI. Reusing a Cobra singleton after RunE is not a
+   frozen embedding API promise; callers needing independent invocations use
+   fresh constructors. Resetting only inside RunE cannot repair a later parse
+   failure that never reaches RunE. Do not add an incomplete reset or invent
+   a repeated-Execute contract in this correction. FC-OBS-ADJ records this
+   limitation; existing fresh-command usage and data-refusal seals stay active.
+
+Independent seals precede a separate pinned body correction. No test/fixture
+weakening, known-red changes, native journal rewriting, new budget, or hidden
+implementation during adjudication. Preserve all historical summaries and
+review findings, including the first inconclusive parent drive probe caused
+by a temporary reviewer scratch test. Any subsequent review runs each seat in
+its own detached checkout of the same committed head, so scratch probes cannot
+contaminate another reviewer or the body's verified checkout.

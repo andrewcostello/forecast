@@ -21,22 +21,24 @@ unanimity.
 The parser High and named fractional-duration concern were independently
 disproved on the installed Go 1.26 toolchain. The fixtures therefore preserve
 `9223372036854775807ns`, `4611686018427387904ns`, and exact fractional values.
-Loading all 49 fixtures is an executable round-trip check in both contract
+Loading all 50 fixtures is an executable round-trip check in both contract
 groups. `ErrScheduleOverflowed` is intentionally an unknown near-miss in loader
 mutation coverage. Generated edge `(i,j)` with `i<j` means node `j` lists node
 `i` in `blocked_by`.
 
-The first-offending-node name remains diagnostic guidance, not an observable
-acceptance surface: no structured error carrier or message layout is frozen.
-The seals assert exact single-sentinel identity and record this limitation
-instead of inventing a public error type.
+The first offending node's key is an observable acceptance surface even though
+the surrounding error message is not frozen. Multi-offender checks use opaque,
+non-overlapping ASCII keys, require that the first key occur in the returned
+error string, and reject the later key; they do not prescribe quoting, prefixes,
+or layout.
 
 ## Files and fixture provenance
 
 - `internal/dispatched/scheduler_contract_test.go` is an external-package
-  harness. Each top-level group calls only its named arm. The shared runner
+  harness. Each top-level group calls only its named arm, through both the
+  package function and the zero-size `Scheduler` method. The shared runner
   supplies identical fixtures and generated inputs independently to A and B.
-- `internal/dispatched/testdata/scheduler/cases/*.json` contains 49 explicitly
+- `internal/dispatched/testdata/scheduler/cases/*.json` contains 50 explicitly
   synthetic hand fixtures. No recorded schedule exists and none is claimed;
   every file carries `"provenance":"synthetic"` and no credential or network
   input.
@@ -50,9 +52,12 @@ Success comparison is positional and covers exact `time.Duration` values,
 every trace key/start/finish/normalized dependency, makespan, dependency path,
 execution-chain key and edge. Nil and empty lists are canonical equivalents on
 success. Refusals require an exact zero `Schedule`, the named sentinel, none of
-the other six scheduler sentinels, and no `ErrNotImplemented` match. Every valid
-hand graph is also called twice concurrently with its original cap; results
-must be equal and the input graph must remain byte-for-byte equivalent.
+the other six scheduler sentinels, and no `ErrNotImplemented` match. Separate
+same-rule multi-offender graphs require duplicate, unknown-dependency, negative,
+cycle, and overflow errors to name the first offending node key. Every valid
+hand graph is also called twice concurrently with its original cap through both
+public forms; results must be equal and the input graph must remain byte-for-byte
+equivalent.
 
 ## Prior-attempt disposition and cascade corrections
 
@@ -60,10 +65,14 @@ KEEP AND FIX. The reviewed attempt's external-fixture/oracle/isolated-child
 shape matches F5, so discarding it would lose already validated coverage. This
 correction retains that shape and closes the panel's discriminating gaps:
 
-- F5-NANOSECOND-GRAIN now starts with `130841899126ns`; its complete expected
-  trace differs from the conventional float-seconds finish mutant by one or
-  more nanoseconds. The mutant is constructed and rejected by the executable
-  `panel-discriminator-mutations` subtest.
+- F5-NANOSECOND-GRAIN retains the authoritative `A=1m30s` input and exact
+  `91500000250ns` schedule. The additional F5-FLOAT-SECONDS-PRECISION synthetic
+  fixture carries the `130841899126ns` discriminator and rejects the executable
+  float-seconds finish mutant without replacing a named scaffold example.
+- Every hand fixture and all 84,073 generated cases exercise both the package
+  function and `Scheduler{}.Schedule`; multi-offender graphs also cover both
+  forms and observe the first declaration-order offender without freezing the
+  rest of the error text.
 - F5-NEGATIVE-CAP distinguishes `maxParallel < 1` from `maxParallel == 0`.
   F5-OVERFLOW-BOUNDARY accepts a total duration exactly equal to `MaxInt64` and
   distinguishes the required strict `>` guard from a `>=` guard.
@@ -73,15 +82,17 @@ correction retains that shape and closes the panel's discriminating gaps:
   prove cap overlap, zero work bypassing an occupied slot, a shorter join
   predecessor, and a later resource tie are rejected.
 - The large-cap subprocess emits an arm-specific success handshake only after
-  the scheduler and allocation checks return. The parent rejects exit-zero
-  skips, empty selections, unarmed runs, and wrong-arm handshakes; fixture I/O
-  is inside filtered subtests and is not performed by the child.
+  the scheduler and allocation checks return. Only the fully armed exact child
+  selector bypasses the parent probe; matching env+flag markers without that
+  selector fail loudly. The parent rejects exit-zero skips, empty selections,
+  unarmed runs, and wrong-arm handshakes; fixture I/O is inside filtered
+  subtests and is not performed by the child.
 
 F5-CAP-BINDS still records cap 1, independent A=2s/B=3s, makespan 5s, the full
 trace, dependency path `[B]`, and execution chain `[A start, B resource]`. The
-fixture-integrity subtest freezes the 49-file raw fingerprint
-`b1bd84363de02d37a0852995200def2ace87cc9f0aa00e11a04dbe5b6857cda6`, the
-26-success/23-refusal split, full schedule expectations, exact overflow strings,
+fixture-integrity subtest freezes the 50-file raw fingerprint
+`ed141c28c09d0f76dfc170d4e588259cf33e9c107197b665fd4966a99a7fb4f6`, the
+27-success/23-refusal split, full schedule expectations, exact overflow strings,
 and their parsed integer nanosecond values before either arm runs.
 
 ## Recorded cases and mutation ledger
@@ -90,7 +101,7 @@ Every success row below records trace intervals in declaration order followed
 by `makespan; dependency path; execution chain`. Every refusal records its exact
 sentinel. In addition to the semantic mutant named per row, the executable
 `fixture-expectation-mutations` probe changes every success makespan by one
-nanosecond and substitutes a wrong sentinel for every refusal; all 49 mutated
+nanosecond and substitutes a wrong sentinel for every refusal; all 50 mutated
 expectations are rejected. `comparison-mutations` separately proves trace
 position/time, normalized `BlockedBy`, dependency-path, execution-edge, and
 makespan changes are observed.
@@ -118,7 +129,8 @@ makespan changes are observed.
 | F5-RESOURCE-TIE-KEY-ORDER | `B/A 0..3, C 3..4; 4; [C]; [B start,C resource]` | Lexically choose A as C's resource predecessor. |
 | F5-BLOCKED-BY-KEY-ORDER | `B/A 0..1, C 1..2`, C dependencies `[B,A]`; `2; [B,C]; [B start,C dependency]` | Sort keys and return `[A,B]` / `[A,C]`. |
 | F5-MIXED-UNITS | `A 0..1.5s, B 1.5..3.5s; 3.5s; [B]; resource chain` | Quantize to whole seconds; exact times and makespan differ. |
-| F5-NANOSECOND-GRAIN | `A 0..130841899126ns, B ..130841899376ns, C ..132341899376ns; 132341899376ns; [B,C]; resource+dependency chain` | Compute finishes through float seconds; the executable mutant loses nanosecond precision and the full trace differs. |
+| F5-NANOSECOND-GRAIN | `A 0..90s, B 90s..90000000250ns, C ..91500000250ns; 91500000250ns; [B,C]; resource+dependency chain` | Convert through whole or floating seconds; the 250ns boundary differs. |
+| F5-FLOAT-SECONDS-PRECISION | `A 0..130841899126ns, B ..130841899376ns, C ..132341899376ns; 132341899376ns; [B,C]; resource+dependency chain` | Compute finishes through float seconds; the executable mutant loses nanosecond precision and the full trace differs. |
 | F5-EMPTY | exact zero schedule with nil/empty-equivalent lists | Return a nonempty trace/path or refuse the empty graph. |
 | F5-PADDED-KEYS-DISTINCT | `A 0..1, " A " 1..3; 3; [A," A "]; dependency chain` | Trim keys before identity/lookup and collapse the two nodes. |
 | F5-ZERO-WIDTH-NONBLANK | U+200B `0..0; 0; [U+200B]; [U+200B start]` | Treat U+200B as Unicode whitespace and return ErrBlankKey. |
@@ -181,8 +193,10 @@ Each arm group starts a bounded child instance of the current test binary on a
 one-node, one-nanosecond graph with `maxParallel=math.MaxInt`. An exact
 slash-qualified test selector, explicit child flag, and matching environment
 arm are all required before the child call can run; ambient environment values
-or broad selectors cannot arm it or recurse. The child has a 256 MiB Go memory
-limit, an 8 MiB per-call allocation/retained-heap ceiling, a
+or broad selectors cannot arm it or recurse. A fully armed child is the only
+case that bypasses parent dispatch; matching env+flag markers with any other
+selector fail the storage subtest instead of silently passing it. The child has
+a 256 MiB Go memory limit, an 8 MiB per-call allocation/retained-heap ceiling, a
 20-second child test timeout, and a 30-second parent context. The parent waits
 for cleanup and reports refusal, recovered panic, timeout/kill, excessive
 allocation, abnormal exit, or missing arm-specific handshake as failure. The
@@ -212,10 +226,11 @@ and demonstrated kills for zero-retire readiness; declaration-order last-node,
 resource, BlockedBy, and FILL choices; wrap-sum overflow; reverse edges; whole-
 second quantization; the positive-duration resource filter; precedence; duplicate
 dependencies; cap-sized storage; execution-order trace; and caller-slice
-mutation. Its original float mutant survived, which is why that fixture changed.
-The corrected float mutant plus the negative-cap equality and strict-overflow-
+mutation. Its original float mutant survived, so a separate precision fixture
+was added while the authoritative nanosecond-grain fixture was restored. The
+corrected float mutant plus the negative-cap equality and strict-overflow-
 boundary mutants are now executable harness subtests and pass only when the
-fixture rejects them. All 49 per-case expectation mutations also pass. Ledger
+fixture rejects them. All 50 per-case expectation mutations also pass. Ledger
 rows outside those named body-level mutations have assertion-level mutation
 evidence only; they were not executed against a complete scratch scheduler in
 this correction and are not claimed as such. Adjudication must rerun every
@@ -227,20 +242,26 @@ semantic body mutant once the owned arm implementations exist.
 - `go vet ./...`: PASS.
 - `go test ./internal/dispatched -race -count=1 -run
   '^TestFCSchedule(A|B)Contract$/^(fixture-corpus-integrity|fixture-loader|sentinel-registry|oracle-zero-drain|generated-corpus-shape|generated-oracle-domain|comparison-mutations|fixture-expectation-mutations|panel-discriminator-mutations)$'`:
-  PASS in 3.961s. Both independent groups loaded the exact 49-file fingerprint,
+  PASS in 3.912s. Both independent groups loaded the exact 50-file fingerprint,
   validated all 84,073 oracle cases, and rejected all per-case, full-schedule,
   integrity, and panel discriminator mutations without calling an arm.
 - `go test ./... -race -count=1 -skip '^TestFCSchedule(A|B)Contract$'`: PASS in
-  12.335s for `internal/dispatched`; all other module packages passed or had no
+  12.348s for `internal/dispatched`; all other module packages passed or had no
   tests. This also ran the standalone large-cap child-isolation regression.
 - `env -u DISPATCHER_KNOWN_RED_FILE go test ./internal/dispatched -race -count=1
-  -run '^TestFCSchedule(A|B)Contract$'`: expected RED in 2.976s. Both groups
-  failed only when they reached the arm stubs: all 49 hand fixtures received
-  `ErrNotImplemented`, the generated corpus stopped at its first arm call, and
-  each authenticated large-cap child reported the same stub refusal. All
-  pre-arm integrity and mutation subtests passed.
+  -run '^TestFCSchedule(A|B)Contract$'`: expected RED in 2.996s. Both groups
+  failed only when they reached the arm stubs: all 50 hand fixtures, the five
+  multi-offender cases, and the generated corpus exercised both public call
+  forms and received `ErrNotImplemented`; each authenticated large-cap child
+  reported the same stub refusal. All pre-arm integrity and mutation subtests
+  passed.
 - `go test ./internal/dispatched -race -count=1 -run
   '^TestFCSchedule(A|B)Contract$/^large-cap-storage$'`: expected RED in 0.030s;
   both isolated children ran and reported only their arm's `ErrNotImplemented`
   refusal.
+- `FC_SCHEDULE_LARGE_CAP_CHILD=A go test ./internal/dispatched -count=1 -run
+  '^TestFCScheduleAContract$/^large-cap-storage$'
+  -fc-schedule-large-cap-child=A`: expected RED in 0.002s with the exact-selector
+  diagnostic, proving matching env+flag markers cannot silently pass when the
+  child selector is absent.
 - `gofmt -l` on the three Go seal files: PASS (no output).

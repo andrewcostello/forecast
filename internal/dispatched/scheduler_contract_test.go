@@ -31,6 +31,11 @@ import (
 
 type scheduleArm func(dispatched.Graph, int) (dispatched.Schedule, error)
 
+type publicScheduleCall struct {
+	name string
+	call scheduleArm
+}
+
 const (
 	largeCapChildEnv        = "FC_SCHEDULE_LARGE_CAP_CHILD"
 	largeCapChildTimeout    = 20 * time.Second
@@ -43,16 +48,20 @@ var largeCapChildArm = flag.String("fc-schedule-large-cap-child", "", "internal 
 
 // TestFCScheduleAContract is the plan-reserved FC-2A contract group.
 func TestFCScheduleAContract(t *testing.T) {
-	runScheduleContract(t, "A", schedulea.Schedule)
+	runScheduleContract(t, "A", schedulea.Schedule, (schedulea.Scheduler{}).Schedule)
 }
 
 // TestFCScheduleBContract is the plan-reserved FC-2B contract group.
 func TestFCScheduleBContract(t *testing.T) {
-	runScheduleContract(t, "B", scheduleb.Schedule)
+	runScheduleContract(t, "B", scheduleb.Schedule, (scheduleb.Scheduler{}).Schedule)
 }
 
-func runScheduleContract(t *testing.T, armName string, arm scheduleArm) {
+func runScheduleContract(t *testing.T, armName string, arm, schedulerMethod scheduleArm) {
 	t.Helper()
+	publicCalls := []publicScheduleCall{
+		{name: "package-function", call: arm},
+		{name: "scheduler-method", call: schedulerMethod},
+	}
 
 	t.Run("fixture-corpus-integrity", testFixtureCorpusIntegrity)
 	t.Run("fixture-loader", testScheduleFixtureLoader)
@@ -69,42 +78,56 @@ func runScheduleContract(t *testing.T, armName string, arm scheduleArm) {
 		for _, fixture := range fixtures {
 			fixture := fixture
 			t.Run(fixture.Name, func(t *testing.T) {
-				graph := fixtureGraph(t, fixture)
-				before := cloneGraph(graph)
-				got, err := arm(graph, fixture.Concurrency)
-				if failure := fixtureResultFailure(t, fixture, got, err); failure != "" {
-					t.Error(failure)
-				}
-				if !reflect.DeepEqual(graph, before) {
-					t.Errorf("input graph mutated\n got: %#v\nwant: %#v", graph, before)
-				}
-				if fixture.Expect.Error == "" {
-					assertPureSchedule(t, arm, before, fixture.Concurrency, fixtureExpectedSchedule(t, fixture))
+				for _, publicCall := range publicCalls {
+					publicCall := publicCall
+					t.Run(publicCall.name, func(t *testing.T) {
+						graph := fixtureGraph(t, fixture)
+						before := cloneGraph(graph)
+						got, err := publicCall.call(graph, fixture.Concurrency)
+						if failure := fixtureResultFailure(t, fixture, got, err); failure != "" {
+							t.Error(failure)
+						}
+						if !reflect.DeepEqual(graph, before) {
+							t.Errorf("input graph mutated\n got: %#v\nwant: %#v", graph, before)
+						}
+						if fixture.Expect.Error == "" {
+							assertPureSchedule(t, publicCall.call, before, fixture.Concurrency, fixtureExpectedSchedule(t, fixture))
+						}
+					})
 				}
 			})
 		}
 	})
 
 	t.Run("generated-corpus", func(t *testing.T) {
-		compared := 0
-		err := walkGeneratedCorpus(func(id string, graph dispatched.Graph, maxParallel int) error {
-			want := tickOracle(t, graph, maxParallel)
-			got, scheduleErr := arm(cloneGraph(graph), maxParallel)
-			if scheduleErr != nil {
-				return fmt.Errorf("%s: unexpected error: %w", id, scheduleErr)
-			}
-			if !schedulesEqual(got, want) {
-				return fmt.Errorf("%s: schedule mismatch\n got: %#v\nwant: %#v", id, got, want)
-			}
-			compared++
-			return nil
-		})
-		if err != nil {
-			t.Fatal(err)
+		for _, publicCall := range publicCalls {
+			publicCall := publicCall
+			t.Run(publicCall.name, func(t *testing.T) {
+				compared := 0
+				err := walkGeneratedCorpus(func(id string, graph dispatched.Graph, maxParallel int) error {
+					want := tickOracle(t, graph, maxParallel)
+					got, scheduleErr := publicCall.call(cloneGraph(graph), maxParallel)
+					if scheduleErr != nil {
+						return fmt.Errorf("%s: unexpected error: %w", id, scheduleErr)
+					}
+					if !schedulesEqual(got, want) {
+						return fmt.Errorf("%s: schedule mismatch\n got: %#v\nwant: %#v", id, got, want)
+					}
+					compared++
+					return nil
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if compared != generatedCorpusTotal {
+					t.Fatalf("compared generated cases = %d, want %d", compared, generatedCorpusTotal)
+				}
+			})
 		}
-		if compared != generatedCorpusTotal {
-			t.Fatalf("compared generated cases = %d, want %d", compared, generatedCorpusTotal)
-		}
+	})
+
+	t.Run("first-offending-node", func(t *testing.T) {
+		testFirstOffendingNodeNames(t, publicCalls)
 	})
 
 	t.Run("large-cap-child-only", func(t *testing.T) {
@@ -116,7 +139,11 @@ func runScheduleContract(t *testing.T, armName string, arm scheduleArm) {
 	})
 
 	t.Run("large-cap-storage", func(t *testing.T) {
-		if isLargeCapMarkedProcess(armName) {
+		runParent, failure := largeCapStorageDecision(armName, os.Getenv(largeCapChildEnv), *largeCapChildArm, os.Args[1:])
+		if failure != "" {
+			t.Fatal(failure)
+		}
+		if !runParent {
 			return
 		}
 		runLargeCapProbe(t, armName)
@@ -144,6 +171,16 @@ func TestFCScheduleLargeCapChildIsolation(t *testing.T) {
 	if !isLargeCapChildInvocation("A", "A", "A", exactRun) {
 		t.Fatal("dedicated child protocol did not arm the large-cap probe")
 	}
+	if runParent, failure := largeCapStorageDecision("A", "A", "A", exactRun); runParent || failure != "" {
+		t.Fatalf("exact child storage decision = (run=%t, failure=%q), want a clean child-only return", runParent, failure)
+	}
+	broadRun := []string{"-test.run=^TestFCScheduleAContract$"}
+	if runParent, failure := largeCapStorageDecision("A", "A", "A", broadRun); runParent || failure == "" {
+		t.Fatalf("marked but unarmed storage decision = (run=%t, failure=%q), want a loud failure", runParent, failure)
+	}
+	if runParent, failure := largeCapStorageDecision("A", "A", "", broadRun); !runParent || failure != "" {
+		t.Fatalf("ambient environment storage decision = (run=%t, failure=%q), want parent probe", runParent, failure)
+	}
 	if isLargeCapChildInvocation("B", "A", "A", exactRun) {
 		t.Fatal("arm A child protocol armed arm B")
 	}
@@ -155,6 +192,100 @@ func TestFCScheduleLargeCapChildIsolation(t *testing.T) {
 	}
 	if !largeCapHandshakePresent([]byte(largeCapSuccessToken("A")+"\nPASS\n"), "A") {
 		t.Fatal("exact arm A handshake was not recognized")
+	}
+}
+
+func testFirstOffendingNodeNames(t *testing.T, publicCalls []publicScheduleCall) {
+	t.Helper()
+	const (
+		firstKey = "node-7QX4P9"
+		laterKey = "node-2VKM8R"
+	)
+	if strings.Contains(firstKey, laterKey) || strings.Contains(laterKey, firstKey) {
+		t.Fatal("first-offender test keys are not collision-safe")
+	}
+
+	cases := []struct {
+		name         string
+		graph        dispatched.Graph
+		wantErr      error
+		wantFirstKey string
+	}{
+		{
+			name: "duplicate-key",
+			graph: dispatched.Graph{Nodes: []dispatched.Node{
+				{Key: firstKey},
+				{Key: firstKey},
+				{Key: laterKey},
+				{Key: laterKey},
+			}},
+			wantErr:      dispatched.ErrDuplicateKey,
+			wantFirstKey: firstKey,
+		},
+		{
+			name: "unknown-dependency",
+			graph: dispatched.Graph{Nodes: []dispatched.Node{
+				{Key: firstKey, BlockedBy: []string{"missing-6NJ3TW"}},
+				{Key: laterKey, BlockedBy: []string{"missing-4CYP5H"}},
+			}},
+			wantErr:      dispatched.ErrUnknownDependency,
+			wantFirstKey: firstKey,
+		},
+		{
+			name: "negative-duration",
+			graph: dispatched.Graph{Nodes: []dispatched.Node{
+				{Key: firstKey, Duration: -time.Nanosecond},
+				{Key: laterKey, Duration: -2 * time.Nanosecond},
+			}},
+			wantErr:      dispatched.ErrNegativeValue,
+			wantFirstKey: firstKey,
+		},
+		{
+			name: "cycle",
+			graph: dispatched.Graph{Nodes: []dispatched.Node{
+				{Key: firstKey, BlockedBy: []string{firstKey}},
+				{Key: laterKey, BlockedBy: []string{laterKey}},
+			}},
+			wantErr:      dispatched.ErrCycle,
+			wantFirstKey: firstKey,
+		},
+		{
+			name: "overflow",
+			graph: dispatched.Graph{Nodes: []dispatched.Node{
+				{Key: "node-9PT6FS", Duration: time.Duration(math.MaxInt64)},
+				{Key: firstKey, Duration: time.Nanosecond},
+				{Key: laterKey, Duration: time.Nanosecond},
+			}},
+			wantErr:      dispatched.ErrScheduleOverflow,
+			wantFirstKey: firstKey,
+		},
+	}
+
+	for _, testCase := range cases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, publicCall := range publicCalls {
+				publicCall := publicCall
+				t.Run(publicCall.name, func(t *testing.T) {
+					got, err := publicCall.call(cloneGraph(testCase.graph), 1)
+					if err == nil {
+						t.Fatalf("error = nil, want %v naming first offending node %q", testCase.wantErr, testCase.wantFirstKey)
+					}
+					if !errors.Is(err, testCase.wantErr) {
+						t.Errorf("error = %v, want errors.Is(%v)", err, testCase.wantErr)
+					}
+					if !reflect.DeepEqual(got, dispatched.Schedule{}) {
+						t.Errorf("error schedule = %#v, want exact zero Schedule", got)
+					}
+					if !strings.Contains(err.Error(), testCase.wantFirstKey) {
+						t.Errorf("error %q does not name first offending node %q", err, testCase.wantFirstKey)
+					}
+					if strings.Contains(err.Error(), laterKey) {
+						t.Errorf("error %q names later offending node %q", err, laterKey)
+					}
+				})
+			}
+		})
 	}
 }
 
@@ -173,6 +304,7 @@ var handFixtureNames = []string{
 	"F5-EMPTY",
 	"F5-EMPTY-BAD-CAP",
 	"F5-EMPTY-KEY",
+	"F5-FLOAT-SECONDS-PRECISION",
 	"F5-FORK-JOIN-CAP1",
 	"F5-FORK-JOIN-FREE",
 	"F5-LAST-NODE-KEY-ORDER",
@@ -242,10 +374,10 @@ func loadHandFixtures(t *testing.T) []dispatched.ScheduleFixture {
 
 func testFixtureCorpusIntegrity(t *testing.T) {
 	const (
-		wantFixtureCount      = 49
-		wantSuccessCount      = 26
+		wantFixtureCount      = 50
+		wantSuccessCount      = 27
 		wantRefusalCount      = 23
-		wantCorpusFingerprint = "b1bd84363de02d37a0852995200def2ace87cc9f0aa00e11a04dbe5b6857cda6"
+		wantCorpusFingerprint = "ed141c28c09d0f76dfc170d4e588259cf33e9c107197b665fd4966a99a7fb4f6"
 	)
 
 	fixtures := loadHandFixtures(t)
@@ -310,6 +442,33 @@ func testFixtureCorpusIntegrity(t *testing.T) {
 	}
 	if got := fixtureExpectedSchedule(t, capBinds); !schedulesEqual(got, wantCapBinds) {
 		t.Fatalf("F5-CAP-BINDS expected schedule changed\n got: %#v\nwant: %#v", got, wantCapBinds)
+	}
+
+	nanosecondGrain := byName["F5-NANOSECOND-GRAIN"]
+	wantNanosecondNodes := []dispatched.FixtureNode{
+		{Key: "A", Duration: "1m30s"},
+		{Key: "B", Duration: "250ns"},
+		{Key: "C", Duration: "1.5s", BlockedBy: []string{"B"}},
+	}
+	if nanosecondGrain.Concurrency != 1 || !fixtureNodesEqual(nanosecondGrain.Nodes, wantNanosecondNodes) {
+		t.Fatalf("F5-NANOSECOND-GRAIN input changed: %#v", nanosecondGrain)
+	}
+	wantNanosecondSchedule := dispatched.Schedule{
+		Makespan: 91500000250 * time.Nanosecond,
+		Trace: []dispatched.NodeTrace{
+			{Key: "A", Start: 0, Finish: 90 * time.Second},
+			{Key: "B", Start: 90 * time.Second, Finish: 90000000250 * time.Nanosecond},
+			{Key: "C", Start: 90000000250 * time.Nanosecond, Finish: 91500000250 * time.Nanosecond, BlockedBy: []string{"B"}},
+		},
+		DependencyPath: []string{"B", "C"},
+		ExecutionChain: []dispatched.ChainStep{
+			{Key: "A", Edge: dispatched.EdgeStart},
+			{Key: "B", Edge: dispatched.EdgeResource},
+			{Key: "C", Edge: dispatched.EdgeDependency},
+		},
+	}
+	if got := fixtureExpectedSchedule(t, nanosecondGrain); !schedulesEqual(got, wantNanosecondSchedule) {
+		t.Fatalf("F5-NANOSECOND-GRAIN expected schedule changed\n got: %#v\nwant: %#v", got, wantNanosecondSchedule)
 	}
 
 	for _, anchor := range []struct {
@@ -383,6 +542,9 @@ func testFixtureCorpusIntegrity(t *testing.T) {
 		[]string{"9223372036854775807ns"},
 		[]time.Duration{time.Duration(math.MaxInt64)})
 	assertFixtureDurationLiterals(t, byName, "F5-NANOSECOND-GRAIN",
+		[]string{"1m30s", "250ns", "1.5s"},
+		[]time.Duration{90 * time.Second, 250, 1500000000})
+	assertFixtureDurationLiterals(t, byName, "F5-FLOAT-SECONDS-PRECISION",
 		[]string{"130841899126ns", "250ns", "1.5s"},
 		[]time.Duration{130841899126, 250, 1500000000})
 	negativeCap := byName["F5-NEGATIVE-CAP"]
@@ -1585,7 +1747,7 @@ func testPanelDiscriminatorMutations(t *testing.T) {
 	}
 
 	t.Run("float-seconds-finish", func(t *testing.T) {
-		fixture := byName["F5-NANOSECOND-GRAIN"]
+		fixture := byName["F5-FLOAT-SECONDS-PRECISION"]
 		graph := fixtureGraph(t, fixture)
 		mutant := canonicalSchedule(fixtureExpectedSchedule(t, fixture))
 		mutant.Trace[0].Finish = floatSecondsFinish(0, graph.Nodes[0].Duration)
@@ -2057,8 +2219,14 @@ func isLargeCapChildProcess(armName string) bool {
 	return isLargeCapChildInvocation(armName, os.Getenv(largeCapChildEnv), *largeCapChildArm, os.Args[1:])
 }
 
-func isLargeCapMarkedProcess(armName string) bool {
-	return isLargeCapMarkedInvocation(armName, os.Getenv(largeCapChildEnv), *largeCapChildArm)
+func largeCapStorageDecision(armName, environmentArm, markerArm string, args []string) (runParent bool, failure string) {
+	if isLargeCapChildInvocation(armName, environmentArm, markerArm, args) {
+		return false, ""
+	}
+	if isLargeCapMarkedInvocation(armName, environmentArm, markerArm) {
+		return false, fmt.Sprintf("large-cap child markers for arm %s require exact selector %q", armName, largeCapChildRunFilter(armName))
+	}
+	return true, ""
 }
 
 func isLargeCapChildInvocation(armName, environmentArm, markerArm string, args []string) bool {

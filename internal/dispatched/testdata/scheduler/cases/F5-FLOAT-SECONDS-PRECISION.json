@@ -1,12 +1,12 @@
 {
-  "name": "F5-NANOSECOND-GRAIN",
+  "name": "F5-FLOAT-SECONDS-PRECISION",
   "provenance": "synthetic",
-  "note": "Nanosecond arithmetic remains exact across resource and dependency edges.",
+  "note": "Additional float-seconds discriminator; the named nanosecond-grain scaffold example remains unchanged.",
   "concurrency": 1,
   "nodes": [
     {
       "key": "A",
-      "duration": "1m30s"
+      "duration": "130841899126ns"
     },
     {
       "key": "B",
@@ -22,22 +22,22 @@
   ],
   "expect": {
     "error": "",
-    "makespan": "91500000250ns",
+    "makespan": "132341899376ns",
     "trace": [
       {
         "key": "A",
         "start": "0s",
-        "finish": "90s"
+        "finish": "130841899126ns"
       },
       {
         "key": "B",
-        "start": "90s",
-        "finish": "90000000250ns"
+        "start": "130841899126ns",
+        "finish": "130841899376ns"
       },
       {
         "key": "C",
-        "start": "90000000250ns",
-        "finish": "91500000250ns",
+        "start": "130841899376ns",
+        "finish": "132341899376ns",
         "blocked_by": [
           "B"
         ]

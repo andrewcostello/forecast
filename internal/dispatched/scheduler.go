@@ -30,13 +30,18 @@ type Node struct {
 // Graph is a set of nodes in declaration order. Declaration order (the index
 // in Nodes) is the only tie-break the contract uses: it decides which ready
 // node takes a free slot, which of several last-finishing nodes anchors the
-// explanations, and which of several equal candidates becomes a chain edge.
+// explanations, which of several equal candidates becomes a chain edge, and
+// how NodeTrace.BlockedBy is ordered. Keys are never sorted: a Graph whose
+// keys are declared out of lexical order (B before A) resolves every tie in
+// favour of B, and an implementation that sorts a dependency set by key is
+// wrong even where it agrees on lexically ordered inputs.
 //
 // A Graph is valid when every key is nonblank and unique, every BlockedBy
 // entry names a node in the graph, no Duration is negative, the dependency
 // relation is acyclic, and the sum of all durations is representable as a
-// time.Duration. Validation belongs to each arm; see the precedence order
-// documented on SchedulerSentinels.
+// time.Duration (computed with a per-add checked increment, never a
+// wrapping +=; see ErrScheduleOverflow). Validation belongs to each arm;
+// see the precedence order documented on SchedulerSentinels.
 type Graph struct {
 	Nodes []Node
 }

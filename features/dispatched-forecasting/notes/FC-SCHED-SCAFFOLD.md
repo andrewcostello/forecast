@@ -60,7 +60,14 @@ enough for two isolated implementers to agree. Deviations from F5: none.
   source or the reference class. The result is a pure function of
   `(g, maxParallel)`; `g` and its slices are not mutated.
 - Declaration order (index in `Graph.Nodes`) is the only tie-break. Keys are
-  compared byte-exact and never sorted.
+  compared byte-exact and never sorted. This applies in all four places a
+  tie can arise: the FILL walk, the choice of last node `L`, the
+  `DependencyPath` step and the `ExecutionChain` predecessor, and to the
+  ordering of `NodeTrace.BlockedBy`. An arm that collects a dependency set
+  in a map and sorts it by key is wrong even though it agrees with every row
+  whose keys happen to be declared in lexical order; the rows
+  F5-LAST-NODE-KEY-ORDER, F5-RESOURCE-TIE-KEY-ORDER and
+  F5-BLOCKED-BY-KEY-ORDER declare keys out of lexical order to catch it.
 - Ready ordering: at each timestamp, pending nodes are walked in
   declaration order and every ready node starts while a slot is free. A
   ready node that finds no slot waits; a later-declared node never overtakes
@@ -83,12 +90,20 @@ enough for two isolated implementers to agree. Deviations from F5: none.
   satisfies `errors.Is` for exactly one scheduler sentinel. Message text is
   not frozen. `maxParallel < 1` is refused even for an empty graph. A blank
   `BlockedBy` entry is `ErrUnknownDependency`, not `ErrBlankKey`.
-- Overflow is defined on the bound, not the outcome: if the sum of all
-  durations exceeds `math.MaxInt64` nanoseconds the graph is refused with
-  `ErrScheduleOverflow` before scheduling, even if the requested cap would
-  have produced a representable makespan. A representable sum guarantees
-  every start, finish and the makespan are representable, so no arm needs
-  checked arithmetic inside the scheduling loop.
+- Overflow is defined on the bound, not the outcome: if the mathematical
+  sum of all durations exceeds `math.MaxInt64` nanoseconds the graph is
+  refused with `ErrScheduleOverflow` before scheduling, even if the
+  requested cap would have produced a representable makespan. The sum MUST
+  be computed with a per-add checked increment after negatives have been
+  rejected: for each node, `if d > math.MaxInt64-sum { overflow }` before
+  `sum += d`. `time.Duration` is `int64` and `+=` wraps silently; a wrapping
+  sum followed by a final `sum < 0` test is not an implementation of this
+  rule, because two wraps land on a small positive value (see
+  F5-OVERFLOW-WRAP) and the scheduling loop would then emit wrapped
+  timestamps. Wrap-to-positive is the case the check exists to catch. With
+  the checked sum in place, a representable sum guarantees every start,
+  finish and the makespan are representable, so no arm needs checked
+  arithmetic inside the scheduling loop itself.
 - Last node `L` for both explanations: largest `Finish`, ties to the
   earliest declared. Both lists are head first.
 - `DependencyPath`: from `L`, step to the dependency with the largest
@@ -128,7 +143,7 @@ not a reason to edit an arm. The same rows are expected of both arms.
 | F5-FORK-JOIN-CAP1 | cap 1; same graph | A 0..1, B 1..3, C 3..6, D 6..7; makespan 7; DependencyPath `[A, C, D]` (sum 5); ExecutionChain `[A start, B dependency, C resource, D dependency]` (sum 7). |
 | F5-CAP-OVER-N | cap 10; same graph | Identical to F5-FORK-JOIN-FREE. |
 | F5-READY-DECLARATION-ORDER | cap 1; B=3, A=2 | B 0..3, A 3..5; makespan 5; `[A]`; `[B start, A resource]`. Compare F5-CAP-BINDS: same keys and durations, different declaration order, different trace; key order is never consulted. |
-| F5-SIMULTANEOUS-COMPLETIONS | cap 2; X=2, Y=2, P=1 (Y), Q=1 (X), R=1 (X) | X 0..2, Y 0..2, P 2..3, Q 2..3, R 3..4; makespan 4; `[X, R]`; `[Y start, P dependency, R resource]`. Mutation: completing X and filling before completing Y starts Q and R at 2 and P at 3. |
+| F5-SIMULTANEOUS-COMPLETIONS | cap 2; X=2, Y=2, P=1 (Y), Q=1 (Y), R=1 (X) | X 0..2, Y 0..2, P 2..3, Q 2..3, R 3..4; makespan 4; `[X, R]`; `[Y start, P dependency, R resource]`. Mutation: completing X and filling before completing Y sees only R ready (P and Q still wait on Y), starts R 2..3, then completes Y and starts P 2..3 with no slot left for Q, giving Q 3..4, makespan 4, DependencyPath `[Y, Q]` and chain `[Y start, P dependency, Q resource]`; the frozen process starts P and Q at 2 and R at 3. |
 | F5-ZERO-DRAIN | cap 1; A=0, B=0 (A), C=1 (B) | A 0..0, B 0..0, C 0..1; makespan 1; `[A, B, C]`; `[A start, B dependency, C dependency]`. |
 | F5-ZERO-WAITS-FOR-SLOT | cap 1; A=2, Z=0 | A 0..2, Z 2..2; makespan 2; `L` is A (tie at 2, earlier declared); `[A]`; `[A start]`. |
 | F5-ZERO-DECLARATION-ORDER | cap 1; P=0, Q=3, R=0 | P 0..0, Q 0..3, R 3..3; makespan 3; `[Q]`; `[Q start]`. R does not overtake Q. |
@@ -136,6 +151,9 @@ not a reason to edit an arm. The same rows are expected of both arms.
 | F5-RESOURCE-TIE | cap 2; A=3, B=3, C=1 | A 0..3, B 0..3, C 3..4; makespan 4; `[C]`; `[A start, C resource]` (A and B both qualify; earliest declared). |
 | F5-DUP-DEPENDENCY | cap 1; A=1, B=1 (A, A) | A 0..1, B 1..2; `Trace[B].BlockedBy == [A]`; makespan 2; `[A, B]`; `[A start, B dependency]`. Input `BlockedBy` still `[A, A]` after the call. |
 | F5-DEP-SET-ORDER | cap 2; A=1, B=1, C=1 (B, A) | `Trace[C].BlockedBy == [A, B]`; A 0..1, B 0..1, C 1..2; makespan 2; `[A, C]` (A and B tie at 1; earliest declared); `[A start, C dependency]`. |
+| F5-LAST-NODE-KEY-ORDER | cap 2; B=2, A=2 | B 0..2, A 0..2; makespan 2; `L` is B (tie at 2, earlier declared although A sorts first); `[B]`; `[B start]`. A key-sorted arm answers `[A]` / `[A start]` and fails. |
+| F5-RESOURCE-TIE-KEY-ORDER | cap 2; B=3, A=3, C=1 | B 0..3, A 0..3, C 3..4; makespan 4; `[C]`; `[B start, C resource]` (B and A both qualify; B is earlier declared although A sorts first). A key-sorted arm answers `[A start, C resource]` and fails. |
+| F5-BLOCKED-BY-KEY-ORDER | cap 2; B=1, A=1, C=1 (A, B) | `Trace[C].BlockedBy == [B, A]` (declaration index, not key, not input order); B 0..1, A 0..1, C 1..2; makespan 2; `[B, C]` (B and A tie at 1; B earlier declared); `[B start, C dependency]`. A key-sorted arm answers `[A, B]`, `[A, C]` and `[A start, C dependency]` and fails. |
 | F5-EMPTY | cap 1; no nodes | makespan 0; nil `Trace`, `DependencyPath`, `ExecutionChain`; nil error. |
 | F5-EMPTY-BAD-CAP | cap 0; no nodes | `ErrInvalidConcurrency`. |
 | F5-BLANK-KEY | cap 1; key `"  "` | `ErrBlankKey`. |
@@ -146,6 +164,7 @@ not a reason to edit an arm. The same rows are expected of both arms.
 | F5-SELF-DEPENDENCY | cap 1; A=1 (A) | `ErrCycle`. |
 | F5-CYCLE | cap 1; A=1 (B), B=1 (A) | `ErrCycle`. |
 | F5-OVERFLOW | cap 2; A=4611686018427387904ns, B=4611686018427387904ns | `ErrScheduleOverflow` although a cap-2 makespan of 2^62 ns would fit. |
+| F5-OVERFLOW-WRAP | cap 3; A=9223372036854775807ns, B=9223372036854775807ns, C=5ns | `ErrScheduleOverflow` although a cap-3 makespan of `MaxInt64` ns would fit. The wrapping `int64` sum is `+3` (`MaxInt64 + MaxInt64` wraps to `-2`, `-2 + 5 == 3`), so an arm that adds with `+=` and tests `sum < 0` at the end accepts the graph and schedules with wrapped timestamps; the per-add check refuses it at B. |
 | F5-PRECEDENCE-LADDER | cap 0; `"  "`=-1s (Z), A=1 (A), A=1 | `ErrInvalidConcurrency`. Then with cap 1: `ErrBlankKey`; rename the blank key to K: `ErrDuplicateKey`; rename the third node to C: `ErrUnknownDependency` (Z); drop Z: `ErrNegativeValue`; set K=1s: `ErrCycle` (A self). Each step reports exactly one sentinel. |
 | F5-EXACTLY-ONE-SENTINEL | any invalid input | `errors.Is` is true for exactly one entry of `SchedulerSentinels` and false for the other six and for `ErrNotImplemented`. |
 | F5-PURE | any valid input, called twice, in parallel goroutines under `-race` | Byte-identical `Schedule` values; input graph unchanged. |
@@ -183,7 +202,13 @@ the frozen precedence. Bounded generated corpus: nodes `<= 5`, durations in
 to later-declared nodes (so generated graphs are acyclic by construction and
 cycle cases stay in the hand-written corpus), enumerated deterministically
 with no random source; FC-SCHED-SEALS records the exact enumeration and
-count. Every generated case compares the complete `Schedule` (makespan,
+count. Generated keys MUST NOT be assigned in lexical declaration order
+throughout: at least some generated graphs (and the enumeration must say
+which) declare keys out of lexical order, for example by assigning the
+declaration-indexed keys `E, D, C, B, A` or a rotation of them, so that an
+arm sorting by key disagrees with the oracle on ties and on `BlockedBy`
+ordering. A corpus whose every graph declares `A..E` in order is blind to
+that defect and does not satisfy this section. Every generated case compares the complete `Schedule` (makespan,
 trace, both paths) and the error, not makespan alone. Disagreement between
 an arm and the oracle, or between the arms, is minimized and adjudicated by
 FC-SCHED-ADJ; no arm is edited to agree.
@@ -219,6 +244,9 @@ are relevant to writing these seals and are pre-empted by the rulings:
   (types and sentinels) plus the two new stub packages.
 
 Residual limitation: the rulings above are checked by hand, not by a
-running implementation; the first executable check is the oracle FC-SCHED-SEALS
+running implementation (the panel-iteration rows F5-SIMULTANEOUS-COMPLETIONS,
+F5-LAST-NODE-KEY-ORDER, F5-RESOURCE-TIE-KEY-ORDER, F5-BLOCKED-BY-KEY-ORDER
+and F5-OVERFLOW-WRAP were additionally checked against the named mutant
+process by hand and shown to differ); the first executable check is the oracle FC-SCHED-SEALS
 writes, and any row it contradicts goes to FC-SCHED-ADJ as a contract
 dispute rather than being silently corrected in an arm.

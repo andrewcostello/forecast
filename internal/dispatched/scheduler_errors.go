@@ -13,12 +13,24 @@ var (
 	// ErrUnknownDependency.
 	ErrBlankKey = errors.New("dispatched: node key is blank")
 
-	// ErrScheduleOverflow (F5): the sum of all node durations is not
-	// representable as a time.Duration. The sum bounds every Start, Finish
+	// ErrScheduleOverflow (F5): the mathematical sum of all node durations
+	// exceeds math.MaxInt64 nanoseconds. The sum bounds every Start, Finish
 	// and the Makespan, so a representable sum guarantees representable
-	// arithmetic; an unrepresentable sum is refused before scheduling even
-	// when a particular cap would have produced a representable makespan.
-	// Never saturation, never a wrapped negative finish.
+	// arithmetic in the scheduling loop; an unrepresentable sum is refused
+	// before scheduling even when a particular cap would have produced a
+	// representable makespan.
+	//
+	// The sum MUST be accumulated with a per-add checked increment, after
+	// ErrNegativeValue has already rejected negatives:
+	//
+	//	if d > math.MaxInt64-sum { return ErrScheduleOverflow }
+	//	sum += d
+	//
+	// time.Duration is int64 and += wraps silently. A wrapping sum with a
+	// final sum < 0 test is NOT an implementation of this rule: three
+	// non-negative durations such as MaxInt64, MaxInt64, 5 wrap twice to +3,
+	// look valid, and the loop then emits wrapped timestamps. Wrap-to-
+	// positive is the case the check exists to catch. Never saturation.
 	ErrScheduleOverflow = errors.New("dispatched: schedule duration overflow")
 )
 
@@ -41,6 +53,7 @@ type SchedulerSentinel struct {
 //  5. ErrNegativeValue       a Duration below zero
 //  6. ErrCycle               the dependency relation has a cycle (self-dependency included)
 //  7. ErrScheduleOverflow    the sum of all durations exceeds math.MaxInt64 nanoseconds
+//     (per-add checked sum; see ErrScheduleOverflow)
 //
 // Each rule is evaluated over the whole graph before the next rule is
 // considered; within a rule the first offending node in declaration order

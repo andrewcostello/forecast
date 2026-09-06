@@ -102,3 +102,13 @@ The accepted contract preserves ambient `GIT_EXEC_PATH`, as its seal requires;
 the assigned security follow-up recommends deriving or dropping it instead.
 That contradiction remains for scaffold/seal adjudication. Known FC-JOURNAL
 review findings remain owned by that dependency and are not modified here.
+
+## Operator resolution of the ownership block
+
+The dispatcher subsequently committed the body as `ab03f0a`; the Git metadata
+error above is historical. The operator preserved the parser envelope assertions
+in TestFCSourcesContract and moved the same join setup/assertions into the existing
+FC-1-owned TestFCEvidenceContract group. The FC-SEALS note records this explicit
+ownership ruling. No body seam, assertion, fixture, or known-red entry changed.
+Independent verification and panel review must approve this amended head before
+FC-SOURCES is marked Done. The original blocked summary is retained in the run audit.

@@ -1027,21 +1027,6 @@ func testF3MissingRevisionTime(t *testing.T) {
 	if len(got) != 1 || got[0].Kind != DocumentTaskRow || !got[0].Ref.RecordedAt.IsZero() || got[0].Err != nil || got[0].Excluded != "" {
 		t.Fatalf("zero-time parser envelope = %+v", got)
 	}
-	start := mustTime(t, "2026-01-01T00:00:00Z")
-	attempt := journalAttempt("run-offset", "F1-OFFSET", start, 10*time.Minute, "stamp", OutcomeDone)
-	set := attemptSetOf("run-offset", attempt)
-	joined, err := joinContract(t, []AttemptSet{set}, got, defaultSelection(), identityUniverse(set))
-	if errors.Is(err, ErrNotImplemented) {
-		t.Fatal(err)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireDisposition(t, joined, DispositionMalformed, 1)
-	requireDisposition(t, joined, DispositionAfterCutoff, 0)
-	if joined.Recovered != 0 || len(joined.Observations) != 0 || len(joined.Examined) != 1 || !joined.Examined[0].Reading.RecordedAt.IsZero() {
-		t.Fatalf("zero RecordedAt was sampled or lost from malformed audit: %+v", joined)
-	}
 }
 
 func testF3CompleteConsistency(t *testing.T) {

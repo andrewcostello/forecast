@@ -381,3 +381,14 @@ the controlled-child harness paths; their termination is not evidence that
 those paths ran. Body/adjudication mutation proof remains deferred. The parent
 operator's IP-socket-denied check remains a separate independent verification
 step.
+
+## Operator ownership ruling: missing revision time
+
+FC-SOURCES implementation `ab03f0a` exposed an accidental forward dependency:
+F3-MISSING-REVISION-TIME parsed a reading and then called FC-1-owned JoinEvidence.
+The source group now retains the original parser envelope assertions. The full
+original setup and join assertions also run as F3-MISSING-REVISION-TIME-JOIN under
+TestFCEvidenceContract (FC-1 owner). No assertion, fixture, or contract was removed
+or weakened; no new known-red exclusion was added. The join case must remain red
+until FC-1 lands and must reject a mutation that samples zero RecordedAt evidence.
+This is an explicit operator seal-ownership amendment, not a body-authored change.

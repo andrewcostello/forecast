@@ -76,6 +76,7 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F4-ELIGIBLE-LOCAL-FIXTURE", testF4EligibleLocalFixture)
 	t.Run("F1-SAME-REF-PERMUTATION", testF1SameRefPermutation)
 	t.Run("F4-ELIGIBLE-NUMERIC-DOMAIN", testF4EligibleNumericDomain)
+	t.Run("F1-CONFLICT-TOTAL-ORDER", testF1ConflictTotalOrder)
 }
 
 func twoRunUniverse(t *testing.T) (sets []AttemptSet, readings []Reading, journals []JournalIdentity) {

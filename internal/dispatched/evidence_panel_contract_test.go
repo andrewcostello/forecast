@@ -3,6 +3,7 @@ package dispatched
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"math"
 	"os"
@@ -1161,6 +1162,26 @@ func testF4EligibleProvenance(t *testing.T) {
 		requireEligibleCompleted(t, art, 2)
 	})
 
+	t.Run("colon-in-relative-path", func(t *testing.T) {
+		const yamlPath = "features/archive:notes/tasks.yaml"
+		art := mapAllRecoveredYAML(recoveredArtifact(2), func(ref ReadingRef) ReadingRef {
+			ref.Path = yamlPath
+			return ref
+		})
+		if art.Evidence.Recovered != 2 || len(art.Evidence.Observations) != 2 {
+			t.Fatalf("colon citation dropped counts recovered=%d obs=%d", art.Evidence.Recovered, len(art.Evidence.Observations))
+		}
+		for i, obs := range art.Evidence.Observations {
+			if obs.Readings[0].Path != yamlPath || obs.Attempt.Evidence.Role.Reading.Path != yamlPath {
+				t.Fatalf("observation %d YAML path not relinked: %+v", i, obs.Readings)
+			}
+			if obs.Cell.Model != "stamp" || obs.Attempt.Outcome != OutcomeDone {
+				t.Fatalf("observation %d model/outcome changed", i)
+			}
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
 	for _, tc := range []struct {
 		name   string
 		mutate func(Artifact) Artifact
@@ -1300,6 +1321,59 @@ func testF4EligibleProvenance(t *testing.T) {
 	}{
 		{name: "nested-run-id", runID: "parent/run-a", journalPath: "parent/run-a/journal.jsonl"},
 		{name: "dot-cleaned-run-id", runID: ".", journalPath: "journal.jsonl"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if path.Join(tc.runID, "journal.jsonl") != tc.journalPath {
+				t.Fatalf("path %q is not path.Join(%q, journal.jsonl)=%q", tc.journalPath, tc.runID, path.Join(tc.runID, "journal.jsonl"))
+			}
+			art := withLinkedRunIdentity(recoveredArtifact(2), tc.runID, tc.journalPath)
+			requireLinkedRunIdentity(t, art, tc.runID, tc.journalPath)
+			requireRefuseInvalid(t, art)
+		})
+	}
+
+	// Host-independent drive-prefix rejection. These spellings are the
+	// operator-confirmed gap under selected root ".". filepath.IsAbs on this
+	// host is not the portable proof, and a colon that is not an ASCII-letter
+	// drive prefix remains a valid relative citation (colon-in-relative-path).
+	for _, tc := range []struct {
+		name, yamlPath string
+	}{
+		{name: "yaml-drive-absolute-upper", yamlPath: "C:/outside/tasks.yaml"},
+		{name: "yaml-drive-absolute-lower", yamlPath: "c:/outside/tasks.yaml"},
+		{name: "yaml-drive-relative-upper", yamlPath: "C:outside/tasks.yaml"},
+		{name: "yaml-drive-relative-lower", yamlPath: "c:outside/tasks.yaml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			art := updateManifestSource(recoveredArtifact(2), "live", func(src *SourceReport) {
+				src.Roots = []string{"."}
+			})
+			art = mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.Path = tc.yamlPath
+				return ref
+			})
+			if art.Evidence.Recovered != 2 || art.Evidence.Attempts != 2 || art.Evidence.UniqueRows != 2 {
+				t.Fatalf("YAML relink dropped counts recovered=%d attempts=%d unique=%d", art.Evidence.Recovered, art.Evidence.Attempts, art.Evidence.UniqueRows)
+			}
+			for i, obs := range art.Evidence.Observations {
+				if obs.Readings[0].Path != tc.yamlPath || obs.Attempt.Evidence.Role.Reading.Path != tc.yamlPath {
+					t.Fatalf("observation %d YAML path not relinked: %+v", i, obs.Readings)
+				}
+				if obs.Cell.Model != "stamp" || obs.Attempt.Outcome != OutcomeDone {
+					t.Fatalf("observation %d model/outcome changed", i)
+				}
+			}
+			requireRefuseInvalid(t, art)
+		})
+	}
+
+	for _, tc := range []struct {
+		name, runID, journalPath string
+	}{
+		{name: "journal-drive-absolute-upper", runID: "C:", journalPath: "C:/journal.jsonl"},
+		{name: "journal-drive-absolute-lower", runID: "c:", journalPath: "c:/journal.jsonl"},
+		{name: "journal-drive-relative-upper", runID: "C:run", journalPath: "C:run/journal.jsonl"},
+		{name: "journal-drive-relative-lower", runID: "c:run", journalPath: "c:run/journal.jsonl"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if path.Join(tc.runID, "journal.jsonl") != tc.journalPath {
@@ -1577,5 +1651,266 @@ func testF4EligibleNumericDomain(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			requireRefuseInvalid(t, mutateObservation(recoveredArtifact(2), tc.mutate))
 		})
+	}
+}
+
+func conflictPermutations(facts []AttemptConflict) [][]AttemptConflict {
+	switch len(facts) {
+	case 2:
+		return [][]AttemptConflict{
+			{facts[0], facts[1]},
+			{facts[1], facts[0]},
+		}
+	case 3:
+		a, b, c := facts[0], facts[1], facts[2]
+		return [][]AttemptConflict{
+			{a, b, c}, {a, c, b}, {b, a, c}, {b, c, a}, {c, a, b}, {c, b, a},
+		}
+	default:
+		return nil
+	}
+}
+
+func modelConflictValue(name string) ConflictValue {
+	return ConflictValue{Kind: "model", Value: json.RawMessage(`"` + name + `"`)}
+}
+
+func roleConflictValue(name string) ConflictValue {
+	return ConflictValue{Kind: "role", Value: json.RawMessage(`"` + name + `"`)}
+}
+
+func testF1ConflictTotalOrder(t *testing.T) {
+	start := mustTime(t, "2026-01-01T00:00:00Z")
+	id := NewAttemptID("run-a", "KC", start)
+	journal := JournalIdentity{RunID: "run-a", SourceID: "journals", Path: "journal.jsonl", Producer: ProducerDispatcherV0_1_0}
+	matching := []Reading{syntheticReading("run-a", "KC", start, 1, "features/study/tasks.yaml")}
+
+	modelEvent := func(seq, line int) EventRef {
+		return EventRef{
+			Journal: journal, Type: EventTaskSpawnFinished,
+			At: start.Add(time.Minute), HasSeq: true, Seq: seq, Line: line,
+		}
+	}
+	modelCite := func(seq, line int) FieldEvidence {
+		return FieldEvidence{Source: EvidenceJournal, Event: modelEvent(seq, line)}
+	}
+	aCite := modelCite(1, 2)
+	aVal := modelConflictValue("modelA")
+	modelFact := func(bName string, bSeq, bLine int, errText string) AttemptConflict {
+		return AttemptConflict{
+			Code:   EvidenceConflictCode,
+			ID:     id,
+			Field:  "model",
+			AValue: aVal,
+			BValue: modelConflictValue(bName),
+			A:      aCite,
+			B:      modelCite(bSeq, bLine),
+			Err:    errors.New(errText),
+			Reason: "model evidence conflicts within run-a/KC",
+		}
+	}
+
+	yamlRef := func(row int) ReadingRef {
+		return ReadingRef{
+			SourceID:   "live",
+			Repository: "repo",
+			Path:       "features/study/tasks.yaml",
+			Revision:   "live",
+			Row:        row,
+			RecordedAt: start,
+		}
+	}
+	yamlCite := func(row int) FieldEvidence {
+		return FieldEvidence{Source: EvidenceYAML, Reading: yamlRef(row)}
+	}
+	roleFact := func(aRow, bRow int, reason, errText string) AttemptConflict {
+		return AttemptConflict{
+			Code:   EvidenceConflictCode,
+			ID:     id,
+			Field:  "role",
+			AValue: roleConflictValue("bodies"),
+			BValue: roleConflictValue("seals"),
+			A:      yamlCite(aRow),
+			B:      yamlCite(bRow),
+			Err:    errors.New(errText),
+			Reason: reason,
+		}
+	}
+
+	twoB := []AttemptConflict{
+		modelFact("modelB", 5, 6, "not serialized b"),
+		modelFact("modelC", 9, 10, "not serialized c"),
+	}
+	threeB := []AttemptConflict{
+		modelFact("modelB", 5, 6, "not serialized b"),
+		modelFact("modelC", 9, 10, "not serialized c"),
+		modelFact("modelD", 7, 8, "not serialized d"),
+	}
+	citationTwo := []AttemptConflict{
+		roleFact(1, 2, "role evidence conflicts within run-a/KC", "not serialized row-2"),
+		roleFact(1, 3, "role evidence conflicts within run-a/KC", "not serialized row-3"),
+	}
+	reasonTwo := []AttemptConflict{
+		roleFact(1, 2, "role evidence conflicts within run-a/KC", "not serialized reason-a"),
+		roleFact(1, 2, "later revision restates the same role conflict", "not serialized reason-b"),
+	}
+	citationReasonThree := []AttemptConflict{
+		roleFact(1, 2, "role evidence conflicts within run-a/KC", "not serialized mix-a"),
+		roleFact(1, 4, "role evidence conflicts within run-a/KC", "not serialized mix-b"),
+		roleFact(8, 2, "later revision restates the same role conflict", "not serialized mix-c"),
+	}
+	fieldPrimary := []AttemptConflict{
+		{
+			Code: EvidenceConflictCode, ID: id, Field: "model",
+			AValue: aVal, BValue: modelConflictValue("modelB"),
+			A: aCite, B: modelCite(5, 6),
+			Err: errors.New("not serialized model"), Reason: "model",
+		},
+		{
+			Code: EvidenceConflictCode, ID: id, Field: "terminal",
+			AValue: ConflictValue{Kind: "terminal", Value: json.RawMessage(`{"elapsed_ns":600000000000,"outcome":"done","terminal_at":"2026-01-01T00:10:00Z"}`)},
+			BValue: ConflictValue{Kind: "terminal", Value: json.RawMessage(`{"elapsed_ns":720000000000,"outcome":"blocked","terminal_at":"2026-01-01T00:12:00Z"}`)},
+			A:      FieldEvidence{Source: EvidenceJournal, Event: modelEvent(3, 4)},
+			B:      FieldEvidence{Source: EvidenceYAML, Reading: yamlRef(2)},
+			Err:    errors.New("not serialized terminal"), Reason: "terminal",
+		},
+	}
+
+	for _, path := range []struct {
+		name     string
+		readings []Reading
+	}{
+		{name: "empty-readings", readings: nil},
+		{name: "matching-reading", readings: matching},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			t.Run("field-primary-order", func(t *testing.T) {
+				requireConflictJoinPermutations(t, fieldPrimary, path.readings)
+			})
+			t.Run("b-event-value-two", func(t *testing.T) {
+				requireConflictJoinPermutations(t, twoB, path.readings)
+			})
+			t.Run("b-event-value-three", func(t *testing.T) {
+				requireConflictJoinPermutations(t, threeB, path.readings)
+			})
+			t.Run("complete-citation-ties", func(t *testing.T) {
+				requireConflictJoinPermutations(t, citationTwo, path.readings)
+			})
+			t.Run("reason-ties", func(t *testing.T) {
+				requireConflictJoinPermutations(t, reasonTwo, path.readings)
+			})
+			t.Run("citation-reason-three", func(t *testing.T) {
+				requireConflictJoinPermutations(t, citationReasonThree, path.readings)
+			})
+		})
+	}
+}
+
+func requireConflictJoinPermutations(t *testing.T, facts []AttemptConflict, readings []Reading) {
+	t.Helper()
+	if len(facts) < 2 {
+		t.Fatal("need at least two hand-built conflict facts")
+	}
+	id := facts[0].ID
+	for i, fact := range facts {
+		if fact.ID != id {
+			t.Fatalf("fact %d identity %+v, want one conflict-category identity %+v", i, fact.ID, id)
+		}
+	}
+	seen := map[string]bool{}
+	for _, fact := range facts {
+		key := string(encodeJSON(t, fact))
+		if seen[key] {
+			t.Fatal("hand-built facts are byte-identical portable duplicates")
+		}
+		seen[key] = true
+	}
+
+	type candidateSnap struct{ a, b []byte }
+	original := make([]candidateSnap, len(facts))
+	beforeFacts := encodeJSON(t, facts)
+	beforeReadings := encodeJSON(t, readings)
+	for i, fact := range facts {
+		original[i] = candidateSnap{
+			a: append([]byte(nil), fact.AValue.Value...),
+			b: append([]byte(nil), fact.BValue.Value...),
+		}
+	}
+
+	orders := conflictPermutations(facts)
+	if len(orders) < 2 {
+		t.Fatal("need at least two permutations")
+	}
+	var encoded [][]byte
+	for _, order := range orders {
+		set := attemptSetOf("run-a")
+		if len(set.Attempts) != 0 || len(set.Ambiguous) != 0 {
+			t.Fatal("competing ordinary or ambiguous category in hand-built set")
+		}
+		set.Conflicts = append([]AttemptConflict{}, order...)
+		sets := []AttemptSet{set}
+		beforeSets := encodeJSON(t, sets)
+		beforeConflicts := encodeJSON(t, set.Conflicts)
+		got, err := joinContract(t, sets, readings, defaultSelection(), identityUniverse(set))
+		if !errors.Is(err, ErrEvidenceConflict) {
+			t.Fatalf("JoinEvidence err = %v, want ErrEvidenceConflict", err)
+		}
+		if !bytes.Equal(beforeSets, encodeJSON(t, sets)) {
+			t.Fatal("JoinEvidence mutated caller attempt sets")
+		}
+		if !bytes.Equal(beforeConflicts, encodeJSON(t, set.Conflicts)) {
+			t.Fatal("JoinEvidence mutated caller conflict slice")
+		}
+		if !bytes.Equal(beforeReadings, encodeJSON(t, readings)) {
+			t.Fatal("JoinEvidence mutated caller readings")
+		}
+		if !bytes.Equal(beforeFacts, encodeJSON(t, facts)) {
+			t.Fatal("JoinEvidence mutated caller conflict facts")
+		}
+		for i, fact := range facts {
+			if !bytes.Equal(original[i].a, fact.AValue.Value) || !bytes.Equal(original[i].b, fact.BValue.Value) {
+				t.Fatal("JoinEvidence mutated candidate bytes")
+			}
+		}
+		if got.Attempts != 1 || got.UniqueRows != 1 {
+			t.Fatalf("denominator attempts=%d unique=%d, want 1/1", got.Attempts, got.UniqueRows)
+		}
+		if got.Recovered != 0 || len(got.Observations) != 0 {
+			t.Fatalf("conflict identity recovered a sample: recovered=%d observations=%d", got.Recovered, len(got.Observations))
+		}
+		if len(got.LostAttempts) != 1 || got.LostAttempts[0] != id {
+			t.Fatalf("lost attempts = %+v, want [%+v]", got.LostAttempts, id)
+		}
+		if len(got.Conflicts) != len(facts) {
+			t.Fatalf("retained %d conflicts, want %d: %+v", len(got.Conflicts), len(facts), got.Conflicts)
+		}
+		want := map[string]int{}
+		for _, fact := range facts {
+			want[string(encodeJSON(t, fact))]++
+		}
+		for _, conflict := range got.Conflicts {
+			key := string(encodeJSON(t, conflict))
+			if want[key] == 0 {
+				t.Fatalf("output dropped or swapped a value/citation pairing: %s", encodeJSON(t, conflict))
+			}
+			want[key]--
+		}
+		if len(readings) == 0 {
+			if len(got.Examined) != 0 {
+				t.Fatalf("empty readings examined = %+v", got.Examined)
+			}
+			requireDisposition(t, got, DispositionConflictingEvidence, 0)
+		} else {
+			if len(got.Examined) != len(readings) {
+				t.Fatalf("matching readings examined = %d, want %d", len(got.Examined), len(readings))
+			}
+			requireDisposition(t, got, DispositionConflictingEvidence, len(readings))
+		}
+		encoded = append(encoded, encodeJSON(t, got))
+	}
+	for i := 1; i < len(encoded); i++ {
+		if !bytes.Equal(encoded[0], encoded[i]) {
+			t.Fatal("EvidenceJoin JSON depended on conflict input order")
+		}
 	}
 }

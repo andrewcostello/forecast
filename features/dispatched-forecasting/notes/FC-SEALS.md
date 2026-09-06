@@ -735,3 +735,80 @@ known-red or worklist edits. No new top-level group.
 | F4-ELIGIBLE-PROVENANCE/legal-internal-space-run-directory | Eligible, completed=2; run `run a` | Ban ordinary spaces inside a run-directory name |
 | F4-ELIGIBLE-PROVENANCE/nested-run-id | Both sentinels; all linked IDs/paths `parent/run-a` | Accept a nested run ID that still satisfies `path.Join` |
 | F4-ELIGIBLE-PROVENANCE/dot-cleaned-run-id | Both sentinels; RunID `.` Path `journal.jsonl` | Accept a dot-cleaned pseudo-directory |
+
+## FC-1 third-panel corrective seals
+
+Independent seals for the Operator F1/F4 third-panel ruling at the end of
+`FC-SCAFFOLD.md` on panel `2026-09-06T07-22-04Z-FC-1-corrected-panel`
+(reviewed head `12a0e11ffcef34c9ada4d5949c472560b3c3e200`). The operator
+ruled all findings together; only the two confirmed High gaps require
+behavior corrections. Carried-value disclosure belongs in body Limits and
+FC-1 notes, not a new truth assertion about unavailable source snapshots.
+Claude-2 future-field enumeration, Claude-4 validator factoring, and
+Claude-5 / Grok-2 repeated singleton Execute are disposed nonblocking
+findings and are not sealed here.
+
+No implementation, worklist, known-red, SourceSpec, `recoveredArtifact`,
+`completeManifest`, `journalAttempt`, journal.go comparator, schema, or
+existing-assertion edits. No network, credentials, live/shared journals,
+wallet files/outcomes, subagents, messages, or push. Artifacts and
+AttemptSet facts are hand-built; not via `Build` or `JoinEvidence`. Host
+`filepath.IsAbs` is not the portable proof. Existing POSIX
+absolute/backslash/nested/dot cases remain active.
+
+Allowed files only:
+
+- `internal/dispatched/evidence_panel_contract_test.go`
+- registration in `internal/dispatched/evidence_contract_test.go`
+- append `features/dispatched-forecasting/notes/FC-SEALS.md`
+
+### Codex-1 / Grok-1 drive-qualified provenance
+
+ASCII-letter-plus-colon drive prefixes (upper/lowercase, drive-absolute
+`C:/...` and drive-relative `C:...`) in stored citation paths and
+run-directory components must be refused under a selected root `.`, with
+both `ErrNotEligible` and `ErrSourceIncomplete`. This is host-independent
+drive-prefix rejection, not a Windows filename validator or a blanket
+colon ban. Ordinary relative paths, legal spaces, root `.`, and a
+non-drive relative spelling such as `features/archive:notes/tasks.yaml`
+remain valid. YAML cases use `recoveredArtifact(2)`,
+`updateManifestSource` and `mapAllRecoveredYAML`. Journal cases use
+`withLinkedRunIdentity` for fully linked `C:` / `c:run` identities and
+the corresponding paths, preserving n, models, outcomes and counts.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-PROVENANCE/colon-in-relative-path | Eligible, completed=2; path `features/archive:notes/tasks.yaml` under `features` | Ban every colon in a POSIX filename |
+| F4-ELIGIBLE-PROVENANCE existing live-baseline, legal spaces, root `.`, ordinary-direct-child, legal-internal-space | Eligible, completed=2 | Refuse ordinary relative paths or legal spaces |
+| F4-ELIGIBLE-PROVENANCE/yaml-drive-absolute-upper | Both sentinels; path `C:/outside/tasks.yaml` under root `.` | Accept a Windows drive-absolute YAML citation |
+| F4-ELIGIBLE-PROVENANCE/yaml-drive-absolute-lower | Both sentinels; path `c:/outside/tasks.yaml` | Accept lowercase drive-absolute YAML |
+| F4-ELIGIBLE-PROVENANCE/yaml-drive-relative-upper | Both sentinels; path `C:outside/tasks.yaml` | Accept a drive-relative YAML citation |
+| F4-ELIGIBLE-PROVENANCE/yaml-drive-relative-lower | Both sentinels; path `c:outside/tasks.yaml` | Accept lowercase drive-relative YAML |
+| F4-ELIGIBLE-PROVENANCE/journal-drive-absolute-upper | Both sentinels; RunID `C:` Path `C:/journal.jsonl` | Accept a drive-absolute journal identity that still satisfies `path.Join` |
+| F4-ELIGIBLE-PROVENANCE/journal-drive-absolute-lower | Both sentinels; RunID `c:` Path `c:/journal.jsonl` | Accept lowercase drive-absolute journal identity |
+| F4-ELIGIBLE-PROVENANCE/journal-drive-relative-upper | Both sentinels; RunID `C:run` Path `C:run/journal.jsonl` | Accept a drive-relative run-directory component |
+| F4-ELIGIBLE-PROVENANCE/journal-drive-relative-lower | Both sentinels; RunID `c:run` Path `c:run/journal.jsonl` | Accept lowercase drive-relative run-directory component |
+
+### Claude-1 total conflict ordering
+
+Multiple different conflict facts on one conflict-category identity remain
+legal. Hand-built normalized `AttemptSet` facts have that identity and no
+competing ordinary/ambiguous category. `ReduceAttempts`/`JoinEvidence` are
+not used to manufacture expected facts. Two and three same-ID/same-A facts
+with different B event/value sides, plus complete-citation and Reason tie
+cases, must emit equal whole `EvidenceJoin` JSON under permutations, retain
+every fact with its value/citation pairing, and keep the denominator at one
+attempt. Empty readings and a matching synthetic reading cover both public
+sort sites. Caller slices and candidate bytes stay unchanged. `Err` is not
+serialized and is not an ordering dimension. Distinct valid conflicts are
+not rejected to obtain determinism. No shared production comparator is
+required. `attemptConflictLess` in `journal.go` is untouched.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F1-CONFLICT-TOTAL-ORDER empty-readings and matching-reading `/field-primary-order` | Whole JSON equal; two same-ID facts that already differ on Field; attempts=1 | Discard distinct Field conflicts or mutate caller input |
+| F1-CONFLICT-TOTAL-ORDER `.../b-event-value-two` | Whole JSON equal; two same-A model facts with different B event/value; attempts=1 | Leave B-side ties ordered by caller input |
+| F1-CONFLICT-TOTAL-ORDER `.../b-event-value-three` | Whole JSON equal; three same-A model facts; attempts=1 | Same, for three facts |
+| F1-CONFLICT-TOTAL-ORDER `.../complete-citation-ties` | Whole JSON equal; primary-order ties broken by remaining B.Reading | Ignore remaining A/B citation members |
+| F1-CONFLICT-TOTAL-ORDER `.../reason-ties` | Whole JSON equal; same citations, different Reason | Ignore Reason or treat Err as an order key |
+| F1-CONFLICT-TOTAL-ORDER `.../citation-reason-three` | Whole JSON equal; mixed A/B citation and Reason ties; attempts=1 | Drop a pairing or reject distinct valid conflicts |

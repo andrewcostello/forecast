@@ -827,3 +827,101 @@ review findings, including the first inconclusive parent drive probe caused
 by a temporary reviewer scratch test. Any subsequent review runs each seat in
 its own detached checkout of the same committed head, so scratch probes cannot
 contaminate another reviewer or the body's verified checkout.
+
+## Operator F1/F4 fourth-panel ruling, 2026-09-06
+
+Applies to panel 2026-09-06T07-58-50Z-FC-1-corrected-panel on cef3559.
+Claude requests changes (one High), Codex requests changes (one Medium),
+Grok approves with no findings. The verifier and full 380-result offline gate
+passed at 83.45% coverage. All four isolated review checkouts stayed clean.
+
+### Correction to an earlier operator decision
+
+The second-panel ruling's prohibition on count/list equality was WRONG for
+this frozen schema. It is superseded here, along with the corresponding
+positive-fixture assertion and later notes repeating that exemption.
+`journal.go` explicitly defines complete counted-event lists and least-event
+citations. ReduceAttempts sets Cascades/Corrections/Reviews/Verifications to
+those list lengths (lines 1132-1149 at cef3559). The already-frozen
+`TestFCJournalContract/F2-CORRECTION-KINDS` requires six corrections AND six
+CorrectionEvents: six DISTINCT counted kinds, not one marker contributing six.
+No Journal/Source contract or implementation is changed by restoring that rule
+at artifact eligibility. The prior summaries stay historical; do not erase them
+or describe their incompatible assertions as still-current policy.
+
+1. **Claude-1, carried measurement provenance:** confirmed High. In addition to
+   finite/nonnegative domains, PredictionEligibility must validate the carried
+   measurement/list relationships defined by the existing Attempt schema:
+   - each count equals the length of its COMPLETE corresponding event list;
+     zero count has EvidenceNone, nonzero has EvidenceJournal citing list[0];
+   - known cost/input/output totals (INCLUDING known zero) require a nonempty
+     corresponding list and EvidenceJournal citing its least canonical event;
+     unknown totals remain valid and may retain available contributor lists
+     with EvidenceNone. Do not require unknown quantities to become known;
+   - lists are canonical and contain each EventRef identity once per list.
+     The same spawn may legitimately occur in cost AND token lists, and a
+     corrective spawn in both cost and correction lists. Do not deduplicate
+     across measurement kinds or recompute monetary/token values from payloads;
+   - list refs use the selected attempt journal, a positive physical line and
+     nonzero timestamp no later than cutoff. Types are consistent with the
+     carried field: cascades=agent_fallback; reviews=panel_started;
+     verifications=verification_started; corrections=panel_iterate,
+     verification_iterate or task_spawn_finished; cost/tokens=task_spawn_finished.
+     EventRef lacks spawn_kind/task payload, so do not claim finer authentication
+     or infer a missing payload. Producer line order remains the membership
+     contract; do not invent a stricter clock-within-terminal interval policy;
+   - CostScope remains the frozen CostScopeRecordedSpawns even when amounts are
+     unknown. No other scope is silently licensed as recorded-spawn cost.
+   Refuse contradictions via ErrNotEligible + ErrSourceIncomplete, retaining
+   useful field-specific reasons. These are internal consistency checks on
+   carried data, not source IO, raw-event recomputation or schema expansion.
+2. **Independent fixture repair, tightly bounded:** retain recoveredArtifact's
+   n/IDs/models/outcomes and all existing value/domain assertions. In the two
+   prior F4-ELIGIBLE-NUMERIC-DOMAIN positive cases ONLY, enrich known-zero with
+   a faithful synthetic spawn citation/list for each known zero total; keep
+   Corrections=2 and Cascades=3 in known-positive-with-citations, but supply
+   two and three distinct canonical corresponding refs. Replace ONLY the
+   explicit assertion that counts must differ from list lengths with the
+   correct equality assertion. Document before/after and the superseded ruling.
+   This preserves the positive measurements and adds required proof; it does
+   not authorize weakening unrelated assertions, editing shared helpers,
+   changing thresholds or adding skips. Add new negative cases for unsupported
+   positive quantities, missing/mismatched least citations, count mismatches,
+   duplicate/unordered lists, wrong types, bad lines/future refs and wrong scope,
+   plus valid zero/positive and unknown-with-partial-list controls.
+3. **Claude-2, ambiguous refs:** correct this diagnostic determinism edge using
+   FC-1-private copying/UTC canonicalization or the existing total ref comparator.
+   Preserve all refs and Starts, do not turn ambiguous data into a sample or edit
+   the Journal comparator. Seal two offset-equivalent serialized refs under input
+   permutations, whole EvidenceJoin equality and input immutability. The reviewer
+   correctly notes this exact duplicate-physical-citation shape cannot come from
+   ReduceAttempts; this fix makes retained diagnostics stable, not valid training.
+4. **Claude-3, actionable provenance reasons:** address within FC-1-owned private
+   helpers. Invalid YAML/journal citations must identify the offending stored
+   field/value and the violated source/path/revision/cutoff/producer rule instead
+   of only 'malformed'. Keep exported signatures and the existing typed gate
+   sentinels. Seal representative drive-prefix, ghost-source, repository mismatch,
+   out-of-root and journal-producer/path errors by meaningful components, not an
+   entire punctuation-sensitive error string. Preserve legal paths and all old
+   eligibility decisions other than the ruled measurement consistency correction.
+5. **Codex-1, stronger ordering seals:** independently vary retained B value,
+   A-side citation and other meaningful citation/time tie fields so one changed
+   field cannot mask another. Retain whole-output permutation and input/pairing
+   checks. Exercise conflicts appended during reconciliation after the initial
+   sort, with a bounded corpus and a recorded mutation of the final sort. Try the
+   legacy-comparator replacement as well as removal and report EXACTLY what each
+   mutation proves; do not call one proof the other. Code is fixed to
+   EvidenceConflictCode for valid normalized facts: do not invent a second valid
+   producer code merely to claim exhaustive branch coverage. Record any dimension
+   that is inapplicable to the current legal schema. No shared production oracle.
+6. **Claude-4, root guard ordering:** add the explanatory constraint comment and
+   independent drive-dotdot-root refusal plus ordinary a/.. and '.' controls.
+   Raw drive/absolute/backslash guards must precede root cleaning because cleaning
+   can erase the disallowed prefix. Preserve the rule before the '.' fast path.
+   A redundant traversal check may be removed only if behavior stays identical.
+
+All fourth-panel findings are handled together: independent seals/fixture repair
+first, then a separate pinned body, full gate/offline/coverage, then the next
+isolated verifier/panel. Bodies cannot alter tests. No new budget or native journal
+rewrite. Existing carried-source-value authenticity, future-field/schema,
+validator-factoring and one-shot CLI boundaries remain as previously disclosed.

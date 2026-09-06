@@ -925,3 +925,66 @@ first, then a separate pinned body, full gate/offline/coverage, then the next
 isolated verifier/panel. Bodies cannot alter tests. No new budget or native journal
 rewrite. Existing carried-source-value authenticity, future-field/schema,
 validator-factoring and one-shot CLI boundaries remain as previously disclosed.
+
+## Operator F1/F4 fifth-panel ruling, 2026-09-06
+
+Applies to panel 2026-09-06T09-00-56Z-FC-1-corrected-panel on 00fed57.
+Opus and Grok approve; Sol requests changes with one High and two Medium.
+Opus also records two Low findings. Normal panel consensus is approve, with
+one dissent. This operator correction addresses the independently reproduced
+High, not a new unanimity requirement. Verifier VERIFIED, full gate and455
+offline results green,83.72% statements; all isolated review checkouts clean.
+
+The fourth-panel restoration of complete count/list/least-citation evidence
+remains authoritative. The following clarifies the physical identity used for
+once-per-event membership; it does not reintroduce the superseded count waiver.
+
+1. **Codex-1 physical-event uniqueness: confirmed High.** A physical event is
+   located by selected JournalIdentity plus its positive physical Line. At most
+   one such location may occur in EACH measurement list, regardless of differing
+   At, HasSeq/Seq, Type, Hash or PrevHash metadata. Complete-struct inequality and
+   comparator order are not proof of distinct physical events. Reject repeated
+   locations, including nonadjacent repetitions; retain strict canonical ordering
+   as a separate requirement. Do not deduplicate/repair the invalid input or its
+   declared counts. Preserve ErrNotEligible plus ErrSourceIncomplete and name the
+   field/physical line. Unknown totals with partial lists follow the same per-list
+   rule; the SAME event across DIFFERENT measurement lists stays valid. No global
+   cross-field deduplication, new clock-within-terminal policy, raw-payload IO,
+   finer spawn-kind/value authentication or schema expansion is authorized.
+   Parent public-gate overlay in the fifth panel's operator-probes directory
+   reproduces the gap: two cascades cite the same journal/line/seq/type, differ
+   only by1ns, are ordered and least-cited, and incorrectly become eligible.
+   Independently seal count and cost/token lists, metadata variants, nonadjacent
+   duplicate locations, unknown partial lists, and valid distinct-line/cross-list
+   controls. Existing independently repaired positive fixtures remain unchanged.
+2. **Codex-2 journal mismatch context: confirmed Medium.** For a carried journal
+   differing from the attempt's selected start journal, include concise actual AND
+   expected source_id/run_id/path/producer components as well as the field and
+   mismatch rule. Keep the same eligibility decision and typed errors. Independently
+   seal a structurally valid selected run-b citation on a run-a attempt, requiring
+   meaningful actual/expected components. Do not reopen original source files.
+3. **Codex-3 diagnostic assertion strength: confirmed Medium.** Strengthen the
+   existing provenance cases so a field token cannot also satisfy the violated-rule
+   requirement: e.g. repository plus mismatch/selected, producer plus unsupported,
+   path plus outside/within declared roots, journal path plus direct-child/layout.
+   Keep all stored-value assertions and both sentinels; use semantic components,
+   not punctuation-sensitive whole sentences. Independent seal author may ONLY
+   strengthen these existing rule-token alternatives, never weaken/remove prior
+   cases, value checks or fixture data. Record a bounded overlay mutation removing
+   the rule while retaining field/value and prove the relevant assertion fails.
+4. **Claude-1 attempt context: accepted Low improvement.** Add the canonical
+   attempt run/key/start to the structured-observation error wrapper, retaining
+   its index and detailed inner reason. Independently seal meaningful identity
+   components. No change to source values, grouping, denominator or eligibility.
+5. **Claude-2 redundant root guard: accepted Low cleanup.** Remove only the
+   post-clean '..'/'../' check already covered by portableRelativePath(cleanRoot).
+   Preserve raw drive/absolute/backslash checks BEFORE cleaning, the explanatory
+   comment and the '.' fast path. Existing path/root seals remain active; no new
+   filename grammar or path normalization behavior is added.
+6. **Grok:** approve, no findings. No change assigned.
+
+Address these five findings together: independent seals first, a separate pinned
+Sol body second, full/offline gate and coverage, then an isolated verifier/panel.
+No bodies edits to tests, fixtures, shared helpers, Source/Journal or known-red.
+This is the fifth panel-correction iteration; original native run/budget and all
+historical verdicts remain preserved. No runtime Done until actual acceptance.

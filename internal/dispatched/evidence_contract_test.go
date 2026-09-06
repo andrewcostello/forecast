@@ -70,6 +70,7 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F4-ELIGIBLE-LEGITIMATE-LOSS", testF4EligibleLegitimateLoss)
 	t.Run("F1-ATTEMPT-UNIVERSE", testF1AttemptUniverse)
 	t.Run("F2-JOIN-INPUT-IMMUTABLE", testF2JoinInputImmutable)
+	t.Run("F4-ARTIFACT-CUTOFF-PROOF", testF4ArtifactCutoffProof)
 }
 
 func twoRunUniverse(t *testing.T) (sets []AttemptSet, readings []Reading, journals []JournalIdentity) {

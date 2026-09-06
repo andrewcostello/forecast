@@ -606,3 +606,157 @@ func testF2JoinInputImmutable(t *testing.T) {
 		}
 	})
 }
+
+func testF4ArtifactCutoffProof(t *testing.T) {
+	cutoff := contractCutoff()
+	future := cutoff.Add(time.Minute)
+
+	for _, tc := range []struct {
+		name     string
+		artifact func() Artifact
+		eligible bool
+	}{
+		{name: "reading-recorded-at-after-cutoff", artifact: func() Artifact {
+			return withRecoveredRecordedAt(recoveredArtifact(2), 0, future)
+		}},
+		{name: "reading-recorded-at-exact-cutoff", artifact: func() Artifact {
+			return withRecoveredRecordedAt(recoveredArtifact(2), 0, cutoff)
+		}, eligible: true},
+		{name: "yaml-terminal-after-cutoff", artifact: func() Artifact {
+			return withYAMLOnlyTerminal(recoveredArtifact(2), 0, future)
+		}},
+		{name: "yaml-terminal-exact-cutoff", artifact: func() Artifact {
+			return withYAMLOnlyTerminal(recoveredArtifact(2), 0, cutoff)
+		}, eligible: true},
+		{name: "recovered-audit-completed-at-after-cutoff", artifact: func() Artifact {
+			return withExaminedCompletedAt(recoveredArtifact(2), 0, future)
+		}},
+		{name: "duplicate-audit-completed-at-after-cutoff", artifact: func() Artifact {
+			return withDuplicateReadingCompletedAt(recoveredArtifact(2), future)
+		}},
+		{name: "unfinished-at-cutoff-two-completed", artifact: func() Artifact {
+			return unfinishedObservationAtCutoff(recoveredArtifact(3), 2)
+		}, eligible: true},
+		{name: "unfinished-elapsed-shorter-than-cutoff", artifact: func() Artifact {
+			return withUnfinishedElapsedDelta(recoveredArtifact(3), 2, -time.Minute)
+		}},
+		{name: "unfinished-elapsed-longer-than-cutoff", artifact: func() Artifact {
+			return withUnfinishedElapsedDelta(recoveredArtifact(3), 2, time.Minute)
+		}},
+		{name: "after-cutoff-diagnostic-future-time", artifact: func() Artifact {
+			return withAfterCutoffDiagnostic(recoveredArtifact(2), future)
+		}, eligible: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			art := tc.artifact()
+			if tc.eligible {
+				got, err := PredictionEligibility(art, eligibleTargets(), 2, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !got.Eligible || len(got.Cells) != 1 || got.Cells[0].Completed != 2 {
+					t.Fatalf("eligibility = %+v", got)
+				}
+				return
+			}
+			requireRefuseInvalid(t, art)
+		})
+	}
+}
+
+func withRecoveredRecordedAt(art Artifact, i int, recordedAt time.Time) Artifact {
+	obs := art.Evidence.Observations[i]
+	ref := obs.Readings[0]
+	ref.RecordedAt = recordedAt
+	obs.Readings[0] = ref
+	obs.Attempt.Evidence.Role.Reading = ref
+	art.Evidence.Observations[i] = obs
+	art.Evidence.Examined[i].Reading = ref
+	return art
+}
+
+func withYAMLOnlyTerminal(art Artifact, i int, terminal time.Time) Artifact {
+	obs := art.Evidence.Observations[i]
+	citation := FieldEvidence{Source: EvidenceYAML, Reading: obs.Readings[0]}
+	obs.Attempt.TerminalAt = terminal
+	obs.Attempt.Elapsed = terminal.Sub(obs.Attempt.ID.StartedAt)
+	obs.Attempt.Wall.Elapsed = obs.Attempt.Elapsed
+	obs.Attempt.Evidence.Terminal = citation
+	obs.Attempt.Evidence.Elapsed = citation
+	art.Evidence.Observations[i] = obs
+	art.Evidence.RowsWithYAMLOnlyTerminal = 1
+	art.Evidence.Examined[i].CompletedAt = Known(terminal)
+	return art
+}
+
+func withExaminedCompletedAt(art Artifact, i int, completedAt time.Time) Artifact {
+	art.Evidence.Examined[i].CompletedAt = Known(completedAt)
+	return art
+}
+
+func withDuplicateReadingCompletedAt(art Artifact, completedAt time.Time) Artifact {
+	obs := art.Evidence.Observations[0]
+	dup := obs.Readings[0]
+	dup.Row = 99
+	obs.Readings = append(append([]ReadingRef{}, obs.Readings...), dup)
+	art.Evidence.Observations[0] = obs
+	extra := art.Evidence.Examined[0]
+	extra.Reading = dup
+	extra.CompletedAt = Known(completedAt)
+	extra.Disposition = DispositionDuplicateReading
+	extra.Reason = "additional compatible reading of recovered attempt"
+	art.Evidence.Examined = append(append([]Examined{}, art.Evidence.Examined...), extra)
+	setDispositionCount(art, DispositionDuplicateReading, 1)
+	return art
+}
+
+func unfinishedObservationAtCutoff(art Artifact, i int) Artifact {
+	cutoff := art.SourceManifest.Cutoff
+	obs := art.Evidence.Observations[i]
+	obs.Attempt.Outcome = OutcomeUnfinished
+	obs.Attempt.Evidence.Terminal = FieldEvidence{}
+	obs.Attempt.Evidence.Elapsed = FieldEvidence{}
+	obs.Attempt.Elapsed = cutoff.Sub(obs.Attempt.ID.StartedAt)
+	obs.Attempt.Wall.Elapsed = obs.Attempt.Elapsed
+	obs.Attempt.TerminalAt = time.Time{}
+	art.Evidence.Observations[i] = obs
+	art.Evidence.Examined[i].CompletedAt = Unknown[time.Time]()
+	return art
+}
+
+func withUnfinishedElapsedDelta(art Artifact, i int, delta time.Duration) Artifact {
+	art = unfinishedObservationAtCutoff(art, i)
+	obs := art.Evidence.Observations[i]
+	obs.Attempt.Elapsed += delta
+	obs.Attempt.Wall.Elapsed = obs.Attempt.Elapsed
+	art.Evidence.Observations[i] = obs
+	return art
+}
+
+func withAfterCutoffDiagnostic(art Artifact, at time.Time) Artifact {
+	ref := art.Evidence.Observations[0].Readings[0]
+	ref.Row = 100
+	ref.RecordedAt = at
+	art.Evidence.Examined = append(append([]Examined{}, art.Evidence.Examined...), Examined{
+		Identity: ReadingIdentity{
+			RunID:     Known("run-z"),
+			Key:       Known("KZ"),
+			StartedAt: Known(at),
+		},
+		CompletedAt: Known(at),
+		Reading:     ref,
+		Disposition: DispositionAfterCutoff,
+		Reason:      "reading contains evidence after the extraction cutoff",
+	})
+	setDispositionCount(art, DispositionAfterCutoff, 1)
+	return art
+}
+
+func setDispositionCount(art Artifact, d Disposition, n int) {
+	for i, row := range art.Evidence.Dispositions {
+		if row.Disposition == d {
+			art.Evidence.Dispositions[i].Count = n
+			return
+		}
+	}
+}

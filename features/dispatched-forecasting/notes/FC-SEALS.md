@@ -624,3 +624,26 @@ Hand-built only; never via `JoinEvidence` or `Build`.
 | F2-JOIN-INPUT-IMMUTABLE/ambiguous-refs | Caller-owned ambiguous Refs unchanged | `sort.Slice` on the input backing array |
 | CLI F4-GATE-REQUIRES-TASKS | Missing `--tasks` under either gate flag refuses (RunE) | Succeed without `--tasks` |
 | CLI F4-GATE-BYPASS-EMPTY-TARGET | Direct helper writes diagnostics then `ErrEmptyTarget`+`ErrNotEligible` | Vacuous gate success when `TargetTasks` is omitted |
+
+## F4 cutoff integrity seals
+
+Independent seals for the Operator F4 cutoff integrity follow-up at the end of
+`FC-SCAFFOLD.md`. Parent overlay on `a4736d75` proved a future recovered
+`ReadingRef.RecordedAt` and a future YAML terminal incorrectly eligible; the
+healthy control passed. `recoveredArtifact` and prior seals are unchanged.
+Bodies remain a separate correction. Invalid cases require `!Eligible` plus
+both `ErrNotEligible` and `ErrSourceIncomplete`. Positive controls require
+eligible with completed=2. Optional producer/cost fields are not demanded.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ARTIFACT-CUTOFF-PROOF/reading-recorded-at-after-cutoff | Both sentinels; Role and Examined refs updated with the same future `RecordedAt` | Treat future recovered `RecordedAt` as in-sample |
+| F4-ARTIFACT-CUTOFF-PROOF/reading-recorded-at-exact-cutoff | Eligible, completed=2 | Refuse exact-cutoff recovered `RecordedAt` |
+| F4-ARTIFACT-CUTOFF-PROOF/yaml-terminal-after-cutoff | Both sentinels; coherent elapsed/wall, matching YAML terminal+elapsed ref, YAML-only count, Examined.CompletedAt | Accept a YAML terminal after cutoff |
+| F4-ARTIFACT-CUTOFF-PROOF/yaml-terminal-exact-cutoff | Eligible, completed=2 | Refuse an exact-cutoff YAML terminal |
+| F4-ARTIFACT-CUTOFF-PROOF/recovered-audit-completed-at-after-cutoff | Both sentinels; journal terminal remains earlier | Ignore future recovered `CompletedAt` |
+| F4-ARTIFACT-CUTOFF-PROOF/duplicate-audit-completed-at-after-cutoff | Both sentinels; journal terminal remains earlier | Ignore future duplicate-reading `CompletedAt` |
+| F4-ARTIFACT-CUTOFF-PROOF/unfinished-at-cutoff-two-completed | Eligible, completed=2 from `recoveredArtifact(3)` with unused `TerminalAt` zero | Count the unfinished row as completed, or refuse a valid unfinished-to-cutoff sample |
+| F4-ARTIFACT-CUTOFF-PROOF/unfinished-elapsed-shorter-than-cutoff | Both sentinels; `Wall.Elapsed` aligned | Accept unfinished elapsed shorter than cutoff |
+| F4-ARTIFACT-CUTOFF-PROOF/unfinished-elapsed-longer-than-cutoff | Both sentinels; `Wall.Elapsed` aligned | Accept unfinished elapsed longer than cutoff |
+| F4-ARTIFACT-CUTOFF-PROOF/after-cutoff-diagnostic-future-time | Eligible, completed=2; COMPLETE sources and recovered counts preserved | Blanket-refuse a correctly excluded AfterCutoff envelope |

@@ -553,3 +553,14 @@ Panel `2026-09-06T04-03-09Z-FC-SOURCES-corrected-panel`:
 
 Other nonblocking source findings remain for explicit body/adjudication
 assessment; these test changes do not authorize a silent contract change.
+
+## Operator FC-1 legacy CLI fixture repair
+
+The successful synthetic CLI fixture predates the accepted F2/F3 producer contract. Its assertions expect one valid implementing attempt and successful source extraction; they do not test unknown-producer refusal. Add the explicit synthetic dispatcher 0.1.0 run_started declaration, keeping every existing task event, measurement, flag and assertion unchanged. Unknown/missing producer refusal remains mandatory and its independent Journal/Source seals stay active. This is an operator seal repair under an existing frozen contract, not permission for the body to infer producer versions or edit fixtures. The body ab165c7 stays unchanged. The two old positive CLI tests are the observed red baseline; all new owned contract groups already pass.
+
+The embedded fixture is explicitly synthetic; the added header declares the
+semantics its expected successful observations require. It is not fabricated
+metadata on a recorded journal. No prior assertion, event measurement, test
+registration, known-red entry, or implementation changed. The observed failures
+and subsequent gate/mutation evidence are recorded at
+`/home/andrew/Project/dispatcher-runs/2026-09-06T04-57-54Z-FC-1-resolution`.

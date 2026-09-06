@@ -312,6 +312,7 @@ func newCommandFixture(t *testing.T) commandFixture {
 		"  - key: T1\n    role: bodies\n    model: stamp\n"+
 		"  - key: T2\n    role: seals\n    model: never-seen\n")
 	writeFile(t, filepath.Join(fixture.runs, "run", "journal.jsonl"), strings.Join([]string{
+		`{"event_type":"run_started","timestamp":"2026-01-01T00:00:00Z","payload":{"dispatcher_version":"0.1.0"}}`,
 		`{"event_type":"task_started","task_key":"ROW","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"authored"}}`,
 		`{"event_type":"task_spawn_finished","task_key":"ROW","timestamp":"2026-01-01T00:30:00Z","payload":{"spawn_kind":"implementer","model":"stamp","cost_usd":1.5}}`,
 		`{"event_type":"task_done","task_key":"ROW","timestamp":"2026-01-01T01:00:00Z","payload":null}`,

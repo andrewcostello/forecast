@@ -1039,6 +1039,28 @@ func testF3GitRequestReadonly(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("symbolic-ref-readonly", func(t *testing.T) {
+		for _, request := range []SourceGitRequest{
+			{Args: []string{"symbolic-ref", "--quiet", "HEAD"}},
+			{Args: []string{"show-ref", "--verify", "--quiet", "refs/heads/main"}},
+		} {
+			if err := validateSourceGitRequest(request); err != nil {
+				t.Errorf("accepted read-only form %v rejected: %v", request.Args, err)
+			}
+		}
+		for _, request := range []SourceGitRequest{
+			{Args: []string{"symbolic-ref", "HEAD", "refs/heads/main"}},
+			{Args: []string{"symbolic-ref", "-d", "HEAD"}},
+			{Args: []string{"symbolic-ref", "--delete", "HEAD"}},
+			{Args: []string{"symbolic-ref", "--quiet", "HEAD", "refs/heads/main"}},
+			{Args: []string{"symbolic-ref", "-m", "reason", "HEAD", "refs/heads/main"}},
+		} {
+			if err := validateSourceGitRequest(request); !errors.Is(err, ErrInvalidSourceSpec) {
+				t.Errorf("write/delete symbolic-ref %v = %v, want ErrInvalidSourceSpec", request.Args, err)
+			}
+		}
+	})
 }
 
 func testF3DetachedHeadAllRefs(t *testing.T) {
@@ -1135,6 +1157,10 @@ func testF3GitBufferedExitRead(t *testing.T) {
 	if !fixturePathAppears(marker, fixtureHarnessWait) {
 		t.Fatal("controlled child never wrote its successful payload")
 	}
+	waitSourceGitProcessDone(t, reader)
+	// Cross the old one-second post-Wait cleanup deadline after Wait has been
+	// observed. This sequences processDone then a wall delay; it does not prove
+	// a concurrent reader/Wait interleaving beyond that order.
 	deadline := time.NewTimer(time.Second + 400*time.Millisecond)
 	<-deadline.C
 	deadline.Stop()
@@ -1145,8 +1171,8 @@ func testF3GitBufferedExitRead(t *testing.T) {
 	if string(got.data) != payload {
 		t.Fatalf("delayed read lost buffered git output after successful exit: got %q (%d bytes) err=%v, want full %d-byte payload", got.data, len(got.data), got.err, len(payload))
 	}
-	if got.err != nil && errors.Is(got.err, io.EOF) && len(got.data) < len(payload) {
-		t.Fatalf("forced pipe close became a clean truncated EOF: err=%v len=%d", got.err, len(got.data))
+	if got.err != nil {
+		t.Fatalf("delayed read after successful child exit terminal err=%v, want nil with the full payload", got.err)
 	}
 	if err := closeSourceReader(t, reader, "buffered-exit git reader"); err != nil {
 		t.Errorf("close after delayed successful read = %v, want nil", err)
@@ -1248,5 +1274,279 @@ func testF3GitGraftInspectError(t *testing.T) {
 	}
 	if validateErr := manifest.ValidateComplete(); !errors.Is(validateErr, ErrSourceIncomplete) {
 		t.Fatalf("uninspectable grafts ValidateComplete = %v, want ErrSourceIncomplete", validateErr)
+	}
+}
+
+func writeGitHEAD(t *testing.T, repo, contents string) {
+	t.Helper()
+	path := filepath.Join(repo, ".git", "HEAD")
+	if err := os.WriteFile(path, []byte(contents), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitSourceGitProcessDone(t *testing.T, reader io.ReadCloser) {
+	t.Helper()
+	gitReader, ok := reader.(*sourceGitReadCloser)
+	if !ok {
+		t.Fatalf("runSourceGit reader is %T, want *sourceGitReadCloser", reader)
+	}
+	timer := time.NewTimer(fixtureHarnessWait)
+	defer timer.Stop()
+	select {
+	case <-gitReader.processDone:
+	case <-timer.C:
+		t.Fatalf("git child did not exit within %s", fixtureHarnessWait)
+	}
+}
+
+func panelHistoryWithJournal(t *testing.T, repo string) (*SourceManifest, *SourceReadings, error) {
+	t.Helper()
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-root", "synthetic-utc-offset.jsonl")
+	return readContractSources(t, []SourceSpec{
+		journalSpec("j", runs),
+		historySpec("hist", repo, "", "features"),
+	}, defaultSelection(), ReadBounds{})
+}
+
+func reasonNamesEntry(report SourceReport, err error, name string) bool {
+	if name == "" {
+		return false
+	}
+	if err != nil && strings.Contains(err.Error(), name) {
+		return true
+	}
+	for _, reason := range report.Reasons {
+		if strings.Contains(reason, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func testF3HeadSymbolicInvalid(t *testing.T) {
+	t.Run("invalid-double-dot-target", func(t *testing.T) {
+		repo := initGitRepo(t)
+		repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+		mainCommit := repo.commit("seed", "features")
+		writeGitHEAD(t, repo.path, "ref: refs/heads/main..bad\n")
+		manifest, _, err := panelHistoryWithJournal(t, repo.path)
+		if manifest == nil {
+			t.Fatalf("nil manifest on invalid symbolic HEAD: %v", err)
+		}
+		hist := panelSourceByID(t, manifest, "hist")
+		if hist.State == SourceComplete || manifest.State == SourceComplete {
+			t.Fatalf("invalid symbolic HEAD %q with valid refs produced COMPLETE: hist=%+v main=%s err=%v", "refs/heads/main..bad", hist, mainCommit, err)
+		}
+		if !errors.Is(err, ErrGitHistory) {
+			t.Fatalf("invalid symbolic HEAD = %v (state=%s), want typed ErrGitHistory", err, hist.State)
+		}
+	})
+
+	t.Run("missing-symbolic-target", func(t *testing.T) {
+		repo := initGitRepo(t)
+		repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+		mainCommit := repo.commit("seed", "features")
+		writeGitHEAD(t, repo.path, "ref: refs/heads/does-not-exist\n")
+		manifest, _, err := panelHistoryWithJournal(t, repo.path)
+		if manifest == nil {
+			t.Fatalf("nil manifest on missing symbolic HEAD target: %v", err)
+		}
+		hist := panelSourceByID(t, manifest, "hist")
+		if hist.State == SourceComplete || manifest.State == SourceComplete {
+			t.Fatalf("symbolic HEAD to missing refs/heads/does-not-exist with valid main %s produced COMPLETE: hist=%+v err=%v", mainCommit, hist, err)
+		}
+		if !errors.Is(err, ErrGitHistory) {
+			t.Fatalf("missing symbolic HEAD target = %v (state=%s), want typed ErrGitHistory", err, hist.State)
+		}
+	})
+
+	t.Run("unborn-absence-control", func(t *testing.T) {
+		repo := initGitRepo(t)
+		manifest, _, err := panelHistoryWithJournal(t, repo.path)
+		if manifest == nil {
+			t.Fatalf("nil manifest on unborn symbolic HEAD: %v", err)
+		}
+		hist := panelSourceByID(t, manifest, "hist")
+		if _, haveHEAD := panelResolvedRef(hist.ResolvedRefs, "HEAD"); haveHEAD {
+			t.Fatalf("verified unborn symbolic HEAD was recorded as a resolved ref: %+v", hist.ResolvedRefs)
+		}
+		if hist.State == SourceComplete || manifest.State == SourceComplete {
+			t.Fatal("unborn symbolic HEAD produced COMPLETE")
+		}
+		if errors.Is(err, ErrGitHistory) {
+			t.Fatalf("verified unborn symbolic HEAD was treated as a typed Git history fault: %v", err)
+		}
+		if hist.State != SourcePartial {
+			t.Fatalf("unborn symbolic HEAD state = %q, want PARTIAL absence", hist.State)
+		}
+	})
+
+	t.Run("missing-detached-peel-control", func(t *testing.T) {
+		repo := initGitRepo(t)
+		repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+		mainCommit := repo.commit("seed", "features")
+		missing := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+		if missing == mainCommit {
+			t.Fatal("missing detached fixture ID collided with main")
+		}
+		writeGitHEAD(t, repo.path, missing+"\n")
+		manifest, _, err := panelHistoryWithJournal(t, repo.path)
+		if manifest == nil {
+			t.Fatalf("nil manifest on missing detached HEAD: %v", err)
+		}
+		hist := panelSourceByID(t, manifest, "hist")
+		if hist.State == SourceComplete || manifest.State == SourceComplete {
+			t.Fatalf("missing detached HEAD object produced COMPLETE: hist=%+v err=%v", hist, err)
+		}
+		if !errors.Is(err, ErrGitHistory) {
+			t.Fatalf("missing detached HEAD peel = %v, want typed ErrGitHistory", err)
+		}
+	})
+}
+
+func testF3JournalSymlinkChild(t *testing.T) {
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-real", "synthetic-utc-offset.jsonl")
+	if err := os.Symlink("run-real", filepath.Join(runs, "latest")); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, readings, err := readContractSources(t, []SourceSpec{
+		journalSpec("j", runs),
+	}, defaultSelection(), ReadBounds{})
+	if manifest != nil && (manifest.State == SourceComplete || panelSourceByID(t, manifest, "j").State == SourceComplete) {
+		t.Fatalf("journal root with a real run plus direct-child symlink latest reported COMPLETE: err=%v sources=%+v", err, manifest.Sources)
+	}
+	var journal SourceReport
+	if manifest != nil {
+		journal = panelSourceByID(t, manifest, "j")
+	}
+	if journal.State != SourcePartial {
+		t.Fatalf("journal symlink child state = %q, want PARTIAL; err=%v", journal.State, err)
+	}
+	if !reasonNamesEntry(journal, err, "latest") {
+		t.Fatalf("PARTIAL journal reasons do not name omitted symlink entry latest: reasons=%v err=%v", journal.Reasons, err)
+	}
+	if readings != nil {
+		for _, parsed := range readings.Journals {
+			if parsed.Journal.RunID == "latest" || strings.Contains(parsed.Journal.Path, "latest") {
+				t.Fatalf("traversed journal symlink alias latest: %+v", parsed.Journal)
+			}
+		}
+		for _, reading := range readings.Readings {
+			if strings.Contains(reading.Ref.Path, "latest") {
+				t.Fatalf("consumed journal evidence through symlink alias latest: %+v", reading.Ref)
+			}
+		}
+	}
+	if manifest != nil {
+		if validateErr := manifest.ValidateComplete(); !errors.Is(validateErr, ErrSourceIncomplete) {
+			t.Fatalf("symlink-omitted journal ValidateComplete = %v, want ErrSourceIncomplete", validateErr)
+		}
+	}
+}
+
+func testF3OpenSourceSymlinkParent(t *testing.T) {
+	root := t.TempDir()
+	mustMkdirAllT(t, filepath.Join(root, "real-run"))
+	legitPath := filepath.Join(root, "real-run", "journal.jsonl")
+	const payload = "legit-confined-journal\n"
+	writeFileT(t, legitPath, payload)
+	if err := os.Symlink("real-run", filepath.Join(root, "alias-run")); err != nil {
+		t.Fatal(err)
+	}
+
+	budget, err := newSourceBudget(ReadBounds{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := budget.setFileRoot(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(budget.closeFileRoot)
+
+	ctx := context.Background()
+	reader, err := openSourceFile(ctx, "real-run/journal.jsonl", budget, true)
+	if err != nil {
+		t.Fatalf("legitimate journal open: %v", err)
+	}
+	data, readErr := io.ReadAll(reader)
+	if closeErr := closeSourceReader(t, reader, "legitimate journal"); closeErr != nil {
+		t.Errorf("close legitimate journal: %v", closeErr)
+	}
+	if readErr != nil {
+		t.Fatalf("read legitimate journal: %v", readErr)
+	}
+	if string(data) != payload {
+		t.Fatalf("legitimate journal payload = %q, want %q", data, payload)
+	}
+
+	_, err = openSourceFile(ctx, "alias-run/journal.jsonl", budget, true)
+	if err == nil {
+		t.Fatal("openSourceFile followed an in-root symlink parent")
+	}
+	if !errors.Is(err, ErrSourceMissing) && !errors.Is(err, ErrInvalidSourceSpec) {
+		t.Fatalf("symlink-parent journal open = %v, want ErrSourceMissing or ErrInvalidSourceSpec", err)
+	}
+
+	reader, err = openSourceFile(ctx, "real-run/journal.jsonl", budget, true)
+	if err != nil {
+		t.Fatalf("legitimate journal reopen after refused symlink parent: %v", err)
+	}
+	_ = closeSourceReader(t, reader, "legitimate journal reopen")
+}
+
+func testF3GitCloseSelfCancel(t *testing.T) {
+	state := t.TempDir()
+	marker := filepath.Join(state, "holding-stderr")
+	release := filepath.Join(state, "release")
+	installFixtureGitWrapper(t, fmt.Sprintf(
+		"trap '' HUP\n( : > %s\n  while [ ! -e %s ]; do sleep 1; done\n) </dev/null >&2 &\nwhile [ ! -e %s ]; do sleep 1; done\nprintf 'OK'",
+		shellQuote(marker), shellQuote(release), shellQuote(marker),
+	))
+	budget, err := newSourceBudget(ReadBounds{MaxProcesses: 1, MaxTotalBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	call := startFixtureGit(ctx, t.TempDir(), budget, SourceGitRequest{Args: []string{"rev-parse", "HEAD"}})
+	pending := true
+	var reader io.ReadCloser
+	t.Cleanup(func() {
+		releaseFixturePath(t, release)
+		cancel()
+		if pending {
+			if completed, ok := waitFixtureGit(call, fixtureHarnessWait); ok {
+				pending = false
+				reader = completed.reader
+			}
+		}
+		_ = closeSourceReader(t, reader, "self-cancel git reader cleanup")
+	})
+	started, ok := waitFixtureGit(call, fixtureHarnessWait)
+	if !ok {
+		t.Fatal("runSourceGit did not return a reader within the harness bound")
+	}
+	pending = false
+	if started.err != nil {
+		t.Fatal(started.err)
+	}
+	reader = started.reader
+	if reader == nil {
+		t.Fatal("nil git reader")
+	}
+	if !fixturePathAppears(marker, fixtureHarnessWait) {
+		t.Fatal("controlled child never held the inherited stderr pipe")
+	}
+	waitSourceGitProcessDone(t, reader)
+	err = closeSourceReader(t, reader, "caller-close after successful exit")
+	reader = nil
+	if err != nil && errors.Is(err, ErrGitHistory) && (strings.Contains(err.Error(), "incomplete stderr") || errors.Is(err, ErrSourceCancelled)) {
+		t.Fatalf("Close after successful child exit returned a fake incomplete-stderr Git fault from ioCtx cancellation: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("Close after successful child exit = %v, want nil", err)
 	}
 }

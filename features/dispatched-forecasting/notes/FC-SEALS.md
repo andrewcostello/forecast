@@ -467,10 +467,49 @@ the operator split, and FC-1 ownership are unchanged. New cases register inside
 | Case | Expected | Mutation that must fail |
 |---|---|---|
 | F3-DETACHED-HEAD-ALL-REFS | Detached-only commit is enumerated (`git:<sha>`). `ResolvedRefs` records `HEAD` at that SHA and `refs/heads/main` at the branch tip. COMPLETE cannot omit it. Fixture uses the existing per-repo clock. | Walk only `for-each-ref` tips; omit `HEAD`; claim COMPLETE without the detached commit |
-| F3-GIT-BUFFERED-EXIT-READ | Controlled child writes a unique payload and exits 0. After the old one-second cleanup deadline, `Read` still returns the full payload. Forced close is not a clean truncated EOF. Bounded waits/cleanup (`fixtureHarnessWait`), minimal env, no network. Current body races `waitForProcess` pipe close against a later `Fd`/`Read` and stalls until the harness bound. | Close stdout one second after `Wait` and map `os.ErrClosed` to `io.EOF`; stall or return short data with nil/`EOF` |
+| F3-GIT-BUFFERED-EXIT-READ | Controlled child writes a unique payload and exits 0. The test waits on the private `sourceGitReadCloser.processDone` channel, then crosses the old one-second post-Wait cleanup deadline, then `Read`s. Exact full payload and a nil terminal read error are both required. The wait is `processDone` then a wall delay, not a proof of concurrent reader/Wait interleaving. Bounded waits/cleanup (`fixtureHarnessWait`), minimal env, no network. | Close stdout one second after `Wait` and map `os.ErrClosed` to `io.EOF`; stall, return short data, or return the full payload with a non-nil terminal error |
 | F3-BOUND-METADATA-FRAGMENT | Metadata byte cap cutting a commit header or its timestamp returns `ErrBoundExceeded`. Do not reclassify the fragment as malformed Git syntax. | Parse the truncated line first and wrap only `ErrGitHistory` |
 | F3-NONCOMMIT-REF-PEEL | Fallback `rev-parse --verify --end-of-options` peels the captured object ID. Argv must contain `<id>^{commit}` and must not contain `refs/odd/blob^{commit}`. Noncommit refs still cannot produce COMPLETE. | Peel the live ref name; skip the blob ref and mark COMPLETE |
 | F3-GIT-GRAFT-INSPECT-ERROR | Self-symlink/uninspectable `info/grafts` cannot yield COMPLETE. `ValidateComplete` wraps `ErrSourceIncomplete`. NotExist remains the only missing-graft case. | Treat every `Stat` failure as absent grafts and return COMPLETE |
 | F3-GIT-REQUEST-READONLY/bounded-rev-list-without-topo | Bounded `rev-list --max-count=4 --format=%cI` with `--all` or a SHA, optionally `--parents`, is a valid read-only form. Existing `--topo-order` forms stay valid. | Keep the grammar pinned to `--topo-order` as args[1] so snapshot-tip batches cannot run |
 
 Atomic final-component open, fallback cancel/bound wrapping, provider-side walk laziness, and argv independence from ref count remain **body code-review obligations**. No flaky TOCTOU test, no giant timed walk benchmark, and no new public Git request field. Per-commit `ls-tree` stays advisory.
+
+## FC-SOURCES incomplete-discovery corrective seals
+
+Independent seals for frozen-contract defects from
+`2026-09-06T03-12-17Z-FC-SOURCES-corrected-panel` and the operator F3
+ruling at the end of `FC-SCAFFOLD.md` ("incomplete discovery and capped
+subsets"). Existing assertions, fixtures, the operator split, and FC-1
+ownership are unchanged. New cases register inside `TestFCSourcesContract`
+only. Bodies cannot edit these seals.
+
+### Latest panel dispositions
+
+| Finding | Disposition |
+|---|---|
+| Journal discovery silently drops direct-child symlinks | `F3-JOURNAL-SYMLINK-CHILD`. One real run plus a direct-child symlink (named `latest`, targeting the in-root real run) must be PARTIAL with a reason naming `latest`, never COMPLETE. No traversal. No `latest` exemption. Local fixture target only. |
+| Invalid/corrupt HEAD treated as unborn | `F3-HEAD-SYMBOLIC-INVALID`. `ref: refs/heads/main..bad` and a simple missing symbolic target in a repo that still has `refs/heads/main` must be typed `ErrGitHistory`/PARTIAL, never COMPLETE. Genuine unborn symbolic HEAD remains a valid absence control. Missing detached object is a GREEN typed-`ErrGitHistory` control: `rev-parse --verify --quiet HEAD` returns the missing ID with exit 0 and the existing captured-ID peel already fails; that is not a new red defect. |
+| Final journal parent follows in-root directory symlink | `F3-OPEN-SOURCE-SYMLINK-PARENT`. Direct `openSourceFile` of `journal.jsonl` under an in-root symlink parent is refused. Deterministic static layout, not a rename race. Held confined root uses existing budget helpers. Legitimate `real-run/journal.jsonl` still opens. |
+| Caller `Close` after successful exit becomes incomplete-stderr | `F3-GIT-CLOSE-SELF-CANCEL`. Close without Read after a 0-exit child must not return `ErrGitHistory` incomplete-stderr caused solely by `ioCtx` cancellation. Controlled inherited stderr pipe, bounded wait on private `processDone`, release of the descendant. Existing `F3-GIT-CLOSE-ERRORS` nonzero-exit, parent-cancel, and bound seals stay. |
+| Buffered-exit read not synchronized on `processDone` | `F3-GIT-BUFFERED-EXIT-READ` tightened: wait on private `processDone` before crossing the old cleanup deadline; require exact full payload **and** nil terminal read error. No public hook. No stronger scheduling claim than `processDone` then a wall delay. |
+| Newest-N / HEAD-first capped subset | **Rejected as acceptance.** Operator: a binding `MaxCommits` retains a deterministic traversal-order subset and PARTIAL. No global newest-N or HEAD-within-cap promise. COMPLETE uncapped history must still include every captured tip/HEAD (`F3-DETACHED-HEAD-ALL-REFS`, `F3-GIT-FULL-HISTORY`). Bounded snapshot-tip batches remain permitted. Recorded as a contract assumption, not unimplemented acceptance. |
+| Remaining-capacity batch metadata | **Optimization request, not acceptance.** Repeated metadata reads consume the actual total-byte budget and may cause PARTIAL. Duplicate metadata charges are permitted. Remaining-capacity batching that miscounts duplicates is not required. |
+| Unix build-tag restoration | **Body/code-review.** No new platform-specific imports in shared tests. |
+| `O_NONBLOCK` on accepted regular files | **Body/code-review.** Nonblocking may remain on the atomic type-probe open to avoid a FIFO-open hang. No unbounded FIFO fixture. Clearing nonblocking on accepted regular files is not sealed here. |
+
+### Latest cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F3-HEAD-SYMBOLIC-INVALID/invalid-double-dot-target | Repo with valid `refs/heads/main` and HEAD `ref: refs/heads/main..bad` is typed `ErrGitHistory` and not COMPLETE. | Treat `rev-parse --verify --quiet HEAD` exit 1 as unborn and return COMPLETE |
+| F3-HEAD-SYMBOLIC-INVALID/missing-symbolic-target | Symbolic HEAD to `refs/heads/does-not-exist` while `main` exists is typed `ErrGitHistory` and not COMPLETE. | Omit HEAD and walk only `main` as COMPLETE |
+| F3-HEAD-SYMBOLIC-INVALID/unborn-absence-control | Verified unborn symbolic HEAD is omitted, PARTIAL, and not a typed `ErrGitHistory` fault. | Record HEAD, mark COMPLETE, or classify unborn as corrupt Git history |
+| F3-HEAD-SYMBOLIC-INVALID/missing-detached-peel-control | Missing detached object ID is typed `ErrGitHistory`/not COMPLETE via the existing captured-ID peel. Green control. | Ignore peel failure and return COMPLETE |
+| F3-GIT-REQUEST-READONLY/symbolic-ref-readonly | Exact `symbolic-ref --quiet HEAD` and `show-ref --verify --quiet refs/heads/main` are valid. Write/delete `symbolic-ref` forms wrap `ErrInvalidSourceSpec`. | Reject the read-only inspections; allow `symbolic-ref HEAD <ref>` / `-d` / `--delete` |
+| F3-JOURNAL-SYMLINK-CHILD | Real run plus direct-child symlink `latest` is PARTIAL with a reason naming `latest`, never COMPLETE, and `latest` is not traversed. | `continue` with no reason so one real run becomes COMPLETE; traverse the alias; exempt `latest` |
+| F3-OPEN-SOURCE-SYMLINK-PARENT | `openSourceFile` on `alias-run/journal.jsonl` (in-root symlink parent) is refused (`ErrSourceMissing` or `ErrInvalidSourceSpec`). `real-run/journal.jsonl` still opens on the same held root. | `root.Open(parent)` follows the in-root directory symlink and reads the file |
+| F3-GIT-CLOSE-SELF-CANCEL | After a 0-exit child whose inherited stderr is still held, caller Close without Read returns nil, not incomplete-stderr `ErrGitHistory` from `ioCtx` cancel. Descendant released; no sleeper leak. | Classify self-cancel of the stderr drainer as `ErrGitHistory` incomplete stderr |
+| F3-GIT-BUFFERED-EXIT-READ | After `processDone` and the old one-second cleanup deadline, delayed Read returns the exact payload and a nil terminal error. | Timer-close stdout; return short data; return full data with a non-nil read error |
+
+Exact allowlisted inspections are `symbolic-ref --quiet HEAD` and `show-ref --verify --quiet <canonical-ref>`. Directory-component no-follow for actual journal opens is sealed by the static `F3-OPEN-SOURCE-SYMLINK-PARENT` case, not a flaky rename race. Unix tag restoration and regular-file blocking-mode restoration remain **body code-review**. No newest-N/HEAD-first cap test. No remaining-capacity batching test.

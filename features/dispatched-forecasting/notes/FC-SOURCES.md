@@ -115,3 +115,38 @@ No independent seal contradicts an accepted operator ruling.
 No live network, credentials, external messages, subagents, push, cross-target
 test execution, or immutable-file edits were used. This body is **not Done**;
 the parent must independently inspect and verify the correction commit.
+
+## Preserved scaffold follow-ups and earlier rulings
+
+These IDs are from `2026-09-05T03-44-21Z-FC-SCAFFOLD-correction/nonblocking-review-followups.json`, not the later source panel. This section restores the dispositions accidentally removed by the third-body note rewrite.
+
+| Finding | Disposition |
+|---|---|
+| `scaffold claude-1` | `GIT_EXEC_PATH` remains inherited exactly as required; other ambient `GIT_*` state remains stripped. |
+| `scaffold claude-3` | Strengthened to descriptor-relative atomic parent-component and final opens, with descriptor metadata consistency. |
+| `scaffold claude-4` | Carriers, effective bounds, cutoff, holdouts, reports, reasons, and lists remain initialized/canonical on reached outcomes. |
+| `scaffold claude-5` | Typed F3 and `ctx.Err()` identities remain wrapped and inspectable. |
+| `scaffold claude-7` | Schema-4 `Rounds`/`Limits` remains FC-1-owned; baseline readers are unchanged. |
+| `scaffold grok-1` | Frozen Git environment/config policy is retained. |
+| `scaffold grok-2` | Cancellation remains context-causal and inspectable. |
+
+The earlier raw-journal-cutoff finding remains rejected by operator ruling. The
+first correction's all-ref batching, completeness validation, AllowEmpty,
+non-task YAML, structural identity/time, common-dir graft, read-only grammar,
+and shared-byte fixes are preserved rather than redesigned.
+
+
+## Cumulative deviations and remaining limitations
+
+Contract deviation: none against the explicitly amended F3 contract. The operator
+separately ruled symlink omission, unborn-HEAD handling, deterministic capped
+subsets, platform helper ownership, and exact read-only metadata commands before
+implementation. The original body and correction notes are preserved by commit
+and in the operator deviation-history index attached to FC-OBS-ADJ. Earlier
+policies superseded by those rulings are historical, not current promises.
+
+Per-commit tree snapshots and repeated metadata charges remain permitted costs.
+Local common-dir graft metadata inspection is an ordinary OS filesystem call;
+no hard deadline on a pathological filesystem is claimed. Linux runtime tests
+and the listed cross-platform package builds are the portability evidence;
+cross-build success is not a claim of runtime testing on those other platforms.

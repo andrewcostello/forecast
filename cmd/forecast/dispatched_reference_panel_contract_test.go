@@ -14,6 +14,17 @@ import (
 	"github.com/spf13/cobra"
 )
 
+func executeFreshReferenceBuild(t *testing.T, args []string) cliResult {
+	t.Helper()
+	cmd := newDispatchedReferenceBuildCmd()
+	var stdout, stderr bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&stderr)
+	cmd.SetArgs(args)
+	err := cmd.Execute()
+	return cliResult{stdout: stdout.String(), stderr: stderr.String(), err: err}
+}
+
 func testCLIGateRequiresTasks(t *testing.T) {
 	fixture := newCommandFixture(t)
 	for _, flag := range []string{"--fail-on-empty-required", "--fail-on-uncovered-required"} {
@@ -26,8 +37,57 @@ func testCLIGateRequiresTasks(t *testing.T) {
 			if r.err == nil {
 				t.Fatalf("missing --tasks under %s succeeded", flag)
 			}
+			if !strings.Contains(r.err.Error(), "--tasks") {
+				t.Fatalf("missing --tasks error did not name --tasks: %v", r.err)
+			}
+			if hasUsage(r) {
+				t.Fatalf("RunE missing --tasks printed usage:\n%s", combinedOutput(r))
+			}
 			if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("RunE missing --tasks wrote an artifact: %v", err)
+			}
+		})
+	}
+}
+
+func testCLIUnknownFlagUsage(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "o.json")
+	r := executeFreshReferenceBuild(t, []string{
+		"--runs-dir", t.TempDir(), "--out", out, "--not-a-real-flag",
+	})
+	if r.err == nil {
+		t.Fatal("unknown flag succeeded")
+	}
+	if !strings.Contains(r.err.Error(), "unknown flag") || !strings.Contains(r.err.Error(), "--not-a-real-flag") {
+		t.Fatalf("unknown flag error = %v", r.err)
+	}
+	if !hasUsage(r) {
+		t.Fatalf("unknown flag omitted usage:\n%s", combinedOutput(r))
+	}
+	if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown flag wrote an artifact: %v", err)
+	}
+}
+
+func testCLITimeoutUsage(t *testing.T) {
+	for _, timeout := range []string{"0", "-1s"} {
+		t.Run(timeout, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "o.json")
+			r := executeFreshReferenceBuild(t, []string{
+				"--runs-dir", t.TempDir(), "--features-repo", t.TempDir(),
+				"--out", out, "--timeout", timeout,
+			})
+			if r.err == nil {
+				t.Fatalf("nonpositive timeout %s succeeded", timeout)
+			}
+			if !strings.Contains(r.err.Error(), "--timeout") {
+				t.Fatalf("timeout error = %v, want --timeout", r.err)
+			}
+			if !hasUsage(r) {
+				t.Fatalf("nonpositive timeout omitted usage:\n%s", combinedOutput(r))
+			}
+			if _, err := os.Stat(out); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("nonpositive timeout wrote an artifact: %v", err)
 			}
 		})
 	}

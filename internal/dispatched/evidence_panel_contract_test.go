@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -58,6 +61,17 @@ func requireRefuseInvalid(t *testing.T, art Artifact) {
 	}
 	if !errors.Is(err, ErrNotEligible) || !errors.Is(err, ErrSourceIncomplete) {
 		t.Fatalf("invalid payload refuse = %v, want ErrNotEligible and ErrSourceIncomplete", err)
+	}
+}
+
+func requireEligibleCompleted(t *testing.T, art Artifact, completed int) {
+	t.Helper()
+	got, err := PredictionEligibility(art, eligibleTargets(), completed, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.Eligible || len(got.Cells) != 1 || got.Cells[0].Completed != completed {
+		t.Fatalf("eligibility = %+v", got)
 	}
 }
 
@@ -758,5 +772,646 @@ func setDispositionCount(art Artifact, d Disposition, n int) {
 			art.Evidence.Dispositions[i].Count = n
 			return
 		}
+	}
+}
+
+func recoveredStart() time.Time {
+	return time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+}
+
+func mapRecoveredYAML(art Artifact, i int, fn func(ReadingRef) ReadingRef) Artifact {
+	obs := art.Evidence.Observations[i]
+	id := obs.Attempt.ID
+	refs := make([]ReadingRef, len(obs.Readings))
+	for j, ref := range obs.Readings {
+		refs[j] = fn(ref)
+	}
+	obs.Readings = refs
+	obs.Attempt.Evidence.Role.Reading = fn(obs.Attempt.Evidence.Role.Reading)
+	if obs.Attempt.Evidence.Terminal.Source == EvidenceYAML {
+		obs.Attempt.Evidence.Terminal.Reading = fn(obs.Attempt.Evidence.Terminal.Reading)
+	}
+	if obs.Attempt.Evidence.Elapsed.Source == EvidenceYAML {
+		obs.Attempt.Evidence.Elapsed.Reading = fn(obs.Attempt.Evidence.Elapsed.Reading)
+	}
+	art.Evidence.Observations[i] = obs
+	examined := append([]Examined{}, art.Evidence.Examined...)
+	for j, row := range examined {
+		if row.Attempt != id {
+			continue
+		}
+		if row.Disposition != DispositionRecovered && row.Disposition != DispositionDuplicateReading {
+			continue
+		}
+		examined[j].Reading = fn(row.Reading)
+	}
+	art.Evidence.Examined = examined
+	return art
+}
+
+func mapAllRecoveredYAML(art Artifact, fn func(ReadingRef) ReadingRef) Artifact {
+	for i := range art.Evidence.Observations {
+		art = mapRecoveredYAML(art, i, fn)
+	}
+	return art
+}
+
+func mapRecoveredJournals(art Artifact, i int, fn func(JournalIdentity) JournalIdentity) Artifact {
+	obs := art.Evidence.Observations[i]
+	obs.Attempt = mapAttemptJournals(obs.Attempt, fn)
+	art.Evidence.Observations[i] = obs
+	return art
+}
+
+func mapAllRecoveredJournals(art Artifact, fn func(JournalIdentity) JournalIdentity) Artifact {
+	for i := range art.Evidence.Observations {
+		art = mapRecoveredJournals(art, i, fn)
+	}
+	return art
+}
+
+func updateManifestSource(art Artifact, id string, fn func(*SourceReport)) Artifact {
+	sources := append([]SourceReport{}, art.SourceManifest.Sources...)
+	for i := range sources {
+		if sources[i].ID == id {
+			fn(&sources[i])
+		}
+	}
+	art.SourceManifest.Sources = sources
+	return art
+}
+
+func canonicalHistoryReport(id, repo, tip string, roots ...string) SourceReport {
+	refs := []ResolvedRef{
+		{Name: "HEAD", Commit: tip},
+		{Name: "refs/heads/main", Commit: tip},
+	}
+	if refs[0].Name > refs[1].Name || refs[0].Name == refs[1].Name && refs[0].Commit > refs[1].Commit {
+		refs[0], refs[1] = refs[1], refs[0]
+	}
+	return SourceReport{
+		ID:           id,
+		Kind:         SourceKindGitHistory,
+		Repository:   repo,
+		Roots:        append([]string{}, roots...),
+		State:        SourceComplete,
+		Reasons:      []string{},
+		ResolvedRefs: refs,
+		Counts:       SourceCounts{Commits: 1, Blobs: 1, Records: 1},
+	}
+}
+
+func withSameRefDuplicateCompletion(art Artifact, recovered, duplicate Measured[time.Time]) Artifact {
+	obs := art.Evidence.Observations[0]
+	obs.Readings = append(append([]ReadingRef{}, obs.Readings...), obs.Readings[0])
+	art.Evidence.Observations[0] = obs
+	art.Evidence.Examined[0].CompletedAt = recovered
+	extra := art.Evidence.Examined[0]
+	extra.Disposition = DispositionDuplicateReading
+	extra.Reason = "additional compatible reading of recovered attempt"
+	extra.CompletedAt = duplicate
+	art.Evidence.Examined = append(append([]Examined{}, art.Evidence.Examined...), extra)
+	setDispositionCount(art, DispositionDuplicateReading, 1)
+	return art
+}
+
+func spawnCitation(att Attempt, seq, line int) EventRef {
+	ref := att.Start
+	ref.Type = EventTaskSpawnFinished
+	ref.Seq = seq
+	ref.Line = line
+	ref.At = att.ID.StartedAt.Add(time.Minute)
+	return ref
+}
+
+func testF4EligibleAuditBinding(t *testing.T) {
+	start := recoveredStart()
+	terminal := start.Add(10 * time.Minute)
+	pst := time.FixedZone("UTC-8", -8*3600)
+
+	t.Run("journal-completed-at-does-not-infer-yaml-terminal", func(t *testing.T) {
+		art := recoveredArtifact(2)
+		if art.Evidence.RowsWithYAMLOnlyTerminal != 0 {
+			t.Fatalf("positive fixture YAML-only terminal count = %d", art.Evidence.RowsWithYAMLOnlyTerminal)
+		}
+		if art.Evidence.Observations[0].Attempt.Evidence.Terminal.Source != EvidenceJournal {
+			t.Fatalf("positive fixture terminal source = %q", art.Evidence.Observations[0].Attempt.Evidence.Terminal.Source)
+		}
+		if !art.Evidence.Examined[0].CompletedAt.Known {
+			t.Fatal("positive fixture dropped independently retained CompletedAt")
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("unfinished-known-completed-at-does-not-infer-terminal", func(t *testing.T) {
+		art := unfinishedObservationAtCutoff(recoveredArtifact(3), 2)
+		art.Evidence.Examined[2].CompletedAt = Known(art.SourceManifest.Cutoff)
+		if art.Evidence.Observations[2].Attempt.Evidence.Terminal.Source != EvidenceNone {
+			t.Fatalf("unfinished terminal source = %q", art.Evidence.Observations[2].Attempt.Evidence.Terminal.Source)
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("utc-equivalent-identity-start", func(t *testing.T) {
+		art := recoveredArtifact(2)
+		art.Evidence.Examined[0].Identity.StartedAt = Known(start.In(pst))
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("yaml-terminal-matching-known-plus-unknown-duplicate", func(t *testing.T) {
+		art := withYAMLOnlyTerminal(recoveredArtifact(2), 0, terminal)
+		art = withSameRefDuplicateCompletion(art, Known(terminal), Unknown[time.Time]())
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("yaml-terminal-unknown-recovered-plus-matching-duplicate", func(t *testing.T) {
+		art := withYAMLOnlyTerminal(recoveredArtifact(2), 0, terminal)
+		art = withSameRefDuplicateCompletion(art, Unknown[time.Time](), Known(terminal))
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(Artifact) Artifact
+	}{
+		{name: "recovered-identity-absent", mutate: func(art Artifact) Artifact {
+			art.Evidence.Examined[0].Identity = ReadingIdentity{}
+			return art
+		}},
+		{name: "recovered-identity-wrong-run", mutate: func(art Artifact) Artifact {
+			art.Evidence.Examined[0].Identity.RunID = Known("run-b")
+			return art
+		}},
+		{name: "recovered-identity-wrong-key", mutate: func(art Artifact) Artifact {
+			art.Evidence.Examined[0].Identity.Key = Known("KZ")
+			return art
+		}},
+		{name: "recovered-identity-wrong-start", mutate: func(art Artifact) Artifact {
+			art.Evidence.Examined[0].Identity.StartedAt = Known(start.Add(time.Second))
+			return art
+		}},
+		{name: "recovered-identity-held-out", mutate: func(art Artifact) Artifact {
+			art.SourceManifest.HoldoutRunIDs = []string{"held"}
+			art.Evidence.Examined[0].Identity.RunID = Known("held")
+			return art
+		}},
+		{name: "duplicate-identity-absent", mutate: func(art Artifact) Artifact {
+			art = withDuplicateReadingCompletedAt(art, terminal)
+			art.Evidence.Examined[len(art.Evidence.Examined)-1].Identity = ReadingIdentity{}
+			return art
+		}},
+		{name: "duplicate-identity-wrong-run", mutate: func(art Artifact) Artifact {
+			art = withDuplicateReadingCompletedAt(art, terminal)
+			art.Evidence.Examined[len(art.Evidence.Examined)-1].Identity.RunID = Known("run-b")
+			return art
+		}},
+		{name: "duplicate-identity-held-out", mutate: func(art Artifact) Artifact {
+			art = withDuplicateReadingCompletedAt(art, terminal)
+			art.SourceManifest.HoldoutRunIDs = []string{"held"}
+			art.Evidence.Examined[len(art.Evidence.Examined)-1].Identity.RunID = Known("held")
+			return art
+		}},
+		{name: "yaml-terminal-unknown-completion", mutate: func(art Artifact) Artifact {
+			art = withYAMLOnlyTerminal(art, 0, terminal)
+			art.Evidence.Examined[0].CompletedAt = Unknown[time.Time]()
+			return art
+		}},
+		{name: "yaml-terminal-unequal-completion", mutate: func(art Artifact) Artifact {
+			art = withYAMLOnlyTerminal(art, 0, terminal)
+			art.Evidence.Examined[0].CompletedAt = Known(terminal.Add(time.Second))
+			return art
+		}},
+		{name: "yaml-terminal-both-same-ref-unknown", mutate: func(art Artifact) Artifact {
+			art = withYAMLOnlyTerminal(art, 0, terminal)
+			return withSameRefDuplicateCompletion(art, Unknown[time.Time](), Unknown[time.Time]())
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireRefuseInvalid(t, tc.mutate(recoveredArtifact(2)))
+		})
+	}
+}
+
+func testF4EligibleProvenance(t *testing.T) {
+	tip := strings.Repeat("cd", 20)
+	ancestor := strings.Repeat("ab", 20)
+
+	t.Run("live-baseline", func(t *testing.T) {
+		requireEligibleCompleted(t, recoveredArtifact(2), 2)
+	})
+
+	t.Run("history-ancestor-need-not-equal-tip", func(t *testing.T) {
+		art := recoveredArtifact(2)
+		art.SourceManifest.Sources = append(append([]SourceReport{}, art.SourceManifest.Sources...), canonicalHistoryReport("history", "repo", tip, "features"))
+		art = mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+			ref.SourceID = "history"
+			ref.Revision = "git:" + ancestor
+			return ref
+		})
+		if ancestor == tip {
+			t.Fatal("fixture ancestor SHA equals captured tip")
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("legal-spaces-in-repository-and-path", func(t *testing.T) {
+		art := updateManifestSource(recoveredArtifact(2), "live", func(src *SourceReport) {
+			src.Repository = "repo with spaces"
+		})
+		art = mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+			ref.Repository = "repo with spaces"
+			ref.Path = "features/study/my tasks.yaml"
+			return ref
+		})
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("root-dot", func(t *testing.T) {
+		art := updateManifestSource(recoveredArtifact(2), "live", func(src *SourceReport) {
+			src.Roots = []string{"."}
+		})
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(Artifact) Artifact
+	}{
+		{name: "unknown-producer", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.Producer = "evil-producer-9"
+				return j
+			})
+		}},
+		{name: "ghost-yaml-source", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.SourceID = "ghost-yaml"
+				return ref
+			})
+		}},
+		{name: "ghost-journal-source", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.SourceID = "ghost-journal"
+				return j
+			})
+		}},
+		{name: "yaml-cites-journal-source-kind", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.SourceID = "journals"
+				ref.Repository = "/tmp/runs"
+				return ref
+			})
+		}},
+		{name: "journal-cites-live-source-kind", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.SourceID = "live"
+				return j
+			})
+		}},
+		{name: "live-revision-on-history-source", mutate: func(art Artifact) Artifact {
+			art.SourceManifest.Sources = append(append([]SourceReport{}, art.SourceManifest.Sources...), canonicalHistoryReport("history", "repo", tip, "features"))
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.SourceID = "history"
+				ref.Revision = "live"
+				return ref
+			})
+		}},
+		{name: "history-revision-on-live-source", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.Revision = "git:" + ancestor
+				return ref
+			})
+		}},
+		{name: "wrong-yaml-repository", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.Repository = "other-repo"
+				return ref
+			})
+		}},
+		{name: "wrong-live-source-repository", mutate: func(art Artifact) Artifact {
+			return updateManifestSource(art, "live", func(src *SourceReport) {
+				src.Repository = "other-repo"
+			})
+		}},
+		{name: "yaml-path-escapes", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.Path = "../secret.yaml"
+				return ref
+			})
+		}},
+		{name: "yaml-path-absolute", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.Path = "/tmp/tasks.yaml"
+				return ref
+			})
+		}},
+		{name: "yaml-path-out-of-root", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredYAML(art, func(ref ReadingRef) ReadingRef {
+				ref.Path = "dispatcher/tasks.yaml"
+				return ref
+			})
+		}},
+		{name: "journal-path-escapes", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.Path = "../run-a/journal.jsonl"
+				return j
+			})
+		}},
+		{name: "journal-path-absolute", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.Path = "/tmp/runs/run-a/journal.jsonl"
+				return j
+			})
+		}},
+		{name: "journal-path-not-direct-child", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.Path = "journal.jsonl"
+				return j
+			})
+		}},
+		{name: "journal-path-nested", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.Path = "run-a/nested/journal.jsonl"
+				return j
+			})
+		}},
+		{name: "journal-path-wrong-run", mutate: func(art Artifact) Artifact {
+			return mapAllRecoveredJournals(art, func(j JournalIdentity) JournalIdentity {
+				j.Path = "run-b/journal.jsonl"
+				return j
+			})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireRefuseInvalid(t, tc.mutate(recoveredArtifact(2)))
+		})
+	}
+}
+
+func testF4EligibleLocalFixture(t *testing.T) {
+	// Independent source facts: testdata journals/synthetic-utc-offset.jsonl
+	// declares producer 0.1.0 and one done implementer-stamped F1-OFFSET
+	// attempt (model stamp). testdata yaml/offset-equivalent.yaml supplies
+	// role bodies and the matching run/key/start. Live plus history are two
+	// readings of that one attempt, so completed bodies/stamp = 1.
+	const wantCompleted = 1
+	repo := initGitRepo(t)
+	repo.writeTestdata("features/study/tasks.yaml", "yaml", "offset-equivalent.yaml")
+	repo.commit("training yaml", "features/study/tasks.yaml")
+	requireFixtureCommitBeforeCutoff(t, repo.path)
+	runs := filepath.Join(t.TempDir(), "runs")
+	writeJournalTree(t, runs, "run-offset", "synthetic-utc-offset.jsonl")
+	result, err := Build(context.Background(), amendedBuildOpts(
+		[]SourceSpec{
+			journalSpec("journals", runs),
+			liveSpec("live", repo.path, "features"),
+			historySpec("history", repo.path, "", "features"),
+		},
+		defaultSelection(),
+		ReadBounds{},
+	))
+	if errors.Is(err, ErrNotImplemented) {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result == nil || result.Artifact.SourceManifest == nil || result.Artifact.Evidence == nil {
+		t.Fatal("local fixture Build dropped the artifact")
+	}
+	if result.Artifact.SourceManifest.State != SourceComplete {
+		t.Fatalf("local fixture state = %q reasons=%v", result.Artifact.SourceManifest.State, result.Artifact.SourceManifest.Reasons)
+	}
+	got, eligErr := PredictionEligibility(result.Artifact, eligibleTargets(), wantCompleted, true)
+	if eligErr != nil {
+		t.Fatal(eligErr)
+	}
+	if !got.Eligible || len(got.Cells) != 1 || got.Cells[0].Completed != wantCompleted || got.Cells[0].Role != RoleBodies || got.Cells[0].Model != "stamp" {
+		t.Fatalf("local fixture eligibility = %+v, recovered=%d", got, result.Artifact.Evidence.Recovered)
+	}
+	if result.Artifact.Evidence.Recovered != wantCompleted {
+		t.Fatalf("recovered = %d, want %d from the authored F1-OFFSET attempt", result.Artifact.Evidence.Recovered, wantCompleted)
+	}
+	if _, statErr := os.Stat(filepath.Join(runs, "run-offset", "journal.jsonl")); statErr != nil {
+		t.Fatalf("expected local journal missing: %v", statErr)
+	}
+}
+
+func readingPermutations(readings []Reading) [][]Reading {
+	switch len(readings) {
+	case 2:
+		return [][]Reading{
+			{readings[0], readings[1]},
+			{readings[1], readings[0]},
+		}
+	case 3:
+		a, b, c := readings[0], readings[1], readings[2]
+		return [][]Reading{
+			{a, b, c}, {a, c, b}, {b, a, c}, {b, c, a}, {c, a, b}, {c, b, a},
+		}
+	default:
+		return nil
+	}
+}
+
+func testF1SameRefPermutation(t *testing.T) {
+	start := mustTime(t, "2026-01-01T00:00:00Z")
+	terminal := start.Add(10 * time.Minute)
+	base := syntheticReading("run-a", "K", start, 1, "features/study/tasks.yaml")
+	base.Snapshot.Status = "Done"
+	unknown := base
+	unknown.CompletedAt = Unknown[time.Time]()
+	known := base
+	known.CompletedAt = Known(terminal)
+	knownCopy := known
+
+	t.Run("matched-two", func(t *testing.T) {
+		att := journalAttempt("run-a", "K", start, contractCutoff().Sub(start), "stamp", OutcomeUnfinished)
+		att.Evidence.Terminal = FieldEvidence{}
+		att.Evidence.Elapsed = FieldEvidence{}
+		att.TerminalAt = time.Time{}
+		set := attemptSetOf("run-a", att)
+		requireSameRefJoinPermutations(t, []AttemptSet{set}, []Reading{unknown, known}, 1, 1, true)
+	})
+
+	t.Run("matched-three", func(t *testing.T) {
+		att := journalAttempt("run-a", "K", start, contractCutoff().Sub(start), "stamp", OutcomeUnfinished)
+		att.Evidence.Terminal = FieldEvidence{}
+		att.Evidence.Elapsed = FieldEvidence{}
+		att.TerminalAt = time.Time{}
+		set := attemptSetOf("run-a", att)
+		requireSameRefJoinPermutations(t, []AttemptSet{set}, []Reading{unknown, known, knownCopy}, 1, 2, true)
+	})
+
+	t.Run("unrecovered-examined-ties", func(t *testing.T) {
+		keep := journalAttempt("run-a", "K", start, 10*time.Minute, "stamp", OutcomeDone)
+		set := attemptSetOf("run-a", keep)
+		keepReading := syntheticReading("run-a", "K", start, 1, "features/study/tasks.yaml")
+		future := contractCutoff().Add(time.Minute)
+		shared := ReadingRef{
+			SourceID:   "live",
+			Repository: "repo",
+			Path:       "features/late/tasks.yaml",
+			Revision:   "live",
+			Row:        1,
+			RecordedAt: future,
+		}
+		a := syntheticReading("late-a", "LA", future, 1, "features/late/tasks.yaml")
+		a.Ref = shared
+		a.CompletedAt = Known(future)
+		b := syntheticReading("late-b", "LB", future.Add(time.Second), 1, "features/late/tasks.yaml")
+		b.Ref = shared
+		b.CompletedAt = Known(future.Add(2 * time.Second))
+		if a.Ref != b.Ref {
+			t.Fatal("unrecovered fixtures drifted apart")
+		}
+		if a.Identity == b.Identity || a.CompletedAt == b.CompletedAt {
+			t.Fatal("unrecovered fixtures must differ in retained identity and CompletedAt")
+		}
+		var encoded [][]byte
+		for _, readings := range readingPermutations([]Reading{keepReading, a, b}) {
+			got := mustJoin(t, []AttemptSet{set}, readings, defaultSelection(), identityUniverse(set))
+			requireDisposition(t, got, DispositionRecovered, 1)
+			requireDisposition(t, got, DispositionAfterCutoff, 2)
+			encoded = append(encoded, encodeJSON(t, got))
+		}
+		if len(encoded) == 0 {
+			t.Fatal("no unrecovered permutations")
+		}
+		for i := 1; i < len(encoded); i++ {
+			if !bytes.Equal(encoded[0], encoded[i]) {
+				t.Fatal("same-ref unrecovered Examined order depended on input order")
+			}
+		}
+	})
+}
+
+func requireSameRefJoinPermutations(t *testing.T, sets []AttemptSet, readings []Reading, recovered, duplicates int, yamlTerminal bool) {
+	t.Helper()
+	universe := identityUniverse(sets...)
+	var encoded [][]byte
+	for _, order := range readingPermutations(readings) {
+		got := mustJoin(t, sets, order, defaultSelection(), universe)
+		if got.Recovered != recovered || len(got.Observations) != recovered {
+			t.Fatalf("recovered=%d observations=%d, want %d", got.Recovered, len(got.Observations), recovered)
+		}
+		requireDisposition(t, got, DispositionRecovered, recovered)
+		requireDisposition(t, got, DispositionDuplicateReading, duplicates)
+		if yamlTerminal {
+			if got.RowsWithYAMLOnlyTerminal != 1 {
+				t.Fatalf("RowsWithYAMLOnlyTerminal = %d", got.RowsWithYAMLOnlyTerminal)
+			}
+			var want time.Time
+			for _, reading := range readings {
+				if reading.CompletedAt.Known {
+					want = reading.CompletedAt.Value
+					break
+				}
+			}
+			obs := got.Observations[0]
+			if obs.Attempt.Evidence.Terminal.Source != EvidenceYAML || want.IsZero() || !obs.Attempt.TerminalAt.Equal(want) {
+				t.Fatalf("YAML terminal not supported: source=%q terminal_at=%s", obs.Attempt.Evidence.Terminal.Source, obs.Attempt.TerminalAt)
+			}
+		}
+		encoded = append(encoded, encodeJSON(t, got))
+	}
+	if len(encoded) < 2 {
+		t.Fatal("need at least two permutations")
+	}
+	for i := 1; i < len(encoded); i++ {
+		if !bytes.Equal(encoded[0], encoded[i]) {
+			t.Fatal("EvidenceJoin JSON depended on same-Ref input order")
+		}
+	}
+}
+
+func testF4EligibleNumericDomain(t *testing.T) {
+	t.Run("unknown-optional-remain-unknown", func(t *testing.T) {
+		art := recoveredArtifact(2)
+		obs := art.Evidence.Observations[0].Attempt
+		if obs.CostUSD.Known || obs.InputTokens.Known || obs.OutputTokens.Known {
+			t.Fatal("positive fixture invented optional measurements")
+		}
+		if obs.Evidence.Cost.Source != EvidenceNone || obs.Evidence.InputTokens.Source != EvidenceNone || obs.Evidence.OutputTokens.Source != EvidenceNone {
+			t.Fatal("unknown optional measurements must not require citations")
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("known-zero", func(t *testing.T) {
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			obs.Attempt.CostUSD = Known(0.0)
+			obs.Attempt.InputTokens = Known(int64(0))
+			obs.Attempt.OutputTokens = Known(int64(0))
+			obs.Attempt.Corrections = 0
+			obs.Attempt.Cascades = 0
+			obs.Attempt.Reviews = 0
+			obs.Attempt.Verifications = 0
+		})
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("known-positive-with-citations", func(t *testing.T) {
+		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			cost := spawnCitation(obs.Attempt, 4, 5)
+			tokens := spawnCitation(obs.Attempt, 5, 6)
+			correction := spawnCitation(obs.Attempt, 6, 7)
+			correction.Type = EventPanelIterate
+			cascade := spawnCitation(obs.Attempt, 7, 8)
+			cascade.Type = EventAgentFallback
+			review := spawnCitation(obs.Attempt, 8, 9)
+			review.Type = EventPanelStarted
+			verify := spawnCitation(obs.Attempt, 9, 10)
+			verify.Type = EventVerificationStarted
+			obs.Attempt.CostUSD = Known(1.5)
+			obs.Attempt.CostEvents = []EventRef{cost}
+			obs.Attempt.Evidence.Cost = FieldEvidence{Source: EvidenceJournal, Event: cost}
+			obs.Attempt.InputTokens = Known(int64(3))
+			obs.Attempt.InputTokenEvents = []EventRef{tokens}
+			obs.Attempt.Evidence.InputTokens = FieldEvidence{Source: EvidenceJournal, Event: tokens}
+			obs.Attempt.OutputTokens = Known(int64(4))
+			obs.Attempt.OutputTokenEvents = []EventRef{tokens}
+			obs.Attempt.Evidence.OutputTokens = FieldEvidence{Source: EvidenceJournal, Event: tokens}
+			obs.Attempt.Corrections = 2
+			obs.Attempt.CorrectionEvents = []EventRef{correction}
+			obs.Attempt.Evidence.Corrections = FieldEvidence{Source: EvidenceJournal, Event: correction}
+			obs.Attempt.Cascades = 3
+			obs.Attempt.CascadeEvents = []EventRef{cascade}
+			obs.Attempt.Evidence.Cascades = FieldEvidence{Source: EvidenceJournal, Event: cascade}
+			obs.Attempt.Reviews = 1
+			obs.Attempt.ReviewEvents = []EventRef{review}
+			obs.Attempt.Evidence.Reviews = FieldEvidence{Source: EvidenceJournal, Event: review}
+			obs.Attempt.Verifications = 1
+			obs.Attempt.VerificationEvents = []EventRef{verify}
+			obs.Attempt.Evidence.Verifications = FieldEvidence{Source: EvidenceJournal, Event: verify}
+			if obs.Attempt.Corrections == len(obs.Attempt.CorrectionEvents) || obs.Attempt.Cascades == len(obs.Attempt.CascadeEvents) {
+				t.Fatal("positive control must not make counts equal event-list length")
+			}
+		})
+		got := art.Evidence.Observations[0].Attempt
+		if !got.CostUSD.Known || got.CostUSD.Value != 1.5 || got.Evidence.Cost.Event != got.CostEvents[0] {
+			t.Fatalf("cost citation lost: %+v", got.Evidence.Cost)
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	for _, tc := range []struct {
+		name   string
+		mutate func(*RecoveredAttempt)
+	}{
+		{name: "negative-cost", mutate: func(obs *RecoveredAttempt) { obs.Attempt.CostUSD = Known(-1.0) }},
+		{name: "nan-cost", mutate: func(obs *RecoveredAttempt) { obs.Attempt.CostUSD = Known(math.NaN()) }},
+		{name: "pos-inf-cost", mutate: func(obs *RecoveredAttempt) { obs.Attempt.CostUSD = Known(math.Inf(1)) }},
+		{name: "neg-inf-cost", mutate: func(obs *RecoveredAttempt) { obs.Attempt.CostUSD = Known(math.Inf(-1)) }},
+		{name: "negative-input-tokens", mutate: func(obs *RecoveredAttempt) { obs.Attempt.InputTokens = Known(int64(-1)) }},
+		{name: "negative-output-tokens", mutate: func(obs *RecoveredAttempt) { obs.Attempt.OutputTokens = Known(int64(-1)) }},
+		{name: "negative-corrections", mutate: func(obs *RecoveredAttempt) { obs.Attempt.Corrections = -1 }},
+		{name: "negative-cascades", mutate: func(obs *RecoveredAttempt) { obs.Attempt.Cascades = -1 }},
+		{name: "negative-reviews", mutate: func(obs *RecoveredAttempt) { obs.Attempt.Reviews = -1 }},
+		{name: "negative-verifications", mutate: func(obs *RecoveredAttempt) { obs.Attempt.Verifications = -1 }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			requireRefuseInvalid(t, mutateObservation(recoveredArtifact(2), tc.mutate))
+		})
 	}
 }

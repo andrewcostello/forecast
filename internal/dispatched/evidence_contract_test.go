@@ -71,6 +71,11 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F1-ATTEMPT-UNIVERSE", testF1AttemptUniverse)
 	t.Run("F2-JOIN-INPUT-IMMUTABLE", testF2JoinInputImmutable)
 	t.Run("F4-ARTIFACT-CUTOFF-PROOF", testF4ArtifactCutoffProof)
+	t.Run("F4-ELIGIBLE-AUDIT-BINDING", testF4EligibleAuditBinding)
+	t.Run("F4-ELIGIBLE-PROVENANCE", testF4EligibleProvenance)
+	t.Run("F4-ELIGIBLE-LOCAL-FIXTURE", testF4EligibleLocalFixture)
+	t.Run("F1-SAME-REF-PERMUTATION", testF1SameRefPermutation)
+	t.Run("F4-ELIGIBLE-NUMERIC-DOMAIN", testF4EligibleNumericDomain)
 }
 
 func twoRunUniverse(t *testing.T) (sets []AttemptSet, readings []Reading, journals []JournalIdentity) {
@@ -568,11 +573,16 @@ func eligibleTargets() []TargetRow {
 // directly rather than via JoinEvidence or Build.
 func recoveredArtifact(n int) Artifact {
 	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	journal := JournalIdentity{
+		RunID: "run-a", SourceID: "journals", Path: "run-a/journal.jsonl", Producer: ProducerDispatcherV0_1_0,
+	}
 	obs := make([]RecoveredAttempt, 0, n)
 	examined := make([]Examined, 0, n)
 	for i := 0; i < n; i++ {
 		key := "K" + string(rune('A'+i))
-		att := journalAttempt("run-a", key, start, 10*time.Minute, "stamp", OutcomeDone)
+		att := mapAttemptJournals(journalAttempt("run-a", key, start, 10*time.Minute, "stamp", OutcomeDone), func(JournalIdentity) JournalIdentity {
+			return journal
+		})
 		ref := ReadingRef{
 			SourceID:   "live",
 			Repository: "repo",
@@ -620,7 +630,77 @@ func recoveredArtifact(n int) Artifact {
 		Attempts:         n,
 		UniqueRows:       n,
 	}
-	return schema4Artifact(completeManifest(SourceComplete), ev)
+	manifest := completeManifest(SourceComplete)
+	manifest.Sources = append(append([]SourceReport{}, manifest.Sources...), SourceReport{
+		ID:           "live",
+		Kind:         SourceKindLiveYAML,
+		Repository:   "repo",
+		Roots:        []string{"features"},
+		State:        SourceComplete,
+		Reasons:      []string{},
+		ResolvedRefs: []ResolvedRef{},
+		Counts:       SourceCounts{Files: 1, Records: n},
+	})
+	return schema4Artifact(manifest, ev)
+}
+
+func mapEventRefJournal(ref EventRef, fn func(JournalIdentity) JournalIdentity) EventRef {
+	if ref.Type == "" && ref.Journal.RunID == "" && ref.Journal.SourceID == "" && ref.Journal.Path == "" && ref.Journal.Producer == "" {
+		return ref
+	}
+	ref.Journal = fn(ref.Journal)
+	return ref
+}
+
+func mapEventRefJournals(refs []EventRef, fn func(JournalIdentity) JournalIdentity) []EventRef {
+	if refs == nil {
+		return nil
+	}
+	out := make([]EventRef, len(refs))
+	for i, ref := range refs {
+		out[i] = mapEventRefJournal(ref, fn)
+	}
+	return out
+}
+
+func mapFieldEvidenceJournal(ev FieldEvidence, fn func(JournalIdentity) JournalIdentity) FieldEvidence {
+	ev.Event = mapEventRefJournal(ev.Event, fn)
+	return ev
+}
+
+func mapAttemptJournals(att Attempt, fn func(JournalIdentity) JournalIdentity) Attempt {
+	att.Start = mapEventRefJournal(att.Start, fn)
+	att.CascadeEvents = mapEventRefJournals(att.CascadeEvents, fn)
+	att.CorrectionEvents = mapEventRefJournals(att.CorrectionEvents, fn)
+	att.ReviewEvents = mapEventRefJournals(att.ReviewEvents, fn)
+	att.VerificationEvents = mapEventRefJournals(att.VerificationEvents, fn)
+	att.CostEvents = mapEventRefJournals(att.CostEvents, fn)
+	att.InputTokenEvents = mapEventRefJournals(att.InputTokenEvents, fn)
+	att.OutputTokenEvents = mapEventRefJournals(att.OutputTokenEvents, fn)
+	ev := att.Evidence
+	ev.Role = mapFieldEvidenceJournal(ev.Role, fn)
+	ev.Model = mapFieldEvidenceJournal(ev.Model, fn)
+	ev.Start = mapFieldEvidenceJournal(ev.Start, fn)
+	ev.Terminal = mapFieldEvidenceJournal(ev.Terminal, fn)
+	ev.Elapsed = mapFieldEvidenceJournal(ev.Elapsed, fn)
+	ev.Wall = mapFieldEvidenceJournal(ev.Wall, fn)
+	ev.Corrections = mapFieldEvidenceJournal(ev.Corrections, fn)
+	ev.Cascades = mapFieldEvidenceJournal(ev.Cascades, fn)
+	ev.Reviews = mapFieldEvidenceJournal(ev.Reviews, fn)
+	ev.Verifications = mapFieldEvidenceJournal(ev.Verifications, fn)
+	ev.InputTokens = mapFieldEvidenceJournal(ev.InputTokens, fn)
+	ev.OutputTokens = mapFieldEvidenceJournal(ev.OutputTokens, fn)
+	ev.Cost = mapFieldEvidenceJournal(ev.Cost, fn)
+	att.Evidence = ev
+	if att.Wall.Intervals != nil {
+		intervals := make([]Interval, len(att.Wall.Intervals))
+		for i, iv := range att.Wall.Intervals {
+			iv.Evidence = mapEventRefJournals(iv.Evidence, fn)
+			intervals[i] = iv
+		}
+		att.Wall.Intervals = intervals
+	}
+	return att
 }
 
 func nonEmptyJournalSpecs(t *testing.T, run, fixture string) []SourceSpec {

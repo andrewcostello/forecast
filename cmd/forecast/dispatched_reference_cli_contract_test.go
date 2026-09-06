@@ -25,6 +25,8 @@ func TestFCReferenceCLIContract(t *testing.T) {
 	t.Run("F4-HAND-FINISHED-LIMIT", testCLIHandFinishedLimit)
 	t.Run("F4-GATE-REQUIRES-TASKS", testCLIGateRequiresTasks)
 	t.Run("F4-GATE-BYPASS-EMPTY-TARGET", testCLIGateBypassEmptyTarget)
+	t.Run("F4-UNKNOWN-FLAG-USAGE", testCLIUnknownFlagUsage)
+	t.Run("F4-TIMEOUT-USAGE", testCLITimeoutUsage)
 }
 
 func cliTestdata(t *testing.T, parts ...string) string {

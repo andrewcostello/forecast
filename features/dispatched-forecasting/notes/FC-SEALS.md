@@ -647,3 +647,61 @@ eligible with completed=2. Optional producer/cost fields are not demanded.
 | F4-ARTIFACT-CUTOFF-PROOF/unfinished-elapsed-shorter-than-cutoff | Both sentinels; `Wall.Elapsed` aligned | Accept unfinished elapsed shorter than cutoff |
 | F4-ARTIFACT-CUTOFF-PROOF/unfinished-elapsed-longer-than-cutoff | Both sentinels; `Wall.Elapsed` aligned | Accept unfinished elapsed longer than cutoff |
 | F4-ARTIFACT-CUTOFF-PROOF/after-cutoff-diagnostic-future-time | Eligible, completed=2; COMPLETE sources and recovered counts preserved | Blanket-refuse a correctly excluded AfterCutoff envelope |
+
+## FC-1 second-panel corrective seals
+
+Independent seals for the Operator F1/F4 second-panel ruling at the end of
+`FC-SCAFFOLD.md` on panel `2026-09-06T06-10-55Z-FC-1-corrected-panel`
+(head `42c80ae`). Existing top-level `TestFCEvidenceContract` /
+`TestFCReferenceCLIContract` names, old assertions, signatures, and helpers
+are unchanged except the authorized `recoveredArtifact` enrichment below.
+`completeManifest` and `journalAttempt` are not edited. New cases register in
+those groups. Bodies cannot edit these seals. No known-red or worklist change.
+No skipped/xfail cases.
+
+### recoveredArtifact fixture change
+
+Hand-built only; never via `JoinEvidence` or `Build`. n, IDs, outcomes, models,
+thresholds, and every old assertion are preserved.
+
+| | Before (first-panel enrichment) | After |
+|---|---|---|
+| `n`, IDs, model, outcome, elapsed, cutoff, threshold | `run-a` / `K`+`A..`, `stamp`, `OutcomeDone`, 10m | unchanged |
+| live `SourceReport` | missing; only `completeManifest` journals source | added `id=live`, `live_yaml`, repository `repo`, roots `features` |
+| journal identities / EventRefs | `journal.jsonl` from `journalAttempt` | rewritten to `run-a/journal.jsonl` with matching `SourceID`/`Producer` |
+| optional measurements | unknown cost/tokens | still unknown; not required |
+
+### Panel dispositions (operator ruling, not the raw findings)
+
+| Finding | Disposition |
+|---|---|
+| Codex-1 / Claude-4 audit binding | Recovered/DuplicateReading identity must be known run/key/start agreeing as UTC instants with AttemptID; held-out identity on an in-sample attempt is invalid. YAML terminal needs at least one cited envelope with known CompletedAt equal to TerminalAt. Compatible same-ref duplicates may mix unknown and matching known completion. CompletedAt does not infer terminal status. Prior cutoff/exclusion rules preserved. |
+| Codex-2 / Claude-2 selected provenance | Recovered YAML refs resolve to selected live/history reports (matching repository, path under a declared root, live vs `git:` revision). Journal identities resolve to a journals source and `{run}/journal.jsonl`. Producer is the ReduceAttempts constant. No local IO. |
+| Codex-3 total audit ordering | Keep ReadingRef primary order; tie-break by remaining reconciliation/audit fields including optional completion, Identity, CompletedAt. Do not reject compatible same-ref readings. Permute two and three matched envelopes plus same-ref unrecovered identities. |
+| Claude-1 numeric domain | Known cost finite and nonnegative; known tokens and corrections/cascades/reviews/verifications nonnegative. Unknown optionals stay unknown. No count==len(event refs) inference. Invalid payload uses both sentinels. |
+| Claude-5 / Grok-3 CLI tests | Missing `--tasks` names `--tasks` and prints no usage. Unknown flags and nonpositive timeout are tested on a fresh `newDispatchedReferenceBuildCmd` (not `executeReferenceBuild`). Unknown-flag usage is the green baseline; timeout usage is red until the body validates timeout before SilenceUsage. Data-error no-usage cases preserved. |
+| Claude-3 all-or-nothing private legacy projection fallback | **Accepted, not sealed as a body requirement.** Malformed walls cannot reach it through Build's validated join; defensive failure makes the artifact PARTIAL and cannot license prediction. |
+| Grok-1 direct malformed AttemptSet salvage | **Deferred, not hidden acceptance.** JoinEvidence input-validation failures remain fail-closed. Build's reducer already retains usable normalized attempts and records aggregate errors. No new partial-salvage API. |
+| Grok-2 bounded target reading | **Deferred** to FC-PREDICT-SCAFFOLD target snapshot/error contract and FC-4, with the already-deferred flags. Not a data-sufficiency defect. |
+
+### Second-panel cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-AUDIT-BINDING/journal-completed-at-does-not-infer-yaml-terminal | Eligible, journal terminal, YAML-only=0 | Treat retained CompletedAt as YAML terminal proof |
+| F4-ELIGIBLE-AUDIT-BINDING/unfinished-known-completed-at-does-not-infer-terminal | Eligible, completed=2, terminal none | Infer a terminal from Examined.CompletedAt |
+| F4-ELIGIBLE-AUDIT-BINDING/utc-equivalent-identity-start | Eligible | Refuse an offset-equivalent UTC start |
+| F4-ELIGIBLE-AUDIT-BINDING/yaml-terminal-matching-known-plus-unknown-duplicate | Eligible | Require every same-ref duplicate to carry known completion |
+| F4-ELIGIBLE-AUDIT-BINDING/yaml-terminal-unknown-recovered-plus-matching-duplicate | Eligible | Index only one envelope per ref and miss the matching duplicate |
+| F4-ELIGIBLE-AUDIT-BINDING identity absent/wrong run/key/start/held-out (recovered and duplicate) | Both sentinels | Accept mismatched or held-out audit identity |
+| F4-ELIGIBLE-AUDIT-BINDING YAML unknown/unequal/both-unknown completion | Both sentinels | Accept a YAML terminal without matching known CompletedAt |
+| F4-ELIGIBLE-PROVENANCE live/history-ancestor/spaces/root-dot | Eligible, completed=2 | Refuse a legal live ref, ancestor SHA, spaced path, or root `.` |
+| F4-ELIGIBLE-PROVENANCE unknown producer, ghost YAML/journal, wrong kinds, wrong YAML/source repository, escaping/absolute/out-of-root YAML, non-direct-child journal paths | Both sentinels | Accept citations the selected sources do not authorize |
+| F4-ELIGIBLE-LOCAL-FIXTURE | Build of local producer journal + committed YAML through journal/live/history specs is eligible with completed=1 | Invent the expected count from JoinEvidence/Build helpers, or use an external journal |
+| F1-SAME-REF-PERMUTATION/matched-two and matched-three | Whole EvidenceJoin JSON equal; recovered=1; duplicates=n-1; YAML terminal supported | Retain caller order for equal-Ref completion ties |
+| F1-SAME-REF-PERMUTATION/unrecovered-examined-ties | JSON equal; AfterCutoff=2 | Leave distinct Identity/CompletedAt ordered by input |
+| F4-ELIGIBLE-NUMERIC-DOMAIN unknown/zero/positive-with-citations | Eligible; unknown stay unknown; counts may exceed event-list length | Require absent optionals or count==len(refs) |
+| F4-ELIGIBLE-NUMERIC-DOMAIN negative/NaN/±Inf cost, negative tokens/counts | Both sentinels | Sample an impossible known quantity |
+| CLI F4-GATE-REQUIRES-TASKS | Names `--tasks`, no usage, no artifact | Succeed without `--tasks` or print usage |
+| CLI F4-UNKNOWN-FLAG-USAGE | Unknown flag error, usage printed, no artifact (green) | Constructor SilenceUsage swallowing usage |
+| CLI F4-TIMEOUT-USAGE | `--timeout` error, usage printed, no artifact (red until body) | SilenceUsage before timeout validation |

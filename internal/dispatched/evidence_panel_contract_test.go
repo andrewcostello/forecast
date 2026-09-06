@@ -1162,6 +1162,27 @@ func testF4EligibleProvenance(t *testing.T) {
 		requireEligibleCompleted(t, art, 2)
 	})
 
+	// Raw drive/absolute/backslash guards must precede root cleaning:
+	// path.Clean("C:/..") == "." and would otherwise match every citation.
+	t.Run("drive-dotdot-root", func(t *testing.T) {
+		art := updateManifestSource(recoveredArtifact(2), "live", func(src *SourceReport) {
+			src.Roots = []string{"C:/.."}
+		})
+		if art.Evidence.Recovered != 2 || art.Evidence.Observations[0].Readings[0].Path != "features/study/tasks.yaml" {
+			t.Fatal("drive-dotdot-root control changed the ordinary relative citation")
+		}
+		requireRefuseInvalid(t, art)
+	})
+	t.Run("cleaned-relative-dotdot-root", func(t *testing.T) {
+		art := updateManifestSource(recoveredArtifact(2), "live", func(src *SourceReport) {
+			src.Roots = []string{"a/.."}
+		})
+		if art.Evidence.Recovered != 2 || art.Evidence.Observations[0].Readings[0].Path != "features/study/tasks.yaml" {
+			t.Fatal("a/.. control changed the ordinary relative citation")
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
 	t.Run("colon-in-relative-path", func(t *testing.T) {
 		const yamlPath = "features/archive:notes/tasks.yaml"
 		art := mapAllRecoveredYAML(recoveredArtifact(2), func(ref ReadingRef) ReadingRef {
@@ -1577,26 +1598,59 @@ func testF4EligibleNumericDomain(t *testing.T) {
 	})
 
 	t.Run("known-zero", func(t *testing.T) {
+		// Fourth-panel repair: known zero totals (including Known(0) cost/tokens)
+		// require a nonempty contributor list and EvidenceJournal citing the
+		// least canonical spawn. Zero correction/cascade/review/verification
+		// counts stay EvidenceNone with empty lists. The second-panel
+		// exemption that treated Known(0) with no citation as valid is
+		// superseded; that earlier shape is not current policy.
 		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
+			spawn := spawnCitation(obs.Attempt, 4, 5)
 			obs.Attempt.CostUSD = Known(0.0)
+			obs.Attempt.CostEvents = []EventRef{spawn}
+			obs.Attempt.Evidence.Cost = FieldEvidence{Source: EvidenceJournal, Event: spawn}
 			obs.Attempt.InputTokens = Known(int64(0))
+			obs.Attempt.InputTokenEvents = []EventRef{spawn}
+			obs.Attempt.Evidence.InputTokens = FieldEvidence{Source: EvidenceJournal, Event: spawn}
 			obs.Attempt.OutputTokens = Known(int64(0))
+			obs.Attempt.OutputTokenEvents = []EventRef{spawn}
+			obs.Attempt.Evidence.OutputTokens = FieldEvidence{Source: EvidenceJournal, Event: spawn}
 			obs.Attempt.Corrections = 0
 			obs.Attempt.Cascades = 0
 			obs.Attempt.Reviews = 0
 			obs.Attempt.Verifications = 0
 		})
+		got := art.Evidence.Observations[0].Attempt
+		if !got.CostUSD.Known || got.CostUSD.Value != 0 || len(got.CostEvents) != 1 || got.Evidence.Cost.Event != got.CostEvents[0] {
+			t.Fatalf("known-zero cost lost its spawn citation: %+v", got.Evidence.Cost)
+		}
+		if got.Corrections != 0 || got.Cascades != 0 || got.Reviews != 0 || got.Verifications != 0 {
+			t.Fatalf("known-zero counts changed: corrections=%d cascades=%d reviews=%d verifications=%d", got.Corrections, got.Cascades, got.Reviews, got.Verifications)
+		}
 		requireEligibleCompleted(t, art, 2)
 	})
 
 	t.Run("known-positive-with-citations", func(t *testing.T) {
+		// Fourth-panel repair: Corrections=2 and Cascades=3 are retained, but
+		// each count is the length of its complete unique event list (two and
+		// three distinct canonical refs). The second-panel assertion that
+		// counts must differ from list length was an operator error and is
+		// replaced here; the old one-ref-for-count-2/3 fixture was not valid
+		// carried data. Journal F2-CORRECTION-KINDS already requires six
+		// corrections AND six CorrectionEvents.
 		art := mutateObservation(recoveredArtifact(2), func(obs *RecoveredAttempt) {
 			cost := spawnCitation(obs.Attempt, 4, 5)
 			tokens := spawnCitation(obs.Attempt, 5, 6)
 			correction := spawnCitation(obs.Attempt, 6, 7)
 			correction.Type = EventPanelIterate
+			correction2 := spawnCitation(obs.Attempt, 10, 11)
+			correction2.Type = EventVerificationIterate
 			cascade := spawnCitation(obs.Attempt, 7, 8)
 			cascade.Type = EventAgentFallback
+			cascade2 := spawnCitation(obs.Attempt, 11, 12)
+			cascade2.Type = EventAgentFallback
+			cascade3 := spawnCitation(obs.Attempt, 12, 13)
+			cascade3.Type = EventAgentFallback
 			review := spawnCitation(obs.Attempt, 8, 9)
 			review.Type = EventPanelStarted
 			verify := spawnCitation(obs.Attempt, 9, 10)
@@ -1611,10 +1665,10 @@ func testF4EligibleNumericDomain(t *testing.T) {
 			obs.Attempt.OutputTokenEvents = []EventRef{tokens}
 			obs.Attempt.Evidence.OutputTokens = FieldEvidence{Source: EvidenceJournal, Event: tokens}
 			obs.Attempt.Corrections = 2
-			obs.Attempt.CorrectionEvents = []EventRef{correction}
+			obs.Attempt.CorrectionEvents = []EventRef{correction, correction2}
 			obs.Attempt.Evidence.Corrections = FieldEvidence{Source: EvidenceJournal, Event: correction}
 			obs.Attempt.Cascades = 3
-			obs.Attempt.CascadeEvents = []EventRef{cascade}
+			obs.Attempt.CascadeEvents = []EventRef{cascade, cascade2, cascade3}
 			obs.Attempt.Evidence.Cascades = FieldEvidence{Source: EvidenceJournal, Event: cascade}
 			obs.Attempt.Reviews = 1
 			obs.Attempt.ReviewEvents = []EventRef{review}
@@ -1622,8 +1676,8 @@ func testF4EligibleNumericDomain(t *testing.T) {
 			obs.Attempt.Verifications = 1
 			obs.Attempt.VerificationEvents = []EventRef{verify}
 			obs.Attempt.Evidence.Verifications = FieldEvidence{Source: EvidenceJournal, Event: verify}
-			if obs.Attempt.Corrections == len(obs.Attempt.CorrectionEvents) || obs.Attempt.Cascades == len(obs.Attempt.CascadeEvents) {
-				t.Fatal("positive control must not make counts equal event-list length")
+			if obs.Attempt.Corrections != len(obs.Attempt.CorrectionEvents) || obs.Attempt.Cascades != len(obs.Attempt.CascadeEvents) {
+				t.Fatal("complete counted-event lists must have count equal to unique list length")
 			}
 		})
 		got := art.Evidence.Observations[0].Attempt

@@ -77,6 +77,11 @@ func TestFCEvidenceContract(t *testing.T) {
 	t.Run("F1-SAME-REF-PERMUTATION", testF1SameRefPermutation)
 	t.Run("F4-ELIGIBLE-NUMERIC-DOMAIN", testF4EligibleNumericDomain)
 	t.Run("F1-CONFLICT-TOTAL-ORDER", testF1ConflictTotalOrder)
+	t.Run("F4-ELIGIBLE-MEASUREMENT", testF4EligibleMeasurement)
+	t.Run("F1-AMBIGUOUS-REF-PERMUTATION", testF1AmbiguousRefPermutation)
+	t.Run("F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS", testF4EligibleProvenanceDiagnostics)
+	t.Run("F1-CONFLICT-INDEPENDENT-TIES", testF1ConflictIndependentTies)
+	t.Run("F1-CONFLICT-RECONCILE-APPEND", testF1ConflictReconcileAppend)
 }
 
 func twoRunUniverse(t *testing.T) (sets []AttemptSet, readings []Reading, journals []JournalIdentity) {

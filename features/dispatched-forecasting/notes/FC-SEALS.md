@@ -812,3 +812,124 @@ required. `attemptConflictLess` in `journal.go` is untouched.
 | F1-CONFLICT-TOTAL-ORDER `.../complete-citation-ties` | Whole JSON equal; primary-order ties broken by remaining B.Reading | Ignore remaining A/B citation members |
 | F1-CONFLICT-TOTAL-ORDER `.../reason-ties` | Whole JSON equal; same citations, different Reason | Ignore Reason or treat Err as an order key |
 | F1-CONFLICT-TOTAL-ORDER `.../citation-reason-three` | Whole JSON equal; mixed A/B citation and Reason ties; attempts=1 | Drop a pairing or reject distinct valid conflicts |
+
+## FC-1 fourth-panel corrective seals
+
+Independent seals for the Operator F1/F4 fourth-panel ruling at the end of
+`FC-SCAFFOLD.md` on panel `2026-09-06T07-58-50Z-FC-1-corrected-panel`
+(reviewed head `cef3559`). That ruling SUPERSEDES the second-panel
+prohibition on count/list equality and the known-zero-with-no-citation
+positive fixture. Journal `F2-CORRECTION-KINDS` already requires six
+corrections AND six `CorrectionEvents`: six distinct counted markers, not
+one weighted marker. No Journal/Source contract, implementation, schema,
+shared helper, worklist, or known-red edit. Artifacts and AttemptSet facts
+are hand-built except the existing local Build→Eligibility control. Bodies
+cannot edit these seals. No skipped/xfail cases. No new top-level group.
+
+Allowed files only:
+
+- `internal/dispatched/evidence_panel_contract_test.go` (the two authorized
+  positive-fixture sections plus new root-guard cases)
+- `internal/dispatched/evidence_measurement_contract_test.go`
+- `internal/dispatched/evidence_final_review_contract_test.go`
+- registration in `internal/dispatched/evidence_contract_test.go`
+- append this note
+
+### Fourth-panel finding dispositions
+
+| Finding | Sealed? | Disposition |
+|---|---|---|
+| Claude-1 carried measurement provenance | Yes | Count==complete unique list length; known totals including zero need contributors and least-event `EvidenceJournal`; zero counts are `EvidenceNone` |
+| Claude-2 ambiguous offset-equivalent refs | Yes | Whole `EvidenceJoin` JSON permutation equality; retained diagnostic edge, not a sample |
+| Claude-3 actionable provenance reasons | Yes | Behavior-level field/value/rule components; typed sentinels kept; no frozen sentence |
+| Claude-4 root guard ordering | Yes (tests) | `C:/..` refuses; `a/..` and `.` stay eligible. The production constraint comment is a later body edit |
+| Codex-1 stronger conflict-order seals | Yes | One-field tie cases, reconcile-append corpus, and recorded final-sort overlay mutations |
+| Grok | No findings | Approve |
+
+`EvidenceConflictCode` is the only legal producer `Code` on a valid
+normalized conflict. A second Code is not a retained legal schema value
+and is not used as a tie-break fixture.
+
+### Authorized numeric-fixture repair
+
+The second-panel `F4-ELIGIBLE-NUMERIC-DOMAIN` positives were incompatible
+with the frozen Journal schema. They are repaired in place. The old
+malformed shapes are not current policy; they are now explicit negatives
+under `F4-ELIGIBLE-MEASUREMENT`.
+
+| Fixture | Before (superseded) | After |
+|---|---|---|
+| `known-zero` | `CostUSD`/`InputTokens`/`OutputTokens` = `Known(0)` with empty lists and `EvidenceNone`; counts 0 | Same zero values. One synthetic `task_spawn_finished` is the nonempty contributor for all three known-zero totals, cited as `EvidenceJournal` list[0]. Counts remain 0 with `EvidenceNone`. n/IDs/model/outcome/threshold unchanged |
+| `known-positive-with-citations` | `Corrections=2` with one `panel_iterate`; `Cascades=3` with one `agent_fallback`; assertion required count **!=** list length | `Corrections=2` with two distinct refs (`panel_iterate`, `verification_iterate`); `Cascades=3` with three distinct `agent_fallback` refs; assertion requires count **==** unique list length. Cost 1.5 and its list[0] citation, token citations, Reviews=1, Verifications=1 retained |
+
+### Measurement consistency
+
+Invalid cases require `!Eligible` plus both `ErrNotEligible` and
+`ErrSourceIncomplete`. Unknown totals with no contributors, or with
+available partial lists and `EvidenceNone`, remain legal. The same spawn
+may appear in cost AND token AND correction lists; per-list uniqueness
+does not cross measurement kinds. List membership is producer line order;
+there is no clock-within-terminal constraint. No recomputation from
+original event payloads.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-NUMERIC-DOMAIN/known-zero | Eligible; Known(0) totals cited by a spawn list | Accept Known(0) with no contributors, or drop the spawn citation |
+| F4-ELIGIBLE-NUMERIC-DOMAIN/known-positive-with-citations | Eligible; Corrections=2 and Cascades=3 equal unique list lengths | Restore the superseded count!=len fixture; drop a distinct ref |
+| F4-ELIGIBLE-MEASUREMENT unknown-no-contributors / unknown-with-partial-contributor-lists | Eligible | Require unknown totals to become known or to drop retained lists |
+| F4-ELIGIBLE-MEASUREMENT complete-zero / complete-positive / same-spawn-across-lists | Eligible | Refuse a faithful complete measurement or cross-list spawn |
+| F4-ELIGIBLE-MEASUREMENT spawn-after-terminal-before-cutoff / spawn-at-exact-cutoff | Eligible | Invent a clock-within-terminal refusal |
+| F4-ELIGIBLE-MEASUREMENT/local-build-eligibility-measurement | Real local Build is eligible; counts equal lists; known cost cites list[0] | Sample Build output that violates the carried invariants |
+| F4-ELIGIBLE-MEASUREMENT nonzero-without-list, count/list cardinality, missing/non-least/mismatched citations, known quantities without contributors, duplicate/unordered lists, wrong types, nonpositive/future/absent timestamps, wrong/empty CostScope, zero-count with leftover journal evidence | Both sentinels | Mark fabricated measurements eligible |
+
+### Ambiguous diagnostic refs
+
+Two refs share seq/line/type and an equivalent UTC instant with different
+serialized offsets. `Starts=2`, both refs, lost/ambiguous status, and
+caller bytes are preserved. This shape is a retained diagnostic edge, not
+training data. No Journal comparator edit and no deduplication.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F1-AMBIGUOUS-REF-PERMUTATION/order-0 and order-1 | Each order retains Starts=2, both refs, `ErrAmbiguousAttempt`, no sample | Deduplicate, recover a sample, or mutate caller refs |
+| F1-AMBIGUOUS-REF-PERMUTATION/whole-join-json | Whole `EvidenceJoin` JSON equal | Leave offset-equivalent ties ordered by caller input |
+
+### Provenance diagnostics
+
+Existing refusal/acceptance decisions are unchanged. New cases require
+the stored value plus a meaningful field token and rule token in
+`Eligibility.Reasons`, not an entire punctuation-sensitive sentence.
+Typed gate sentinels stay `ErrNotEligible` and `ErrSourceIncomplete`.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/drive-prefix | Both sentinels; reasons name `C:/outside/tasks.yaml` and a path/drive-portable rule | Opaque `malformed` with no stored path |
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/ghost-yaml-source | Reasons name `ghost-yaml` and a selected-source rule | Collapse to generic malformed |
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/wrong-yaml-repository | Reasons name `other-repo` and repository | Omit the stored repository |
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/yaml-path-out-of-root | Reasons name `dispatcher/tasks.yaml` and a root rule | Omit the stored path or root rule |
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/unknown-journal-producer | Reasons name `evil-producer-9` and producer | Omit the stored producer |
+| F4-ELIGIBLE-PROVENANCE-DIAGNOSTICS/journal-path-not-direct-child | Reasons name `run-a/nested/journal.jsonl` and a path/layout rule | Omit the stored journal path |
+
+### Independent conflict ties and reconcile-append corpus
+
+One retained serialized field is varied at a time. Whole-output
+permutation, pair retention, and input-byte immutability reuse the
+existing helper. Empty-readings and matching-reading cover both public
+sort sites.
+
+The bounded corpus starts with three same-ID/same-A/same-B-citation model
+conflicts that differ only in `BValue`, then ten ordinary attempts whose
+conflicting YAML roles append additional conflicts after the initial
+sort. Documented primary order is AttemptID, so the first emitted key
+must be `A00`. Among the Z facts, BValue order is `modelB`, `modelC`,
+`modelD`. Overlay mutations of **only** the final sort are recorded
+beside `2026-09-06T08-22-02Z-FC-1-corrective-seals`; they are not a
+shared production oracle.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F1-CONFLICT-INDEPENDENT-TIES `b-value-only` / `a-reading-row` / `a-reading-source` / `a-reading-time` / `b-event-time` / `b-source` | Whole JSON equal; facts retained; attempts=1 | Ignore that one tie field |
+| F1-CONFLICT-RECONCILE-APPEND | Whole JSON equal; 13 facts retained; first key `A00`; Z BValues B,C,D | Leave appended conflicts after the initial Z block, or let a tying legacy final sort reorder Z BValues |
+| F4-ELIGIBLE-PROVENANCE/drive-dotdot-root | Both sentinels; ordinary relative citation under root `C:/..` | Clean `C:/..` to `.` and accept |
+| F4-ELIGIBLE-PROVENANCE/cleaned-relative-dotdot-root | Eligible; root `a/..` | Refuse a non-drive relative root that cleans to `.` |
+| F4-ELIGIBLE-PROVENANCE/root-dot | Eligible (existing control) | Refuse ordinary root `.` |

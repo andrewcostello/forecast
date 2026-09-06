@@ -38,6 +38,24 @@ type BuildOptions struct {
 	// MaxHistoryCommits bounds the git history walk. Zero means
 	// defaultMaxHistoryCommits.
 	MaxHistoryCommits int
+
+	// Amended contract inputs (F3/F6), frozen here for FC-1. Sources are the
+	// explicit source specifications that replace RunsDir/FeaturesRepos;
+	// Selection freezes holdout run IDs, cutoff and allow-empty; Bounds are
+	// the byte/commit/process caps. Until FC-1 wires ReadSources and
+	// JoinEvidence into Build, setting any of them makes Build return
+	// ErrNotImplemented rather than silently ignoring an input; the legacy
+	// shape (nil Sources, zero cutoff, nil holdouts, false AllowEmpty and zero
+	// Bounds) runs the baseline unchanged.
+	Sources   []SourceSpec
+	Selection Selection
+	Bounds    ReadBounds
+}
+
+// amended reports whether the options use the F3/F6 inputs.
+func (o BuildOptions) amended() bool {
+	return o.Sources != nil || !o.Selection.Cutoff.IsZero() || o.Selection.HoldoutRunIDs != nil ||
+		o.Selection.AllowEmpty || o.Bounds != (ReadBounds{})
 }
 
 // BuildResult holds both the queryable table and its portable artifact.
@@ -54,6 +72,101 @@ type Artifact struct {
 	Coverage      Coverage               `json:"coverage"`
 	Conflicts     []Conflict             `json:"conflicts"`
 	Limits        []string               `json:"limits"`
+	// SourceManifest (F3) names every source the artifact rests on and its
+	// completeness. Nil from the baseline path; FC-1 populates it and bumps
+	// SchemaVersion when it does.
+	SourceManifest *SourceManifest   `json:"source_manifest,omitempty"`
+	Evidence       *ArtifactEvidence `json:"evidence,omitempty"`
+}
+
+// AmendedEvidenceSchemaVersion is emitted only once FC-1 implements the amended build.
+// Legacy version 3 retains its fields. Version 4 requires SourceManifest and Evidence;
+// consumers must reject missing payloads or unsupported versions, not default
+// their absence to zero. Legacy Observations/Cells are compatibility projections
+// only; amended sampling uses Evidence.Observations exclusively.
+const AmendedEvidenceSchemaVersion = 4
+
+// BaselineSchemaVersion is the current legacy writer version. Only the amended
+// FC-1 Build may emit AmendedEvidenceSchemaVersion after filling both required payloads.
+const BaselineSchemaVersion = 3
+
+// ArtifactEvidence is the complete serializable join audit and joint sample.
+// A nil payload means unavailable (legacy version 3); all counters inside a version 4
+// payload are present, including zero. Durations on Attempt use nanoseconds.
+// FC-1 initializes every list in version 4 evidence (including nested lists) to
+// [] rather than null. Canonical JSON-value equality includes that distinction.
+// Attempt outcome and terminal conflict outcome are done/blocked/unfinished text.
+// Compatibility projections map amended EvidenceNone="" to legacy "none",
+// leaving "yaml" and "journal" unchanged; amended sampling never reads projections.
+// Reading revisions use stable strings; Cell retains legacy Role/Model JSON keys.
+// Limits must disclose recorded_task_spawns cost scope, excluded cache tokens,
+// and that unrecorded reviewer/operator spend is not total-process cost.
+type ArtifactEvidence struct {
+	RowsWithYAMLOnlyTerminal int                `json:"rows_with_yaml_only_terminal"`
+	StartsAfterCutoff        int                `json:"starts_after_cutoff"`
+	Observations             []RecoveredAttempt `json:"observations"`
+	Examined                 []Examined         `json:"examined"`
+	Dispositions             []DispositionCount `json:"dispositions"`
+	Conflicts                []AttemptConflict  `json:"conflicts"`
+	Ambiguous                []AmbiguousAttempt `json:"ambiguous"`
+	UniqueRows               int                `json:"unique_rows"`
+	Attempts                 int                `json:"attempts"`
+	Recovered                int                `json:"recovered"`
+	LostAttempts             []AttemptID        `json:"lost_attempts"`
+	ExcludedJournals         []JournalIdentity  `json:"excluded_journals"`
+}
+
+// EligibilityCell is computed from joint evidence, never legacy coverage counts.
+type EligibilityCell struct {
+	Role         Role   `json:"role"`
+	Model        string `json:"model"`
+	Completed    int    `json:"completed"`
+	MinCompleted int    `json:"min_completed"`
+	Eligible     bool   `json:"eligible"`
+}
+
+// Eligibility is the F4 prediction gate result. Eligible is true only when
+// the manifest is COMPLETE, the target has at least one row, every required
+// cell is valid, and every required cell holds at least MinCompleted
+// completed samples. Reasons lists every failed condition; MinCompleted is
+// reported as a threshold, not as proof of calibration.
+type Eligibility struct {
+	Cells        []EligibilityCell `json:"cells"`
+	Eligible     bool              `json:"eligible"`
+	MinCompleted int               `json:"min_completed"`
+	Reasons      []string          `json:"reasons,omitempty"`
+}
+
+// TargetRow preserves each target identity and cell before coverage aggregation.
+// Callers pass original rows, including invalid ones, so validation cannot hide
+// blank/duplicate keys or roles/models that aggregation would discard.
+type TargetRow struct {
+	Key   string `json:"key"`
+	Role  Role   `json:"role"`
+	Model string `json:"model"`
+}
+
+// PredictionEligibility requires SchemaVersion == AmendedEvidenceSchemaVersion exactly,
+// nonnil Evidence, a valid complete SourceManifest, a nonempty valid target
+// argument and sufficient completed
+// samples in every required cell. minCompleted<=0 uses DefaultMinObservations;
+// Eligibility.MinCompleted records the effective positive threshold.
+// Invalid schema/payload or incomplete sources yield Eligible=false and a
+// reason; when refuse is true their error wraps BOTH ErrNotEligible and
+// ErrSourceIncomplete. A thin cell wraps ErrNotEligible when refusing. Zero-row
+// targets always wrap ErrEmptyTarget; malformed targets wrap ErrInvalidTarget.
+// With refuse=false, ordinary insufficiency is a diagnostic result, not an
+// error. The scaffold returns ErrNotImplemented regardless of inputs.
+//
+// Validate target rows first: empty -> ErrEmptyTarget, then declaration-order
+// invalid/duplicate keys, invalid roles or blank models -> ErrInvalidTarget.
+// Compute completed counts from valid Evidence.Observations, not legacy Cells/Coverage.
+// A sampled run listed in manifest holdouts, a mismatched manifest/attempt
+// cutoff, malformed joint records or cell/model contradictions make the evidence
+// payload invalid; refuse with ErrSourceIncomplete and ErrNotEligible as above.
+// FC-1 body; this scaffold returns ErrNotImplemented.
+func PredictionEligibility(artifact Artifact, target []TargetRow, minCompleted int, refuse bool) (Eligibility, error) {
+	return Eligibility{}, fmt.Errorf("%w: PredictionEligibility(min %d)", ErrNotImplemented, minCompleted)
 }
 
 // ReferenceObservation is one stored row as the artifact serialises it.
@@ -181,6 +294,9 @@ type Conflict struct {
 	Reason    string    `json:"reason"`
 }
 
+// The amended FC-1 Build is frozen in notes/FC-SCAFFOLD.md "Entry-point
+// contracts" (Build / serialization) and F4-MIXED-OPTIONS.
+
 // Build constructs the union reference class. The stamped journal model is
 // the only model used for attribution; the authored YAML model is retained
 // only to count disagreements.
@@ -193,6 +309,11 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	}
 	if opts.MinObservations <= 0 {
 		opts.MinObservations = DefaultMinObservations
+	}
+	if opts.amended() {
+		// Fail loudly instead of running the baseline over inputs it would
+		// ignore: an unapplied holdout or cutoff would leak evidence.
+		return nil, fmt.Errorf("%w: Build with Sources, Selection or Bounds", ErrNotImplemented)
 	}
 	journals, err := readJournals(ctx, opts.RunsDir)
 	if err != nil {
@@ -413,7 +534,7 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 	cells := summarizeCells(table)
 	coverage.finishTarget(required, cells, opts.MinObservations)
 	artifact := Artifact{
-		SchemaVersion: 3,
+		SchemaVersion: BaselineSchemaVersion,
 		GeneratedAt:   opts.Now.UTC(),
 		Observations:  observations,
 		Cells:         cells,
@@ -422,106 +543,6 @@ func Build(ctx context.Context, opts BuildOptions) (*BuildResult, error) {
 		Limits:        []string{HandFinishedLimit},
 	}
 	return &BuildResult{Table: table, Artifact: artifact}, nil
-}
-
-// joinReadings folds every reading of one identity into a single row using
-// the same rules Table.Add applies, and reports the conflict rather than
-// picking a winner. It is total: the fold is over a commutative operation, so
-// the order readings arrive in does not change the result.
-func joinReadings(rows []Observation) (Observation, error) {
-	firstCell := rows[0]
-	var terminal *Observation
-	for i := range rows {
-		row := &rows[i]
-		if row.Cell != firstCell.Cell {
-			_, err := merge(firstCell, *row)
-			return Observation{}, err
-		}
-		if row.Outcome.terminal() {
-			if terminal != nil && terminal.Outcome != row.Outcome {
-				_, err := merge(*terminal, *row)
-				return Observation{}, err
-			}
-			terminal = row
-		}
-	}
-	joined := rows[0]
-	for _, row := range rows[1:] {
-		next, err := merge(joined, row)
-		if err != nil {
-			return Observation{}, err
-		}
-		joined = next
-	}
-	return joined, nil
-}
-
-// Terminal evidence values. A journal terminal event is the dispatcher's own
-// record; a YAML status is a mutable file a human may have edited, and edge
-// case 9 says a hand-finished row is indistinguishable from an agent one.
-const (
-	terminalEvidenceJournal = "journal"
-	terminalEvidenceYAML    = "yaml"
-	terminalEvidenceNone    = "none"
-)
-
-// observationFrom joins one YAML snapshot to the journal attempt it names.
-//
-// The terminal event, when the journal has one, decides both the outcome and
-// the instant elapsed time is measured to. A YAML completed_at is used ONLY
-// when the YAML status is itself terminal: a row still marked in progress
-// carrying a stale completed_at is censored, and its lower bound runs to now,
-// not back to a timestamp from a previous attempt.
-func observationFrom(snapshot taskSnapshot, facts *JournalFacts, now time.Time) (Observation, error) {
-	if !snapshot.Role.Valid() || facts.Model == "" {
-		return Observation{}, fmt.Errorf("%w: row %s has role %q and stamped model %q", ErrUnattributable, snapshot.Key, snapshot.Role, facts.Model)
-	}
-	outcome, end, evidence := OutcomeUnfinished, now, terminalEvidenceNone
-	if facts.TerminalOutcome.Valid() {
-		outcome, end, evidence = facts.TerminalOutcome, facts.TerminalAt, terminalEvidenceJournal
-	} else if yamlOutcome, ok := terminalStatus(snapshot.Status); ok && !snapshot.CompletedAt.IsZero() {
-		outcome, end, evidence = yamlOutcome, snapshot.CompletedAt, terminalEvidenceYAML
-	}
-	if end.Before(snapshot.StartedAt) {
-		return Observation{}, fmt.Errorf("build observation: %w: row %s ends at %s before it starts at %s", ErrNegativeValue, snapshot.Key, end.Format(time.RFC3339Nano), snapshot.StartedAt.Format(time.RFC3339Nano))
-	}
-	observation := Observation{
-		Key:              snapshot.Key,
-		Cell:             Cell{Role: snapshot.Role, Model: facts.Model},
-		Outcome:          outcome,
-		TerminalEvidence: evidence,
-		StartedAt:        snapshot.StartedAt,
-		Elapsed:          end.Sub(snapshot.StartedAt),
-		DevElapsed:       facts.DevElapsed,
-		ReviewElapsed:    facts.ReviewElapsed,
-		Rounds:           max(snapshot.IterationCount, facts.Rounds),
-		Cascades:         facts.Fallbacks,
-		InputTokens:      facts.InputTokens,
-		OutputTokens:     facts.OutputTokens,
-		CostUSD:          facts.CostUSD,
-		CostKnown:        facts.CostKnown,
-		Provenance:       Provenance{RunID: snapshot.DispatcherRunID, Revision: snapshot.Revision, Repository: snapshot.Repository, Path: snapshot.Path},
-	}
-	if err := observation.Validate(); err != nil {
-		return Observation{}, fmt.Errorf("build observation: %w", err)
-	}
-	return observation, nil
-}
-
-func terminalStatus(status string) (Outcome, bool) {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "done":
-		return OutcomeDone, true
-	case "blocked":
-		return OutcomeBlocked, true
-	}
-	return 0, false
-}
-
-func isUnrecoverableObservationError(err error) bool {
-	return errors.Is(err, ErrNegativeValue) ||
-		errors.Is(err, ErrInvalidOutcome) ||
-		errors.Is(err, ErrUnparseableRevision)
 }
 
 func distinctCells(rows []Observation) []Cell {

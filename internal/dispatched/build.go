@@ -39,14 +39,11 @@ type BuildOptions struct {
 	// defaultMaxHistoryCommits.
 	MaxHistoryCommits int
 
-	// Amended contract inputs (F3/F6), frozen here for FC-1. Sources are the
+	// Amended contract inputs (F3/F6). Sources are the
 	// explicit source specifications that replace RunsDir/FeaturesRepos;
 	// Selection freezes holdout run IDs, cutoff and allow-empty; Bounds are
-	// the byte/commit/process caps. Until FC-1 wires ReadSources and
-	// JoinEvidence into Build, setting any of them makes Build return
-	// ErrNotImplemented rather than silently ignoring an input; the legacy
-	// shape (nil Sources, zero cutoff, nil holdouts, false AllowEmpty and zero
-	// Bounds) runs the baseline unchanged.
+	// the byte/commit/process caps. The legacy shape (nil Sources, zero cutoff,
+	// nil holdouts, false AllowEmpty and zero Bounds) runs schema 3 unchanged.
 	Sources   []SourceSpec
 	Selection Selection
 	Bounds    ReadBounds
@@ -70,8 +67,10 @@ type Artifact struct {
 	Observations  []ReferenceObservation `json:"observations"`
 	Cells         []CellSummary          `json:"cells"`
 	Coverage      Coverage               `json:"coverage"`
-	Conflicts     []Conflict             `json:"conflicts"`
-	Limits        []string               `json:"limits"`
+	// Conflicts is the schema-3 compatibility field. In schema 4,
+	// Evidence.Conflicts is the authoritative conflict audit.
+	Conflicts []Conflict `json:"conflicts"`
+	Limits    []string   `json:"limits"`
 	// SourceManifest (F3) names every source the artifact rests on and its
 	// completeness. Nil from the baseline path; FC-1 populates it and bumps
 	// SchemaVersion when it does.
@@ -156,7 +155,7 @@ type TargetRow struct {
 // ErrSourceIncomplete. A thin cell wraps ErrNotEligible when refusing. Zero-row
 // targets always wrap ErrEmptyTarget; malformed targets wrap ErrInvalidTarget.
 // With refuse=false, ordinary insufficiency is a diagnostic result, not an
-// error. The scaffold returns ErrNotImplemented regardless of inputs.
+// error.
 //
 // Validate target rows first: empty -> ErrEmptyTarget, then declaration-order
 // invalid/duplicate keys, invalid roles or blank models -> ErrInvalidTarget.
@@ -164,7 +163,6 @@ type TargetRow struct {
 // A sampled run listed in manifest holdouts, a mismatched manifest/attempt
 // cutoff, malformed joint records or cell/model contradictions make the evidence
 // payload invalid; refuse with ErrSourceIncomplete and ErrNotEligible as above.
-// FC-1 body; this scaffold returns ErrNotImplemented.
 func PredictionEligibility(artifact Artifact, target []TargetRow, minCompleted int, refuse bool) (Eligibility, error) {
 	if minCompleted <= 0 {
 		minCompleted = DefaultMinObservations
@@ -201,12 +199,19 @@ func PredictionEligibility(artifact Artifact, target []TargetRow, minCompleted i
 		invalid = true
 		out.Reasons = append(out.Reasons, "structured evidence payload is missing")
 	}
-	if err := artifact.SourceManifest.ValidateComplete(); err != nil {
+	if artifact.SourceManifest == nil {
+		invalid = true
+		out.Reasons = append(out.Reasons, "source manifest is missing")
+	} else if err := artifact.SourceManifest.ValidateComplete(); err != nil {
 		invalid = true
 		out.Reasons = append(out.Reasons, err.Error())
 	}
 	completed := make(map[Cell]int)
 	if artifact.Evidence != nil && artifact.SourceManifest != nil {
+		if reasons := validateArtifactEvidence(artifact.Evidence, artifact.SourceManifest); len(reasons) != 0 {
+			invalid = true
+			out.Reasons = append(out.Reasons, reasons...)
+		}
 		seenAttempts := make(map[AttemptID]bool)
 		holdouts := make(map[string]bool, len(artifact.SourceManifest.HoldoutRunIDs))
 		for _, runID := range artifact.SourceManifest.HoldoutRunIDs {
@@ -274,6 +279,223 @@ func PredictionEligibility(artifact Artifact, target []TargetRow, minCompleted i
 		)
 	}
 	return out, fmt.Errorf("%w: required cells are below the completed-observation threshold", ErrNotEligible)
+}
+
+func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManifest) []string {
+	var reasons []string
+	add := func(format string, args ...any) {
+		reasons = append(reasons, fmt.Sprintf(format, args...))
+	}
+	if evidence.Recovered != len(evidence.Observations) {
+		add("structured evidence recovered count %d does not match %d observations", evidence.Recovered, len(evidence.Observations))
+	}
+	if evidence.Attempts != evidence.Recovered+len(evidence.LostAttempts) {
+		add("structured evidence attempt count %d does not match %d recovered plus lost identities", evidence.Attempts, evidence.Recovered+len(evidence.LostAttempts))
+	}
+	if evidence.StartsAfterCutoff < 0 {
+		add("structured evidence has a negative starts-after-cutoff count")
+	}
+
+	seenAttempts := make(map[AttemptID]bool, len(evidence.Observations)+len(evidence.LostAttempts))
+	recoveredReadings := make(map[AttemptID]map[ReadingRef]bool, len(evidence.Observations))
+	recoveredExamined := make(map[AttemptID]int, len(evidence.Observations))
+	rows := make(map[runTask]bool)
+	yamlOnly := 0
+	for i, recovered := range evidence.Observations {
+		id := canonicalAttemptID(recovered.Attempt.ID)
+		if seenAttempts[id] {
+			add("structured observation %d repeats attempt %s/%s", i, id.RunID, id.Key)
+		}
+		seenAttempts[id] = true
+		rows[runTask{RunID: id.RunID, Key: id.Key}] = true
+		recoveredReadings[id] = make(map[ReadingRef]bool, len(recovered.Readings))
+		for _, ref := range recovered.Readings {
+			recoveredReadings[id][ref] = true
+		}
+		if err := validateRecoveredEvidence(recovered, manifest); err != nil {
+			add("structured observation %d is invalid: %v", i, err)
+		}
+		if recovered.Attempt.Evidence.Terminal.Source == EvidenceYAML {
+			yamlOnly++
+		}
+	}
+	for i, id := range evidence.LostAttempts {
+		id = canonicalAttemptID(id)
+		if id.RunID == "" || id.Key == "" || id.StartedAt.IsZero() {
+			add("lost attempt %d has an incomplete identity", i)
+			continue
+		}
+		if seenAttempts[id] {
+			add("lost attempt %d duplicates a recovered or lost identity", i)
+		}
+		seenAttempts[id] = true
+		rows[runTask{RunID: id.RunID, Key: id.Key}] = true
+	}
+	if evidence.UniqueRows != len(rows) {
+		add("structured evidence unique-row count %d does not match %d represented rows", evidence.UniqueRows, len(rows))
+	}
+	if evidence.RowsWithYAMLOnlyTerminal != yamlOnly {
+		add("structured evidence YAML-only terminal count %d does not match %d observations", evidence.RowsWithYAMLOnlyTerminal, yamlOnly)
+	}
+
+	actualDispositions := make(map[Disposition]int)
+	for i, examined := range evidence.Examined {
+		if !examined.Disposition.Valid() {
+			add("examined reading %d has invalid disposition %q", i, examined.Disposition)
+			continue
+		}
+		actualDispositions[examined.Disposition]++
+		if examined.Disposition == DispositionRecovered || examined.Disposition == DispositionDuplicateReading {
+			id := canonicalAttemptID(examined.Attempt)
+			refs, ok := recoveredReadings[id]
+			if !ok || !refs[examined.Reading] {
+				add("examined recovered reading %d does not belong to its structured observation", i)
+			}
+			if examined.Disposition == DispositionRecovered {
+				recoveredExamined[id]++
+			}
+		}
+	}
+	declared := Dispositions()
+	if len(evidence.Examined) == 0 {
+		if len(evidence.Dispositions) != 0 && len(evidence.Dispositions) != len(declared) {
+			add("empty examined audit has %d disposition counters; want zero or %d", len(evidence.Dispositions), len(declared))
+		} else if len(evidence.Dispositions) != 0 {
+			for i, count := range evidence.Dispositions {
+				if count.Disposition != declared[i] || count.Count != 0 {
+					add("empty examined audit has inconsistent disposition counts")
+					break
+				}
+			}
+		}
+	} else if len(evidence.Dispositions) != len(declared) {
+		add("structured evidence has %d disposition counters; want %d", len(evidence.Dispositions), len(declared))
+	} else {
+		for i, disposition := range declared {
+			count := evidence.Dispositions[i]
+			if count.Disposition != disposition || count.Count != actualDispositions[disposition] {
+				add("disposition counter %d does not describe examined readings", i)
+			}
+		}
+	}
+	if actualDispositions[DispositionRecovered] != len(evidence.Observations) {
+		add("recovered disposition count %d does not match %d observations", actualDispositions[DispositionRecovered], len(evidence.Observations))
+	}
+	for id := range recoveredReadings {
+		if recoveredExamined[id] != 1 {
+			add("structured observation %s/%s has %d recovered audit envelopes; want one", id.RunID, id.Key, recoveredExamined[id])
+		}
+	}
+
+	if manifest.State == SourceComplete {
+		if len(evidence.Conflicts) != 0 || actualDispositions[DispositionConflictingEvidence] != 0 {
+			add("complete sources contain conflicting evidence")
+		}
+		if len(evidence.Ambiguous) != 0 || actualDispositions[DispositionAmbiguousStart] != 0 {
+			add("complete sources contain ambiguous attempts")
+		}
+		if actualDispositions[DispositionMalformed] != 0 || actualDispositions[DispositionUnrecoverable] != 0 {
+			add("complete sources contain malformed or unrecoverable evidence")
+		}
+	}
+	return canonicalStrings(reasons)
+}
+
+func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManifest) error {
+	attempt := recovered.Attempt
+	if attempt.ID.RunID == "" || attempt.ID.Key == "" || attempt.ID.StartedAt.IsZero() {
+		return fmt.Errorf("attempt identity is incomplete")
+	}
+	if !validArtifactJournalIdentity(attempt.Start.Journal) || attempt.Start.Journal.RunID != attempt.ID.RunID || attempt.Start.Type != EventTaskStarted ||
+		!attempt.Start.At.Equal(attempt.ID.StartedAt) {
+		return fmt.Errorf("start citation disagrees with attempt identity")
+	}
+	if attempt.Evidence.Start.Source != EvidenceJournal || attempt.Evidence.Start.Event != attempt.Start {
+		return fmt.Errorf("required start provenance is missing or inconsistent")
+	}
+	if !attempt.Cutoff.Equal(manifest.Cutoff) {
+		return fmt.Errorf("attempt cutoff differs from source manifest")
+	}
+	if !attempt.Outcome.Valid() || attempt.Elapsed < 0 {
+		return fmt.Errorf("attempt outcome or elapsed value is invalid")
+	}
+	if err := validateAttemptWall(attempt); err != nil {
+		return err
+	}
+	if _, err := SummarizeWall(attempt.Wall); err != nil {
+		return err
+	}
+	if !recovered.Cell.Role.Valid() || strings.TrimSpace(recovered.Cell.Model) == "" ||
+		!attempt.Model.Known || strings.TrimSpace(attempt.Model.Value) == "" || recovered.Cell.Model != attempt.Model.Value {
+		return fmt.Errorf("cell does not match a valid stamped model and role")
+	}
+	refs := make(map[ReadingRef]bool, len(recovered.Readings))
+	for _, ref := range recovered.Readings {
+		if !validRecoveredReadingRef(ref) {
+			return fmt.Errorf("recovered reading citation is malformed")
+		}
+		refs[ref] = true
+	}
+	if len(recovered.Readings) == 0 {
+		return fmt.Errorf("recovered attempt has no reading citations")
+	}
+	if attempt.Evidence.Role.Source != EvidenceYAML || !refs[attempt.Evidence.Role.Reading] {
+		return fmt.Errorf("required role provenance does not cite a recovered reading")
+	}
+	if !validAttemptJournalEvidence(attempt.Evidence.Model, attempt, EventTaskSpawnFinished) {
+		return fmt.Errorf("required model provenance does not cite this attempt's journal")
+	}
+
+	terminal, elapsed := attempt.Evidence.Terminal, attempt.Evidence.Elapsed
+	switch terminal.Source {
+	case EvidenceJournal:
+		wantType := EventTaskDone
+		if attempt.Outcome == OutcomeBlocked {
+			wantType = EventTaskBlocked
+		}
+		if !attempt.Outcome.terminal() || !validAttemptJournalEvidence(terminal, attempt, wantType) ||
+			elapsed.Source != EvidenceJournal || elapsed.Event != terminal.Event {
+			return fmt.Errorf("journal terminal/elapsed provenance is missing or inconsistent")
+		}
+		if !attempt.TerminalAt.Equal(terminal.Event.At) || attempt.Elapsed != attempt.TerminalAt.Sub(attempt.ID.StartedAt) {
+			return fmt.Errorf("journal terminal value disagrees with elapsed")
+		}
+	case EvidenceYAML:
+		if !attempt.Outcome.terminal() || !refs[terminal.Reading] || elapsed.Source != EvidenceYAML ||
+			elapsed.Reading != terminal.Reading {
+			return fmt.Errorf("YAML terminal and elapsed must cite the same recovered reading")
+		}
+		if !attempt.TerminalAt.Equal(attempt.ID.StartedAt.Add(attempt.Elapsed)) {
+			return fmt.Errorf("YAML terminal value disagrees with elapsed")
+		}
+	case EvidenceNone:
+		if attempt.Outcome != OutcomeUnfinished || elapsed.Source != EvidenceNone {
+			return fmt.Errorf("terminal/elapsed provenance is absent for a terminal attempt")
+		}
+	default:
+		return fmt.Errorf("terminal provenance source %q is invalid", terminal.Source)
+	}
+	return nil
+}
+
+func validRecoveredReadingRef(ref ReadingRef) bool {
+	return ref.Row > 0 && ref.SourceID != "" && ref.SourceID == strings.TrimSpace(ref.SourceID) &&
+		ref.Repository != "" && ref.Repository == strings.TrimSpace(ref.Repository) &&
+		ref.Path != "" && ref.Path == strings.TrimSpace(ref.Path) && !ref.RecordedAt.IsZero() &&
+		ValidateReadingRevision(ref.Revision) == nil
+}
+
+func validAttemptJournalEvidence(evidence FieldEvidence, attempt Attempt, eventType string) bool {
+	return evidence.Source == EvidenceJournal && evidence.Event.Journal == attempt.Start.Journal &&
+		evidence.Event.Type == eventType && !evidence.Event.At.IsZero() &&
+		!evidence.Event.At.Before(attempt.ID.StartedAt) && !evidence.Event.At.After(attempt.Cutoff)
+}
+
+func validArtifactJournalIdentity(journal JournalIdentity) bool {
+	return journal.RunID != "" && journal.RunID == strings.TrimSpace(journal.RunID) &&
+		journal.SourceID != "" && journal.SourceID == strings.TrimSpace(journal.SourceID) &&
+		journal.Path != "" && journal.Path == strings.TrimSpace(journal.Path) &&
+		journal.Producer != "" && journal.Producer == strings.TrimSpace(journal.Producer)
 }
 
 // ReferenceObservation is one stored row as the artifact serialises it.
@@ -677,6 +899,10 @@ func buildAmended(ctx context.Context, opts BuildOptions) (*BuildResult, error) 
 			HoldoutRunIDs: append([]string{}, selection.HoldoutRunIDs...), AllowEmpty: selection.AllowEmpty, State: SourcePartial}
 	}
 	manifest.Cutoff = cutoff
+	if sourceErr != nil {
+		addManifestReason(manifest, aggregateDiagnosticReason("source", sourceErr))
+		manifest.State = SourcePartial
+	}
 	join := emptyEvidenceJoin(selection)
 	var sets []AttemptSet
 	var reduceErrors []error
@@ -703,8 +929,12 @@ func buildAmended(ctx context.Context, opts BuildOptions) (*BuildResult, error) 
 		manifest.State = SourcePartial
 	}
 
-	var joinErr error
-	if sources != nil {
+	var joinErr, cancelErr error
+	if err := ctx.Err(); err != nil {
+		cancelErr = fmt.Errorf("%w: join phase was not entered: %w", ErrSourceCancelled, err)
+		addManifestReason(manifest, aggregateDiagnosticReason("join", cancelErr))
+		manifest.State = SourcePartial
+	} else if sources != nil {
 		universe := make([]JournalIdentity, 0, len(sources.Journals)+len(sources.ExcludedJournals))
 		for _, parsed := range sources.Journals {
 			universe = append(universe, parsed.Journal)
@@ -720,15 +950,21 @@ func buildAmended(ctx context.Context, opts BuildOptions) (*BuildResult, error) 
 			addManifestReason(manifest, "join: in-sample malformed or unrecoverable evidence")
 		}
 	}
-	finalizeManifest(manifest)
+	manifest.Reasons = canonicalStrings(manifest.Reasons)
 
 	cells := summarizeRecoveredCells(join.Observations, required)
 	coverage := amendedCoverage(opts, *manifest, join, target, cells)
 	evidence := artifactEvidence(join)
+	projected, projectionErr := projectRecoveredObservations(join.Observations)
+	if projectionErr != nil {
+		addManifestReason(manifest, aggregateDiagnosticReason("projection", projectionErr))
+		manifest.Reasons = canonicalStrings(manifest.Reasons)
+		manifest.State = SourcePartial
+	}
 	artifact := Artifact{
 		SchemaVersion: AmendedEvidenceSchemaVersion,
 		GeneratedAt:   cutoff,
-		Observations:  projectRecoveredObservations(join.Observations),
+		Observations:  projected,
 		Cells:         cells,
 		Coverage:      coverage,
 		Conflicts:     []Conflict{},
@@ -737,12 +973,15 @@ func buildAmended(ctx context.Context, opts BuildOptions) (*BuildResult, error) 
 			"Cost covers recorded_task_spawns only; cache tokens and unrecorded reviewer/operator spend are excluded.",
 			"Schema-4 rounds records correction events, not review invocation count.",
 			"Legacy phase and unknown-token projections cannot express availability; structured evidence is authoritative.",
+			"Legacy Coverage journal_lines_unparsed and journal_events_with_bad_timestamp are uncomputed separately; SourceManifest source malformed counts are authoritative for source quality.",
+			"Legacy Coverage journal_attempts_without_stamped_model and journal_run_tasks_without_yaml are uncomputed; Evidence dispositions and lost_attempts are authoritative. journal_restarts, task_starts_without_model, and authored_stamp_mismatches remain unavailable in schema 4.",
+			"Legacy Conflicts is a compatibility field; Evidence.conflicts is authoritative in schema 4.",
 		},
 		SourceManifest: manifest,
 		Evidence:       evidence,
 	}
 	result := &BuildResult{Table: nil, Artifact: artifact}
-	return result, errors.Join(sourceErr, reduceErr, joinErr)
+	return result, errors.Join(sourceErr, reduceErr, cancelErr, joinErr, projectionErr)
 }
 
 func readAmendedTarget(path string) ([]TargetRow, error) {
@@ -796,8 +1035,14 @@ func aggregateDiagnosticReason(stage string, err error) string {
 		{ErrEvidenceConflict, "ErrEvidenceConflict"},
 		{ErrNonCanonicalEvidence, "ErrNonCanonicalEvidence"},
 		{ErrInvalidSelection, "ErrInvalidSelection"},
+		{ErrInvalidSourceSpec, "ErrInvalidSourceSpec"},
 		{ErrInvalidOutcome, "ErrInvalidOutcome"},
 		{ErrSourceCancelled, "ErrSourceCancelled"},
+		{ErrSourceMissing, "ErrSourceMissing"},
+		{ErrSourceEmpty, "ErrSourceEmpty"},
+		{ErrJournalSource, "ErrJournalSource"},
+		{ErrGitHistory, "ErrGitHistory"},
+		{ErrBoundExceeded, "ErrBoundExceeded"},
 	} {
 		if errors.Is(err, candidate.err) {
 			name = candidate.name
@@ -916,11 +1161,14 @@ func summarizeRecoveredCells(observations []RecoveredAttempt, required map[Cell]
 	return out
 }
 
-func projectRecoveredObservations(observations []RecoveredAttempt) []ReferenceObservation {
+func projectRecoveredObservations(observations []RecoveredAttempt) ([]ReferenceObservation, error) {
 	out := make([]ReferenceObservation, 0, len(observations))
 	for _, recovered := range observations {
 		attempt := recovered.Attempt
-		wall, _ := SummarizeWall(attempt.Wall)
+		wall, err := SummarizeWall(attempt.Wall)
+		if err != nil {
+			return []ReferenceObservation{}, fmt.Errorf("project attempt %s/%s wall: %w", attempt.ID.RunID, attempt.ID.Key, err)
+		}
 		var cost *float64
 		if attempt.CostUSD.Known {
 			value := attempt.CostUSD.Value
@@ -946,7 +1194,7 @@ func projectRecoveredObservations(observations []RecoveredAttempt) []ReferenceOb
 			DispatcherRunID: attempt.ID.RunID, SourceRevision: revision, SourceRepository: repository, SourcePath: path,
 		})
 	}
-	return out
+	return out, nil
 }
 
 func amendedCoverage(opts BuildOptions, manifest SourceManifest, join EvidenceJoin, target []TargetRow, cells []CellSummary) Coverage {
@@ -1284,7 +1532,7 @@ func writeAmendedCoverage(w io.Writer, artifact Artifact) {
 	}
 	fmt.Fprintf(w, "Rows recovered vs journal starts: %d/%d; recovery shortfall=%d\n",
 		artifact.Coverage.RecoveredRows, evidence.UniqueRows, artifact.Coverage.RecoveryShortfall)
-	fmt.Fprintf(w, "Attempts recovered vs counted attempts: %d/%d; unmatched siblings=%d\n",
+	fmt.Fprintf(w, "Attempts recovered vs counted attempts: %d/%d; not-recovered attempts=%d\n",
 		evidence.Recovered, evidence.Attempts, len(evidence.LostAttempts))
 	fmt.Fprintf(w, "YAML readings examined: %d; excluded journals retained: %d; starts after cutoff: %d\n",
 		len(evidence.Examined), len(evidence.ExcludedJournals), evidence.StartsAfterCutoff)

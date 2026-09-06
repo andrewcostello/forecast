@@ -55,13 +55,16 @@ projections of those joint records; eligibility never substitutes legacy
 coverage counters for structured evidence.
 
 Targets must contain a `tasks` sequence with unique keys, valid roles, and
-nonblank models. Both coverage gates require `--tasks`. The uncovered-cell
-gate checks completed observations against `--min-observations`; blocked rows
-do not satisfy it. The empty-cell gate checks only whether any observations
-exist. Both write the report and artifact before returning a coverage error.
-An empty or partial source selection is diagnostic output only and cannot pass
-a coverage/prediction gate. Source and coverage data errors do not print Cobra
-usage text.
+nonblank models. Both coverage gates require `--tasks`, at least one target
+row, and a COMPLETE source manifest. The uncovered-cell gate additionally
+checks completed observations against `--min-observations`; blocked rows do
+not satisfy it. The empty-cell gate additionally checks whether every required
+cell has any observations. Both write the report and artifact before returning
+a data-derived coverage error; the CLI rejects a missing `--tasks` argument as
+misuse before extraction. An empty or partial source selection is diagnostic
+output only and cannot pass a coverage/prediction gate. Source and coverage
+data errors do not print Cobra usage text; command-line syntax errors retain
+normal usage help.
 
 It reports rather than predicts:
 
@@ -82,8 +85,8 @@ It reports rather than predicts:
 | `--min-observations` | completed rows a required cell needs before it counts as covered (default 2 — one row is a sample) |
 | `--features-repo` | required and repeatable; each explicit repository contributes live and reachable-history readings under the selected roots |
 | `--task-root` | repeatable repository-relative directory; replaces the legacy `features` root when supplied |
-| `--fail-on-empty-required` | exit non-zero only when a required cell has no observations |
-| `--fail-on-uncovered-required` | exit non-zero when a required cell has fewer completed observations than `--min-observations` |
+| `--fail-on-empty-required` | require `--tasks` and COMPLETE sources, then exit non-zero when a required cell has no observations |
+| `--fail-on-uncovered-required` | require `--tasks` and COMPLETE sources, then exit non-zero when a required cell has fewer completed observations than `--min-observations` |
 | `--max-history-commits` | cap commits per source repository (default 5000); truncated history is explicitly reported |
 | `--timeout` | maximum extraction time, default `5m` |
 

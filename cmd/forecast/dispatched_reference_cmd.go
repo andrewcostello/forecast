@@ -68,8 +68,6 @@ func newDispatchedReferenceBuildCmd() *cobra.Command {
 			}, out, failOnEmpty, failOnUncovered)
 		},
 	}
-	cmd.SilenceUsage = true
-
 	flags := cmd.Flags()
 	flags.Duration("timeout", 5*time.Minute, "maximum duration of reference extraction")
 	flags.String("runs-dir", "", "directory containing dispatcher run directories")
@@ -101,6 +99,13 @@ func buildDispatchedReference(ctx context.Context, cmd *cobra.Command, opts disp
 	}
 	dispatched.WriteCoverage(cmd.OutOrStdout(), result.Artifact)
 	fmt.Fprintf(cmd.OutOrStdout(), "Reference class written to %s\n", out)
+	if (failOnEmptyRequired || failOnUncovered) && opts.TargetTasks == "" {
+		return errors.Join(
+			fmt.Errorf("%w: coverage gate requires a nonempty target task file", dispatched.ErrEmptyTarget),
+			fmt.Errorf("%w: coverage gate has no required target cells", dispatched.ErrNotEligible),
+			buildErr,
+		)
+	}
 	if (failOnEmptyRequired || failOnUncovered) && result.Artifact.SourceManifest != nil {
 		if err := result.Artifact.SourceManifest.ValidateComplete(); err != nil {
 			gateDetail := ""

@@ -2,10 +2,8 @@ package dispatched
 
 // evidence.go: joining journal attempts with tasks-YAML readings.
 //
-// Ownership: FC-1 implements the frozen seam in this file (JoinEvidence)
-// and may replace the baseline join. The baseline section is the FC-1 code
-// moved verbatim from build.go; Build still runs it until FC-1 switches to
-// JoinEvidence, so the artifact does not change under the move.
+// JoinEvidence is the schema-4 reconciliation path. The legacy helpers at the
+// end of this file remain only for schema-3 Build callers.
 
 import (
 	"bytes"
@@ -198,41 +196,69 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 	conflicts := make(map[AttemptID][]AttemptConflict)
 	counted := make(map[AttemptID]bool)
 	rows := make(map[runTask]bool)
+	runKeys := make(map[runTask]bool)
+	seenSets := make(map[JournalIdentity]bool, len(attempts))
+	categories := make(map[AttemptID]string)
 	for _, set := range attempts {
 		journal, ok := universe[set.Journal.RunID]
 		if !ok || journal != set.Journal || holdouts[set.Journal.RunID] {
 			return emptyEvidenceJoin(selection), fmt.Errorf("%w: attempt set journal %q is outside the selected universe", ErrInvalidSelection, set.Journal.RunID)
 		}
+		if seenSets[set.Journal] {
+			return emptyEvidenceJoin(selection), fmt.Errorf("%w: repeated attempt set for journal %q", ErrInvalidSelection, set.Journal.RunID)
+		}
+		seenSets[set.Journal] = true
 		for _, attempt := range set.Attempts {
 			attempt = canonicalAttempt(attempt)
 			if err := validateJoinedAttempt(attempt, set.Journal, selection); err != nil {
 				return emptyEvidenceJoin(selection), err
 			}
-			if _, duplicate := byID[attempt.ID]; duplicate || counted[attempt.ID] {
+			if _, duplicate := categories[attempt.ID]; duplicate {
 				return emptyEvidenceJoin(selection), fmt.Errorf("%w: duplicate normalized attempt %s/%s", ErrEvidenceConflict, attempt.ID.RunID, attempt.ID.Key)
 			}
+			categories[attempt.ID] = "attempt"
 			byID[attempt.ID] = attempt
 			counted[attempt.ID] = true
-			rows[runTask{RunID: attempt.ID.RunID, Key: attempt.ID.Key}] = true
+			key := runTask{RunID: attempt.ID.RunID, Key: attempt.ID.Key}
+			rows[key] = true
+			runKeys[key] = true
 		}
 		for _, item := range set.Ambiguous {
 			item.ID = canonicalAttemptID(item.ID)
 			if err := validateAttemptIDForSet(item.ID, set.Journal, selection); err != nil {
 				return emptyEvidenceJoin(selection), err
 			}
+			if _, duplicate := categories[item.ID]; duplicate {
+				return emptyEvidenceJoin(selection), fmt.Errorf("%w: duplicate normalized ambiguous attempt %s/%s", ErrEvidenceConflict, item.ID.RunID, item.ID.Key)
+			}
+			categories[item.ID] = "ambiguous"
+			item.Refs = append([]EventRef{}, item.Refs...)
 			sortEventRefs(item.Refs)
 			ambiguous[item.ID] = item
 			counted[item.ID] = true
-			rows[runTask{RunID: item.ID.RunID, Key: item.ID.Key}] = true
+			key := runTask{RunID: item.ID.RunID, Key: item.ID.Key}
+			rows[key] = true
+			runKeys[key] = true
 		}
 		for _, conflict := range set.Conflicts {
 			conflict.ID = canonicalAttemptID(conflict.ID)
 			if err := validateAttemptIDForSet(conflict.ID, set.Journal, selection); err != nil {
 				return emptyEvidenceJoin(selection), err
 			}
+			if category := categories[conflict.ID]; category != "" && category != "conflict" {
+				return emptyEvidenceJoin(selection), fmt.Errorf("%w: attempt %s/%s occurs in %s and conflict categories", ErrEvidenceConflict, conflict.ID.RunID, conflict.ID.Key, category)
+			}
+			for _, previous := range conflicts[conflict.ID] {
+				if sameAttemptConflict(previous, conflict) {
+					return emptyEvidenceJoin(selection), fmt.Errorf("%w: duplicate conflict fact for attempt %s/%s", ErrEvidenceConflict, conflict.ID.RunID, conflict.ID.Key)
+				}
+			}
+			categories[conflict.ID] = "conflict"
 			conflicts[conflict.ID] = append(conflicts[conflict.ID], conflict)
 			counted[conflict.ID] = true
-			rows[runTask{RunID: conflict.ID.RunID, Key: conflict.ID.Key}] = true
+			key := runTask{RunID: conflict.ID.RunID, Key: conflict.ID.Key}
+			rows[key] = true
+			runKeys[key] = true
 		}
 		out.StartsAfterCutoff += set.StartsAfterCutoff
 	}
@@ -247,11 +273,15 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 	}
 	sort.Slice(out.Conflicts, func(i, j int) bool { return attemptConflictLess(out.Conflicts[i], out.Conflicts[j]) })
 
-	grouped := make(map[AttemptID][]int)
+	type matchedReading struct {
+		examined int
+		reading  Reading
+	}
+	grouped := make(map[AttemptID][]matchedReading)
 	for i := range readings {
 		reading := canonicalReading(readings[i])
 		examined := Examined{Identity: reading.Identity, CompletedAt: reading.CompletedAt, Reading: reading.Ref}
-		disposition, id, reason, err := classifyReading(reading, selection, holdouts, byID, ambiguous, conflicts)
+		disposition, id, reason, err := classifyReading(reading, selection, holdouts, byID, ambiguous, conflicts, runKeys)
 		if err != nil {
 			return emptyEvidenceJoin(selection), err
 		}
@@ -260,7 +290,7 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 		examined.Reason = reason
 		out.Examined = append(out.Examined, examined)
 		if disposition == "" {
-			grouped[id] = append(grouped[id], len(out.Examined)-1)
+			grouped[id] = append(grouped[id], matchedReading{examined: len(out.Examined) - 1, reading: reading})
 		}
 	}
 
@@ -277,17 +307,22 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 		joinErrors = append(joinErrors, fmt.Errorf("%w: %d journal evidence conflicts", ErrEvidenceConflict, len(out.Conflicts)))
 	}
 	for _, id := range ids {
-		indexes := grouped[id]
-		sort.SliceStable(indexes, func(i, j int) bool {
-			return readingRefLess(out.Examined[indexes[i]].Reading, out.Examined[indexes[j]].Reading)
+		matched := grouped[id]
+		sort.SliceStable(matched, func(i, j int) bool {
+			return readingLess(matched[i].reading, matched[j].reading)
 		})
 		attempt := byID[id]
-		recovered, conflict, err := reconcileAttempt(attempt, readingsForExamined(readings, out.Examined, indexes))
+		exact := make([]Reading, 0, len(matched))
+		for _, item := range matched {
+			exact = append(exact, item.reading)
+		}
+		recovered, conflict, err := reconcileAttempt(attempt, exact)
 		if err != nil {
 			if conflict != nil {
 				out.Conflicts = append(out.Conflicts, *conflict)
 			}
-			for _, index := range indexes {
+			for _, item := range matched {
+				index := item.examined
 				out.Examined[index].Disposition = DispositionConflictingEvidence
 				out.Examined[index].Reason = err.Error()
 			}
@@ -295,16 +330,22 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 			continue
 		}
 		if !recovered.Attempt.Model.Known || strings.TrimSpace(recovered.Attempt.Model.Value) == "" {
-			for _, index := range indexes {
+			for _, item := range matched {
+				index := item.examined
 				out.Examined[index].Disposition = DispositionAbsentStamp
 				out.Examined[index].Reason = "attempt has no recorded implementing-model stamp"
 			}
 			continue
 		}
 		if !recovered.Cell.Role.Valid() || recovered.Cell.Model == "" {
-			for _, index := range indexes {
+			reason := "reconciled attempt has no valid role/model cell"
+			if recovered.Cell.Role == "" {
+				reason = "attempt has no cited role in compatible YAML readings"
+			}
+			for _, item := range matched {
+				index := item.examined
 				out.Examined[index].Disposition = DispositionUnrecoverable
-				out.Examined[index].Reason = "reconciled attempt has no valid role/model cell"
+				out.Examined[index].Reason = reason
 			}
 			continue
 		}
@@ -312,7 +353,8 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 		if recovered.Attempt.Evidence.Terminal.Source == EvidenceYAML {
 			out.RowsWithYAMLOnlyTerminal++
 		}
-		for position, index := range indexes {
+		for position, item := range matched {
+			index := item.examined
 			if position == 0 {
 				out.Examined[index].Disposition = DispositionRecovered
 				out.Examined[index].Reason = "least canonical compatible reading"
@@ -347,6 +389,13 @@ func JoinEvidence(attempts []AttemptSet, readings []Reading, selection Selection
 		out.Dispositions = append(out.Dispositions, DispositionCount{Disposition: disposition, Count: counts[disposition]})
 	}
 	return out, errors.Join(joinErrors...)
+}
+
+func sameAttemptConflict(a, b AttemptConflict) bool {
+	return a.Code == b.Code && a.ID == b.ID && a.Field == b.Field &&
+		a.AValue.Kind == b.AValue.Kind && bytes.Equal(a.AValue.Value, b.AValue.Value) &&
+		a.BValue.Kind == b.BValue.Kind && bytes.Equal(a.BValue.Value, b.BValue.Value) &&
+		a.A == b.A && a.B == b.B && a.Reason == b.Reason
 }
 
 func emptyEvidenceJoin(selection Selection) EvidenceJoin {
@@ -392,6 +441,9 @@ func validateJoinedAttempt(attempt Attempt, journal JournalIdentity, selection S
 	if err := validateAttemptWall(attempt); err != nil {
 		return err
 	}
+	if _, err := SummarizeWall(attempt.Wall); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -406,7 +458,7 @@ func canonicalReading(reading Reading) Reading {
 	return reading
 }
 
-func classifyReading(reading Reading, selection Selection, holdouts map[string]bool, attempts map[AttemptID]Attempt, ambiguous map[AttemptID]AmbiguousAttempt, conflicts map[AttemptID][]AttemptConflict) (Disposition, AttemptID, string, error) {
+func classifyReading(reading Reading, selection Selection, holdouts map[string]bool, attempts map[AttemptID]Attempt, ambiguous map[AttemptID]AmbiguousAttempt, conflicts map[AttemptID][]AttemptConflict, runKeys map[runTask]bool) (Disposition, AttemptID, string, error) {
 	if reading.Kind == DocumentNotTasks {
 		return DispositionNotTaskDocument, AttemptID{}, "YAML document has no tasks sequence", nil
 	}
@@ -440,7 +492,8 @@ func classifyReading(reading Reading, selection Selection, holdouts map[string]b
 	invalidRef := strings.TrimSpace(reading.Ref.SourceID) == "" || strings.TrimSpace(reading.Ref.Repository) == "" ||
 		strings.TrimSpace(reading.Ref.Path) == "" || reading.Ref.RecordedAt.IsZero() ||
 		(reading.Kind == DocumentTaskRow && reading.Ref.Row <= 0) || ValidateReadingRevision(reading.Ref.Revision) != nil
-	if reading.Kind == DocumentMalformed || reading.Err != nil || invalidIdentity || invalidRef {
+	invalidRole := reading.Snapshot.Role != "" && !reading.Snapshot.Role.Valid()
+	if reading.Kind == DocumentMalformed || reading.Err != nil || invalidIdentity || invalidRef || invalidRole {
 		return DispositionMalformed, AttemptID{}, "reading or citation is malformed", nil
 	}
 	if !reading.Present.Complete() || !runKnown || !keyKnown || !startKnown {
@@ -456,41 +509,32 @@ func classifyReading(reading Reading, selection Selection, holdouts map[string]b
 	if _, ok := attempts[id]; ok {
 		return "", id, "", nil
 	}
-	for candidate := range attempts {
-		if candidate.RunID == run && candidate.Key == key {
-			return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
-		}
-	}
-	for candidate := range ambiguous {
-		if candidate.RunID == run && candidate.Key == key {
-			return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
-		}
-	}
-	for candidate := range conflicts {
-		if candidate.RunID == run && candidate.Key == key {
-			return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
-		}
+	if runKeys[runTask{RunID: run, Key: key}] {
+		return DispositionNoMatchingStart, id, "run/key exists but no journal start has this exact instant", nil
 	}
 	return DispositionNoMatchingRun, AttemptID{}, "no journal attempt has this run and task key", nil
 }
 
-func readingsForExamined(all []Reading, examined []Examined, indexes []int) []Reading {
-	// Locate by complete portable envelope rather than the original position: the
-	// audit is canonicalized independently from caller order.
-	out := make([]Reading, 0, len(indexes))
-	used := make([]bool, len(all))
-	for _, index := range indexes {
-		want := examined[index]
-		for i := range all {
-			candidate := canonicalReading(all[i])
-			if !used[i] && candidate.Ref == want.Reading && candidate.Identity == want.Identity && candidate.CompletedAt == want.CompletedAt {
-				used[i] = true
-				out = append(out, candidate)
-				break
-			}
-		}
+func readingLess(a, b Reading) bool {
+	if readingRefLess(a.Ref, b.Ref) {
+		return true
 	}
-	return out
+	if readingRefLess(b.Ref, a.Ref) {
+		return false
+	}
+	if a.Kind != b.Kind {
+		return a.Kind < b.Kind
+	}
+	if a.Snapshot.Role != b.Snapshot.Role {
+		return a.Snapshot.Role < b.Snapshot.Role
+	}
+	if a.Snapshot.AuthoredModel != b.Snapshot.AuthoredModel {
+		return a.Snapshot.AuthoredModel < b.Snapshot.AuthoredModel
+	}
+	if a.Snapshot.Status != b.Snapshot.Status {
+		return a.Snapshot.Status < b.Snapshot.Status
+	}
+	return a.Snapshot.IterationCount < b.Snapshot.IterationCount
 }
 
 func reconcileAttempt(attempt Attempt, readings []Reading) (RecoveredAttempt, *AttemptConflict, error) {
@@ -506,7 +550,9 @@ func reconcileAttempt(attempt Attempt, readings []Reading) (RecoveredAttempt, *A
 		refs = append(refs, reading.Ref)
 		candidateRole := reading.Snapshot.Role
 		candidateEvidence := FieldEvidence{Source: EvidenceYAML, Reading: reading.Ref}
-		if role == "" {
+		if candidateRole == "" {
+			// Absent/null role is unknown, not equal-authority disagreement.
+		} else if role == "" {
 			role, roleEvidence = candidateRole, candidateEvidence
 		} else if role != candidateRole {
 			conflict := evidenceConflict(attempt.ID, "role", string(role), roleEvidence, string(candidateRole), candidateEvidence)

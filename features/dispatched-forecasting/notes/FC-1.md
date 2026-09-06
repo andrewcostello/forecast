@@ -153,3 +153,68 @@ The real coverage artifact and its conflict/insufficient-cell limitations remain
 as recorded above. Source and Journal residual findings still require explicit
 FC-OBS-ADJ dispositions. This resolves the fixture ownership block; runtime Done
 still requires the separate verifier and pinned-head cross-family panel.
+
+## Corrective F1/F4 body after operator panel ruling
+
+The authoritative 2026-09-06 Operator F1/F4 ruling was implemented without
+changing tests, fixtures, public signatures, source-selection flags, worklists,
+or known-red registrations. `JoinEvidence` now retains the exact classified
+reading, indexes run/key misses, treats absent role as unknown, classifies a
+nonempty invalid role as malformed, refuses repeated sets and duplicate attempt
+categories without requiring a set for every discovered journal, and copies
+ambiguous refs before canonical sorting. Repeated identical compatible reading
+citations remain legal and each retains one disposition.
+
+Build preserves EMPTY, records early source and pre-join cancellation reasons,
+and never projects a malformed wall breakdown as zero phases. Eligibility now
+checks recovered reading/field citations, journal/attempt agreement, YAML
+terminal/elapsed pairing, wall interval invariants, evidence counters and audit
+arrays. Legitimate lost/no-YAML attempts and unavailable optional cost, token,
+or phase measurements remain valid. The CLI keeps its early missing-`--tasks`
+misuse guard and adds the ruled defensive post-report helper refusal.
+
+The previously recorded real corpus report is historical diagnostic evidence:
+it remains PARTIAL with 44 of 303 attempts recovered. Those are not post-fix
+counts, not a data-sufficiency claim, and not a completed holdout evaluation.
+No wallet or live-data rescan was performed for this correction, and all prior
+source-report limitations above remain in force.
+
+### First-body-panel final dispositions
+
+| Finding ID | Final disposition |
+|---|---|
+| `Claude-1` | **Corrected.** Empty role is unknown; a valid sibling supplies role and its exact citation. |
+| `Claude-2` | **Corrected.** Build preserves `SourceEmpty`; EMPTY remains prediction-ineligible. |
+| `Claude-3` | **Corrected.** Early source errors add canonical aggregate source reasons and PARTIAL state. |
+| `Claude-4` | **Corrected.** Exact classified readings are retained and run/key misses use an index; no public context parameter was added. |
+| `Claude-5` | **Corrected.** Limits name uncomputed schema-4 legacy Coverage fields and the authoritative evidence/source equivalents or unavailable fields. |
+| `Claude-6` | **Corrected.** `SummarizeWall` invariants are enforced before eligibility/projection; malformed intervals cannot fabricate zero phases. |
+| `Claude-7` | **Corrected.** Construction-time `SilenceUsage` was removed; RunE still suppresses usage for data errors. |
+| `Claude-8` | **Corrected.** Legacy `Artifact.Conflicts` is documented as compatibility-only; `Evidence.Conflicts` is authoritative. |
+| `Claude-9` | **Deferred as ruled.** No cutoff/holdout/allow-empty/ref CLI flags were added; downstream scaffold owns that surface. |
+| `Codex-1` | **Corrected/controlled.** The early CLI missing-target refusal remains; the direct helper writes diagnostics then returns `ErrEmptyTarget` and `ErrNotEligible`. |
+| `Codex-2` | **Corrected.** Structured provenance, counters, dispositions, conflict/ambiguity state, and recovered audit links are validated. |
+| `Codex-3` | **Corrected to ruling.** Repeated sets and duplicate categories are refused; missing selected sets remain legal diagnostic input and distinct conflict facts are retained. |
+| `Codex-4` | **Corrected.** Reconciliation consumes the exact reading that classification accepted, independent of caller permutation. |
+| `Codex-5` | **Corrected.** Unknown role may coexist with valid role; nonempty invalid role is malformed and never authoritative conflict evidence. |
+| `Codex-6` | **False positive controlled plus gap corrected.** Existing nested interval copying remains; repeated joins stay immutable, and ambiguous refs now receive their own copy before sorting. |
+| `Codex-7` | **Corrected.** Coverage-gate documentation now includes target and COMPLETE-source prerequisites. |
+| `Grok-1` | **False positive, no relaxation.** Nil manifest validation was already safe; eligibility now also emits an explicit missing-manifest reason. |
+| `Grok-2` | **Corrected.** Exact reading association and indexed run/key lookup remove the observed quadratic rescans. |
+| `Grok-3` | **Deferred as ruled.** Reproducibility convenience flags remain owned by FC-PREDICT-SCAFFOLD/FC-4. |
+| `Grok-4` | **False positive.** `OutcomeDone` remains `iota+1`; zero remains invalid. |
+| `Grok-5` | **Corrected.** The report labels the aggregate as `not-recovered attempts`, not unmatched siblings. |
+
+### Corrective verification evidence
+
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go test ./cmd/forecast -run '^TestFCReferenceCLIContract$' -count=1` — pass.
+- `go test ./internal/dispatched ./cmd/forecast -count=1` — pass.
+- `go test ./... -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+
+No residual implementation deviation from the operator F1/F4 ruling is known.
+FC-1 remains Blocked pending the operator exact-head gate, independent verifier,
+and cross-family panel; this body does not mark runtime work Done.

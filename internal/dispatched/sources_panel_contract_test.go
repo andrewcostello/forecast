@@ -1363,7 +1363,7 @@ func testF3HeadSymbolicInvalid(t *testing.T) {
 		if hist.State != SourcePartial || len(hist.Reasons) == 0 {
 			t.Fatalf("unborn history must be PARTIAL with a reason: %+v", hist)
 		}
-		if got, ok := panelResolvedRef(hist.ResolvedRefs, "refs/heads/main"); !ok || got != mainCommit {
+		if got, ok := panelResolvedRef(hist.ResolvedRefs, "refs/heads/main"); !ok || got.Commit != mainCommit {
 			t.Fatalf("unborn HEAD discarded valid main ref: %+v", hist.ResolvedRefs)
 		}
 	})

@@ -218,3 +218,43 @@ source-report limitations above remain in force.
 No residual implementation deviation from the operator F1/F4 ruling is known.
 FC-1 remains Blocked pending the operator exact-head gate, independent verifier,
 and cross-family panel; this body does not mark runtime work Done.
+
+## Operator F4 cutoff-integrity follow-up
+
+The parent findings against `a4736d75` are corrected at the existing schema-4
+eligibility boundary. Every recovered `ReadingRef.RecordedAt`, and every known
+`CompletedAt` on a Recovered or DuplicateReading audit envelope, must be at or
+before the manifest cutoff. Every terminal attempt, including a YAML-terminal
+attempt, must end at or before cutoff. An unfinished attempt must have elapsed
+exactly from its start through cutoff, with the existing parent/wall alignment
+checks still applied. Equality is accepted. Future timestamps on correctly
+excluded AfterCutoff audit records remain valid diagnostic proof and are not
+treated as samples.
+
+### Parent-finding dispositions
+
+| Finding | Final disposition |
+|---|---|
+| Recovered `ReadingRef.RecordedAt` after cutoff was eligible | **Corrected.** All recovered reading citations are now cutoff-bounded; exact-cutoff citations remain valid. |
+| YAML terminal after cutoff was eligible | **Corrected.** All terminal attempts are cutoff-bounded, including YAML terminal/elapsed pairs; exact-cutoff terminals remain valid. |
+| Recovered/DuplicateReading known completion proof after cutoff | **Corrected.** Both audit dispositions validate known `CompletedAt` against cutoff. |
+| Unfinished elapsed shorter or longer than cutoff | **Corrected.** Unfinished elapsed must end exactly at cutoff while `Wall.Elapsed` remains aligned. |
+| Proper AfterCutoff diagnostic with future proof | **Preserved.** The cutoff checks apply only to recovered sample proof; excluded future evidence remains legal. |
+| Optional unknowns and legitimate losses | **Preserved.** No new optional-measurement or source-completeness requirement was introduced. |
+
+### Follow-up verification
+
+- Baseline on `dd9681e`: `F4-ARTIFACT-CUTOFF-PROOF` failed only the six
+  expected invalid cases; its four equality/unfinished/AfterCutoff controls
+  remained green.
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$/F4-ARTIFACT-CUTOFF-PROOF' -count=1` — pass.
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+
+No residual implementation deviation from the Operator F4 cutoff-integrity
+follow-up is known. The historical real corpus report remains diagnostic
+PARTIAL at 44/303 recovered; it was not rescanned and is not a post-fix count,
+data-sufficiency claim, or completed holdout evaluation. FC-1 remains Blocked
+pending the parent exact-head gate, independent verifier, and full panel.

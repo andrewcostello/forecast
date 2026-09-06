@@ -346,6 +346,9 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 		}
 		actualDispositions[examined.Disposition]++
 		if examined.Disposition == DispositionRecovered || examined.Disposition == DispositionDuplicateReading {
+			if examined.CompletedAt.Known && (examined.CompletedAt.Value.IsZero() || examined.CompletedAt.Value.After(manifest.Cutoff)) {
+				add("examined recovered reading %d has completion proof after the extraction cutoff", i)
+			}
 			id := canonicalAttemptID(examined.Attempt)
 			refs, ok := recoveredReadings[id]
 			if !ok || !refs[examined.Reading] {
@@ -419,6 +422,12 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	if !attempt.Outcome.Valid() || attempt.Elapsed < 0 {
 		return fmt.Errorf("attempt outcome or elapsed value is invalid")
 	}
+	if attempt.Outcome.terminal() && attempt.TerminalAt.After(manifest.Cutoff) {
+		return fmt.Errorf("terminal attempt ends after the extraction cutoff")
+	}
+	if attempt.Outcome == OutcomeUnfinished && !attempt.ID.StartedAt.Add(attempt.Elapsed).Equal(manifest.Cutoff) {
+		return fmt.Errorf("unfinished attempt elapsed does not reach the extraction cutoff")
+	}
 	if err := validateAttemptWall(attempt); err != nil {
 		return err
 	}
@@ -431,7 +440,7 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	}
 	refs := make(map[ReadingRef]bool, len(recovered.Readings))
 	for _, ref := range recovered.Readings {
-		if !validRecoveredReadingRef(ref) {
+		if !validRecoveredReadingRef(ref, manifest.Cutoff) {
 			return fmt.Errorf("recovered reading citation is malformed")
 		}
 		refs[ref] = true
@@ -478,10 +487,10 @@ func validateRecoveredEvidence(recovered RecoveredAttempt, manifest *SourceManif
 	return nil
 }
 
-func validRecoveredReadingRef(ref ReadingRef) bool {
+func validRecoveredReadingRef(ref ReadingRef, cutoff time.Time) bool {
 	return ref.Row > 0 && ref.SourceID != "" && ref.SourceID == strings.TrimSpace(ref.SourceID) &&
 		ref.Repository != "" && ref.Repository == strings.TrimSpace(ref.Repository) &&
-		ref.Path != "" && ref.Path == strings.TrimSpace(ref.Path) && !ref.RecordedAt.IsZero() &&
+		ref.Path != "" && ref.Path == strings.TrimSpace(ref.Path) && !ref.RecordedAt.IsZero() && !ref.RecordedAt.After(cutoff) &&
 		ValidateReadingRevision(ref.Revision) == nil
 }
 

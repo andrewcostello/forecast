@@ -1,0 +1,26 @@
+tasks:
+  - key: VALID
+    role: bodies
+    model: stamp
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    completed_at: '2026-01-01T00:10:00Z'
+    dispatcher_run_id: run-a
+  - key: TYPED
+    role: bodies
+    model: stamp
+    status: Done
+    started_at: '2026-01-01T00:00:00Z'
+    iteration_count: [1, 2]
+    dispatcher_run_id: run-a
+  - key: BADTS
+    role: bodies
+    model: stamp
+    status: Done
+    started_at: 'not-a-timestamp'
+    dispatcher_run_id: run-a
+  - key: MISSINGSTART
+    role: bodies
+    model: stamp
+    status: In Progress
+    dispatcher_run_id: run-a

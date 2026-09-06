@@ -1,0 +1,8 @@
+tasks:
+  - key: F1-OFFSET
+    role: bodies
+    model: authored
+    status: Done
+    started_at: '2026-01-01T00:00:00-00:00'
+    completed_at: '2026-01-01T00:10:00Z'
+    dispatcher_run_id: run-offset

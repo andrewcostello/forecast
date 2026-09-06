@@ -1,55 +1,96 @@
+// F5 behavior is defined once in features/dispatched-forecasting/notes/
+// FC-SCHED-SCAFFOLD.md; these declarations define the Go and fixture shapes.
+
 package dispatched
 
 import "time"
 
-// Node is one row of a dependency graph with a duration already sampled.
-// BlockedBy holds the keys that must finish before this node may start.
+// Node carries an exact key, sampled duration and declared dependencies.
 type Node struct {
 	Key       string
 	Duration  time.Duration
 	BlockedBy []string
 }
 
-// Graph is a set of nodes in declaration order. Keys are unique, every
-// BlockedBy entry names a node in the graph, no Duration is negative, and
-// the graph is acyclic.
+// Graph retains node declaration order.
 type Graph struct {
 	Nodes []Node
 }
 
-// Schedule is the result of running a Graph under a concurrency cap.
-//
-// Completion is the wall clock at which the last node finishes.
-// CriticalPath is built from the node that finishes last by stepping to the
-// BlockedBy node that finished last until a node with no BlockedBy is
-// reached, and is listed in execution order. Ties in finishing time go to
-// the earlier node in Graph.Nodes. The sum of its durations never exceeds
-// Completion, and equals it when the cap is not binding.
-type Schedule struct {
-	Completion   time.Duration
-	CriticalPath []string
+// NodeTrace records a node interval and its normalized dependency set.
+type NodeTrace struct {
+	Key       string
+	Start     time.Duration
+	Finish    time.Duration
+	BlockedBy []string
 }
 
-// Scheduler computes when a Graph completes with at most maxParallel nodes
-// running at once.
-//
-// Rules an implementation must honour:
-//
-//   - A node starts at the earliest instant when every BlockedBy node has
-//     finished and fewer than maxParallel nodes are running.
-//   - When more nodes are ready than slots free, they start in Graph.Nodes
-//     order. The result is therefore deterministic for a given input.
-//   - Completion is never less than the longest dependency chain, and never
-//     more than the sum of all durations.
-//   - With maxParallel at least len(Nodes), Completion equals the longest
-//     dependency chain.
-//   - An empty Graph yields Completion == 0 and a nil CriticalPath.
-//   - Errors wrap ErrCycle, ErrUnknownDependency, ErrDuplicateKey,
-//     ErrNegativeValue (a Duration below zero) or ErrInvalidConcurrency
-//     (maxParallel < 1). An input that breaks several rules reports the first
-//     in THIS order, so two implementations of this interface agree:
-//     ErrInvalidConcurrency, ErrDuplicateKey, ErrUnknownDependency,
-//     ErrNegativeValue, ErrCycle.
+// EdgeKind labels the edge entering an execution-chain node.
+type EdgeKind string
+
+const (
+	EdgeStart EdgeKind = "start"
+
+	EdgeDependency EdgeKind = "dependency"
+
+	EdgeResource EdgeKind = "resource"
+)
+
+// ChainStep pairs a node with its incoming edge.
+type ChainStep struct {
+	Key  string
+	Edge EdgeKind
+}
+
+// Schedule reports the trace, makespan and both explanation kinds.
+type Schedule struct {
+	Makespan       time.Duration
+	Trace          []NodeTrace
+	DependencyPath []string
+	ExecutionChain []ChainStep
+}
+
+// Scheduler is the interface implemented independently by both arms.
 type Scheduler interface {
 	Schedule(g Graph, maxParallel int) (Schedule, error)
+}
+
+// ScheduleFixture is the hand-fixture wire shape; loader rules live in the handoff.
+type ScheduleFixture struct {
+	Name        string             `json:"name"`
+	Provenance  string             `json:"provenance"`
+	Note        string             `json:"note,omitempty"`
+	Concurrency int                `json:"concurrency"`
+	Nodes       []FixtureNode      `json:"nodes"`
+	Expect      FixtureExpectation `json:"expect"`
+}
+
+// FixtureNode is an input node in a hand fixture.
+type FixtureNode struct {
+	Key       string   `json:"key"`
+	Duration  string   `json:"duration"`
+	BlockedBy []string `json:"blocked_by"`
+}
+
+// FixtureExpectation is a complete schedule or one expected sentinel.
+type FixtureExpectation struct {
+	Error          string             `json:"error"`
+	Makespan       string             `json:"makespan,omitempty"`
+	Trace          []FixtureTrace     `json:"trace,omitempty"`
+	DependencyPath []string           `json:"dependency_path,omitempty"`
+	ExecutionChain []FixtureChainStep `json:"execution_chain,omitempty"`
+}
+
+// FixtureTrace carries expected relative timestamps as duration strings.
+type FixtureTrace struct {
+	Key       string   `json:"key"`
+	Start     string   `json:"start"`
+	Finish    string   `json:"finish"`
+	BlockedBy []string `json:"blocked_by"`
+}
+
+// FixtureChainStep is one expected explanation step.
+type FixtureChainStep struct {
+	Key  string   `json:"key"`
+	Edge EdgeKind `json:"edge"`
 }

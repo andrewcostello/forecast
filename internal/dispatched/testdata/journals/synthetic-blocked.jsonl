@@ -1,0 +1,4 @@
+{"seq":0,"hash":"k0","prev_hash":"","event_type":"run_started","timestamp":"2026-01-01T00:00:00Z","payload":{"dispatcher_version":"0.1.0"}}
+{"seq":1,"hash":"k1","prev_hash":"k0","event_type":"task_started","task_key":"F2-BLOCKED","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"planned"}}
+{"seq":2,"hash":"k2","prev_hash":"k1","event_type":"task_spawn_finished","task_key":"F2-BLOCKED","timestamp":"2026-01-01T00:08:00Z","payload":{"spawn_kind":"implementer","model":"stamp","duration_ms":480000,"input_tokens":1,"output_tokens":1,"cost_usd":1}}
+{"seq":3,"hash":"k3","prev_hash":"k2","event_type":"task_blocked","task_key":"F2-BLOCKED","timestamp":"2026-01-01T00:08:00Z","payload":{}}

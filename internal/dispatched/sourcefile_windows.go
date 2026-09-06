@@ -12,10 +12,7 @@ import (
 
 var sourcePeekNamedPipe = windows.NewLazySystemDLL("kernel32.dll").NewProc("PeekNamedPipe")
 
-// openSourceFileNoFollow uses the confined parent handle as RootDirectory and
-// opens the final component itself rather than any reparse target. The handle
-// attributes are inspected before ownership passes to os.File.
-func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
+func openSourceHandleNoFollow(parent *os.File, name string, directory bool) (*os.File, error) {
 	objectName, err := windows.NewNTUnicodeString(name)
 	if err != nil {
 		return nil, err
@@ -26,6 +23,12 @@ func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
 	}
 	var opened windows.Handle
 	var openErr error
+	options := uint32(windows.FILE_OPEN_REPARSE_POINT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if directory {
+		options |= windows.FILE_DIRECTORY_FILE
+	} else {
+		options |= windows.FILE_NON_DIRECTORY_FILE
+	}
 	if err := conn.Control(func(parentHandle uintptr) {
 		attributes := windows.OBJECT_ATTRIBUTES{
 			Length:        uint32(unsafe.Sizeof(windows.OBJECT_ATTRIBUTES{})),
@@ -43,7 +46,7 @@ func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
 			0,
 			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
 			windows.FILE_OPEN,
-			windows.FILE_NON_DIRECTORY_FILE|windows.FILE_OPEN_REPARSE_POINT|windows.FILE_SYNCHRONOUS_IO_NONALERT,
+			options,
 			0,
 			0,
 		)
@@ -68,6 +71,23 @@ func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
 		return nil, os.ErrInvalid
 	}
 	return file, nil
+}
+
+// openSourceDirNoFollow uses the preceding held directory handle as
+// RootDirectory and rejects directory reparse points before returning a handle
+// that can anchor the next component.
+func openSourceDirNoFollow(parent *os.File, name string) (*os.File, error) {
+	return openSourceHandleNoFollow(parent, name, true)
+}
+
+// openSourceFileNoFollow opens only the final component relative to its held
+// confined parent and rejects reparse points before ownership passes to os.File.
+func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
+	return openSourceHandleNoFollow(parent, name, false)
+}
+
+func clearSourceFileNonblock(_ *os.File) error {
+	return nil
 }
 
 // sourceFileReadReady peeks without consuming bytes while SyscallConn keeps

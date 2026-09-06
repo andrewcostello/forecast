@@ -639,6 +639,7 @@ type sourceBudget struct {
 	totalExceeded bool
 	changed       chan struct{}
 	fileRoot      *os.Root
+	fileRootDir   *os.File
 	fileRootPath  string
 }
 
@@ -747,6 +748,13 @@ func runSourceGit(ctx context.Context, repo string, budget *sourceBudget, reques
 // ErrSourceCancelled plus ctx.Err(), or ErrBoundExceeded. Close releases the file.
 // FC-SOURCES body; nil budget is ErrInvalidSourceSpec. No os.ReadFile fallback.
 func openSourceFile(ctx context.Context, path string, budget *sourceBudget, journal bool) (io.ReadCloser, error) {
+	return openSourceFileFromParent(ctx, path, budget, journal, nil)
+}
+
+// openSourceFileFromParent optionally binds the final parent directory to the
+// identity observed during discovery. Every path component is still opened
+// relative to the preceding held directory descriptor by openConfined.
+func openSourceFileFromParent(ctx context.Context, path string, budget *sourceBudget, journal bool, expectedParent os.FileInfo) (io.ReadCloser, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -756,9 +764,9 @@ func openSourceFile(ctx context.Context, path string, budget *sourceBudget, jour
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("%w: open %s: %w", ErrSourceCancelled, path, err)
 	}
-	file, err := budget.openConfined(path)
+	file, err := budget.openConfined(path, expectedParent)
 	if err != nil {
-		return nil, fmt.Errorf("%w: open %s: %v", ErrSourceMissing, path, err)
+		return nil, fmt.Errorf("%w: open %s: %w", ErrSourceMissing, path, err)
 	}
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() {
@@ -767,6 +775,13 @@ func openSourceFile(ctx context.Context, path string, budget *sourceBudget, jour
 			err = fmt.Errorf("not a regular file")
 		}
 		return nil, fmt.Errorf("%w: open %s: %v", ErrSourceMissing, path, err)
+	}
+	// The atomic initial open is nonblocking so a regular-file-to-FIFO
+	// substitution cannot hang open. Once descriptor metadata proves this is a
+	// regular evidence file, restore ordinary blocking read semantics.
+	if err := clearSourceFileNonblock(file); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("%w: open %s: clear nonblocking mode: %v", ErrSourceMissing, path, err)
 	}
 	localLimit := int64(0)
 	if !journal {
@@ -977,8 +992,25 @@ func (b *sourceBudget) setFileRoot(path string) error {
 	if err != nil {
 		return err
 	}
+	// Derive the starting directory descriptor from the already-held Root. No
+	// later component walk reopens the root by its ambient filesystem path.
+	rootDir, err := root.Open(".")
+	if err != nil {
+		_ = root.Close()
+		return err
+	}
+	rootInfo, err := rootDir.Stat()
+	if err != nil || !rootInfo.IsDir() {
+		_ = rootDir.Close()
+		_ = root.Close()
+		if err == nil {
+			err = fmt.Errorf("confined source root is not a directory")
+		}
+		return err
+	}
 	b.mu.Lock()
 	b.fileRoot = root
+	b.fileRootDir = rootDir
 	b.fileRootPath = filepath.Clean(abs)
 	b.mu.Unlock()
 	return nil
@@ -987,19 +1019,24 @@ func (b *sourceBudget) setFileRoot(path string) error {
 func (b *sourceBudget) closeFileRoot() {
 	b.mu.Lock()
 	root := b.fileRoot
+	rootDir := b.fileRootDir
 	b.fileRoot = nil
+	b.fileRootDir = nil
 	b.fileRootPath = ""
 	b.mu.Unlock()
+	if rootDir != nil {
+		_ = rootDir.Close()
+	}
 	if root != nil {
 		_ = root.Close()
 	}
 }
 
-func (b *sourceBudget) openConfined(path string) (*os.File, error) {
+func (b *sourceBudget) openConfined(path string, expectedParent os.FileInfo) (*os.File, error) {
 	b.mu.Lock()
-	root, rootPath := b.fileRoot, b.fileRootPath
+	rootDir, rootPath := b.fileRootDir, b.fileRootPath
 	b.mu.Unlock()
-	if root == nil {
+	if rootDir == nil {
 		return nil, fmt.Errorf("confined source root is not open")
 	}
 	rel := filepath.Clean(path)
@@ -1010,24 +1047,46 @@ func (b *sourceBudget) openConfined(path string) (*os.File, error) {
 			return nil, err
 		}
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) || filepath.VolumeName(rel) != "" {
 		return nil, fmt.Errorf("path escapes confined source root")
 	}
 	parentName, baseName := filepath.Dir(rel), filepath.Base(rel)
 	if baseName == "." || baseName == ".." || baseName == "" {
 		return nil, fmt.Errorf("source path has no final file name")
 	}
-	parent, err := root.Open(parentName)
-	if err != nil {
-		return nil, err
+	parent := rootDir
+	parentOwned := false
+	if parentName != "." {
+		for _, component := range strings.Split(parentName, string(filepath.Separator)) {
+			if component == "" || component == "." || component == ".." {
+				if parentOwned {
+					_ = parent.Close()
+				}
+				return nil, fmt.Errorf("invalid source directory component %q", component)
+			}
+			next, err := openSourceDirNoFollow(parent, component)
+			if parentOwned {
+				_ = parent.Close()
+			}
+			if err != nil {
+				return nil, err
+			}
+			parent = next
+			parentOwned = true
+		}
 	}
-	defer parent.Close()
+	if parentOwned {
+		defer parent.Close()
+	}
 	parentInfo, err := parent.Stat()
 	if err != nil {
 		return nil, err
 	}
 	if !parentInfo.IsDir() {
 		return nil, fmt.Errorf("source parent is not a directory")
+	}
+	if expectedParent != nil && !os.SameFile(expectedParent, parentInfo) {
+		return nil, fmt.Errorf("source parent changed after discovery")
 	}
 	return openSourceFileNoFollow(parent, baseName)
 }
@@ -1048,20 +1107,6 @@ func (b *sourceBudget) readDirConfined(path string) ([]fs.DirEntry, error) {
 		return nil, err
 	}
 	return fs.ReadDir(rootFS, filepath.ToSlash(filepath.Clean(path)))
-}
-
-func (b *sourceBudget) lstatConfined(path string) (os.FileInfo, error) {
-	b.mu.Lock()
-	root := b.fileRoot
-	b.mu.Unlock()
-	if root == nil {
-		return nil, fmt.Errorf("confined source root is not open")
-	}
-	clean := filepath.Clean(path)
-	if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return nil, fmt.Errorf("path escapes confined source root")
-	}
-	return root.Lstat(clean)
 }
 
 func (b *sourceBudget) signalChangeLocked() {
@@ -1203,6 +1248,11 @@ func (r *boundedSourceReadCloser) sourceFileInfoLocked() (os.FileInfo, error) {
 var errSourcePipeIncomplete = errors.New("Git pipe remained open without readable data after child exit")
 
 func waitSourceReadable(ctx context.Context, source io.Reader, budget *sourceBudget, processDone <-chan struct{}) error {
+	// Local evidence descriptors have already been fstat-validated as regular.
+	// Only Git pipes need readiness polling and post-exit inherited-pipe checks.
+	if processDone == nil {
+		return nil
+	}
 	file, ok := source.(*os.File)
 	if !ok {
 		return nil
@@ -1436,7 +1486,7 @@ func (r *sourceGitReadCloser) finish(cause error, kill bool) error {
 			} else {
 				r.finishErr = fmt.Errorf("%w: git %s in %s: %w", ErrGitHistory, strings.Join(r.args, " "), r.repo, r.processErr)
 			}
-		case r.stderrErr != nil:
+		case r.stderrErr != nil && !(errors.Is(cause, io.ErrClosedPipe) && errors.Is(r.stderrErr, ErrSourceCancelled)):
 			r.finishErr = fmt.Errorf("%w: git %s in %s ended with incomplete stderr: %w", ErrGitHistory, strings.Join(r.args, " "), r.repo, r.stderrErr)
 		case errors.Is(cause, io.EOF):
 			r.finishErr = io.EOF
@@ -1492,6 +1542,8 @@ func validateSourceGitRequest(request SourceGitRequest) error {
 	case "diff-tree":
 		valid = len(request.Args) == 5 && request.Args[1] == "--no-ext-diff" &&
 			request.Args[2] == "--no-textconv" && request.Args[3] == "-r" && validObjectID(request.Args[4])
+	case "symbolic-ref":
+		valid = len(request.Args) == 3 && request.Args[1] == "--quiet" && request.Args[2] == "HEAD"
 	case "show-ref":
 		valid = validSourceShowRef(request.Args)
 	}
@@ -1593,19 +1645,7 @@ func validSourceLSTree(args []string) bool {
 }
 
 func validSourceShowRef(args []string) bool {
-	for _, arg := range args[1:] {
-		if strings.HasPrefix(arg, "-") {
-			switch arg {
-			case "--head", "--heads", "--tags", "--hash", "--verify":
-				continue
-			}
-			return false
-		}
-		if arg == "" {
-			return false
-		}
-	}
-	return true
+	return len(args) == 4 && args[1] == "--verify" && args[2] == "--quiet" && validFullRefName(args[3])
 }
 
 func validObjectID(value string) bool {
@@ -1730,10 +1770,11 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 	}
 	holdouts := stringSet(selection.HoldoutRunIDs)
 	for _, entry := range entries {
-		// Only real direct-child directories are journal candidates. Symlinked
-		// directory aliases and unrelated files are never traversed; a final
-		// journal.jsonl symlink is still rejected below and by the atomic open.
+		// Direct-child symlinks are never traversed and are always a named
+		// incomplete-discovery disposition, including convenience aliases.
 		if entry.Type()&os.ModeSymlink != 0 {
+			report.State = SourcePartial
+			addSourceReason(report, "journal-runs entry is a symbolic link and was not traversed: "+entry.Name())
 			continue
 		}
 		if !entry.IsDir() {
@@ -1743,17 +1784,25 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 			return fmt.Errorf("%w: journal source %q: %w", ErrSourceCancelled, spec.ID, err)
 		}
 		runID := entry.Name()
+		runInfo, infoErr := entry.Info()
+		if infoErr != nil || !runInfo.IsDir() || runInfo.Mode()&os.ModeSymlink != 0 {
+			if infoErr == nil {
+				infoErr = fmt.Errorf("not a real directory")
+			}
+			return fmt.Errorf("%w: inspect journal run %s: %v", ErrSourceMissing, runID, infoErr)
+		}
 		relPath := filepath.Join(runID, "journal.jsonl")
-		displayPath := filepath.Join(spec.Repository, relPath)
-		info, statErr := budget.lstatConfined(relPath)
-		if statErr != nil {
-			if os.IsNotExist(statErr) {
+		reader, openErr := openSourceFileFromParent(ctx, relPath, budget, true, runInfo)
+		if openErr != nil {
+			if errors.Is(openErr, fs.ErrNotExist) {
 				continue
 			}
-			return fmt.Errorf("%w: inspect journal %s: %v", ErrSourceMissing, displayPath, statErr)
-		}
-		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: journal %s is not a regular confined file", ErrSourceMissing, displayPath)
+			if _, heldout := holdouts[runID]; heldout {
+				report.Counts.UnreadableExcluded++
+				continue
+			}
+			report.Counts.Unreadable++
+			return openErr
 		}
 		report.Counts.Files++
 		report.Counts.Journals++
@@ -1767,15 +1816,6 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 			report.State = SourcePartial
 		} else {
 			seenRuns[runID] = identity
-		}
-		reader, openErr := openSourceFile(ctx, relPath, budget, true)
-		if openErr != nil {
-			if _, heldout := holdouts[runID]; heldout {
-				report.Counts.UnreadableExcluded++
-				continue
-			}
-			report.Counts.Unreadable++
-			return openErr
 		}
 		parsed, parseErr := ParseEvents(ctx, identity, reader, JournalBounds{MaxLineBytes: budget.bounds.MaxLineBytes, MaxTotalBytes: budget.bounds.MaxTotalBytes})
 		_ = reader.Close()
@@ -1980,7 +2020,7 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 		report.ResolvedRefs = []ResolvedRef{{Name: spec.Ref, Commit: resolved}}
 		traversal = []string{resolved}
 	} else {
-		resolvedRefs, replaced, refsErr := readAllResolvedRefs(ctx, spec.Repository, budget)
+		resolvedRefs, replaced, unbornHEAD, refsErr := readAllResolvedRefs(ctx, spec.Repository, budget)
 		if refsErr != nil {
 			if errors.Is(refsErr, ErrBoundExceeded) {
 				markSourceBound(report, "Git metadata total-byte bound exceeded")
@@ -1990,6 +2030,10 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 		}
 		report.ResolvedRefs = resolvedRefs
 		report.Replaced = replaced
+		if unbornHEAD {
+			report.State = SourcePartial
+			addSourceReason(report, "Git HEAD is an unborn branch")
+		}
 		for _, ref := range resolvedRefs {
 			traversal = append(traversal, ref.Commit)
 		}
@@ -2127,12 +2171,12 @@ func readSourceGitAll(ctx context.Context, repo string, budget *sourceBudget, re
 	return data, readErr
 }
 
-func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget) ([]ResolvedRef, bool, error) {
+func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget) ([]ResolvedRef, bool, bool, error) {
 	raw, err := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
 		Args: []string{"for-each-ref", "--format=" + sourceRefFormat},
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, false, false, err
 	}
 	refs := make([]ResolvedRef, 0)
 	replaced := false
@@ -2142,16 +2186,16 @@ func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget)
 		}
 		fields := bytes.Split(record, []byte{0})
 		if len(fields) != 5 {
-			return refs, replaced, fmt.Errorf("%w: malformed for-each-ref metadata", ErrGitHistory)
+			return refs, replaced, false, fmt.Errorf("%w: malformed for-each-ref metadata", ErrGitHistory)
 		}
 		name := string(fields[0])
 		objectType, objectID := string(fields[1]), string(fields[2])
 		peeledType, peeledID := string(fields[3]), string(fields[4])
 		if !validFullRefName(name) {
-			return refs, replaced, fmt.Errorf("%w: invalid ref name %q", ErrGitHistory, name)
+			return refs, replaced, false, fmt.Errorf("%w: invalid ref name %q", ErrGitHistory, name)
 		}
 		if !validObjectID(objectID) {
-			return refs, replaced, fmt.Errorf("%w: ref %q has invalid captured object ID", ErrGitHistory, name)
+			return refs, replaced, false, fmt.Errorf("%w: ref %q has invalid captured object ID", ErrGitHistory, name)
 		}
 		replaced = replaced || strings.HasPrefix(name, "refs/replace/")
 		commit := ""
@@ -2167,20 +2211,20 @@ func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget)
 			if resolveErr != nil {
 				if errors.Is(resolveErr, ErrBoundExceeded) || errors.Is(resolveErr, ErrSourceCancelled) ||
 					errors.Is(resolveErr, context.Canceled) || errors.Is(resolveErr, context.DeadlineExceeded) {
-					return refs, replaced, resolveErr
+					return refs, replaced, false, resolveErr
 				}
-				return refs, replaced, fmt.Errorf("%w: ref %q captured as %s is not a supported commit ref: %w", ErrGitHistory, name, objectID, resolveErr)
+				return refs, replaced, false, fmt.Errorf("%w: ref %q captured as %s is not a supported commit ref: %w", ErrGitHistory, name, objectID, resolveErr)
 			}
 			commit = strings.TrimSpace(string(resolvedRaw))
 		}
 		if !validObjectID(commit) {
-			return refs, replaced, fmt.Errorf("%w: ref %q did not resolve to a full commit", ErrGitHistory, name)
+			return refs, replaced, false, fmt.Errorf("%w: ref %q did not resolve to a full commit", ErrGitHistory, name)
 		}
 		refs = append(refs, ResolvedRef{Name: name, Commit: commit})
 	}
-	head, resolved, headErr := readCapturedHEAD(ctx, repo, budget)
+	head, resolved, unborn, headErr := readCapturedHEAD(ctx, repo, budget)
 	if headErr != nil {
-		return refs, replaced, headErr
+		return refs, replaced, false, headErr
 	}
 	if resolved {
 		refs = append(refs, head)
@@ -2191,23 +2235,52 @@ func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget)
 		}
 		return refs[i].Commit < refs[j].Commit
 	})
-	return refs, replaced, nil
+	return refs, replaced, unborn, nil
 }
 
-func readCapturedHEAD(ctx context.Context, repo string, budget *sourceBudget) (ResolvedRef, bool, error) {
+func readCapturedHEAD(ctx context.Context, repo string, budget *sourceBudget) (ResolvedRef, bool, bool, error) {
 	raw, err := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
 		Args: []string{"rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD"},
 	})
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
-			return ResolvedRef{}, false, nil
+			targetRaw, targetErr := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
+				Args: []string{"symbolic-ref", "--quiet", "HEAD"},
+			})
+			if targetErr != nil {
+				if errors.Is(targetErr, ErrBoundExceeded) || errors.Is(targetErr, ErrSourceCancelled) ||
+					errors.Is(targetErr, context.Canceled) || errors.Is(targetErr, context.DeadlineExceeded) {
+					return ResolvedRef{}, false, false, targetErr
+				}
+				return ResolvedRef{}, false, false, fmt.Errorf("%w: unresolved HEAD is not a readable symbolic ref: %w", ErrGitHistory, targetErr)
+			}
+			target := strings.TrimSuffix(string(targetRaw), "\n")
+			target = strings.TrimSuffix(target, "\r")
+			if !validFullRefName(target) {
+				return ResolvedRef{}, false, false, fmt.Errorf("%w: HEAD has invalid symbolic target %q", ErrGitHistory, target)
+			}
+			_, verifyErr := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
+				Args: []string{"show-ref", "--verify", "--quiet", target},
+			})
+			if verifyErr == nil {
+				return ResolvedRef{}, false, false, fmt.Errorf("%w: HEAD target %q exists but HEAD did not resolve", ErrGitHistory, target)
+			}
+			var verifyExitErr *exec.ExitError
+			if errors.As(verifyErr, &verifyExitErr) && verifyExitErr.ExitCode() == 1 {
+				return ResolvedRef{}, false, true, nil
+			}
+			if errors.Is(verifyErr, ErrBoundExceeded) || errors.Is(verifyErr, ErrSourceCancelled) ||
+				errors.Is(verifyErr, context.Canceled) || errors.Is(verifyErr, context.DeadlineExceeded) {
+				return ResolvedRef{}, false, false, verifyErr
+			}
+			return ResolvedRef{}, false, false, fmt.Errorf("%w: cannot verify unresolved HEAD target %q: %w", ErrGitHistory, target, verifyErr)
 		}
-		return ResolvedRef{}, false, err
+		return ResolvedRef{}, false, false, err
 	}
 	objectID := strings.TrimSpace(string(raw))
 	if !validObjectID(objectID) {
-		return ResolvedRef{}, false, fmt.Errorf("%w: HEAD did not resolve to a full captured object ID", ErrGitHistory)
+		return ResolvedRef{}, false, false, fmt.Errorf("%w: HEAD did not resolve to a full captured object ID", ErrGitHistory)
 	}
 	peeledRaw, err := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
 		Args: []string{"rev-parse", "--verify", "--end-of-options", objectID + "^{commit}"},
@@ -2215,15 +2288,15 @@ func readCapturedHEAD(ctx context.Context, repo string, budget *sourceBudget) (R
 	if err != nil {
 		if errors.Is(err, ErrBoundExceeded) || errors.Is(err, ErrSourceCancelled) ||
 			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return ResolvedRef{}, false, err
+			return ResolvedRef{}, false, false, err
 		}
-		return ResolvedRef{}, false, fmt.Errorf("%w: HEAD captured as %s is not a supported commit: %w", ErrGitHistory, objectID, err)
+		return ResolvedRef{}, false, false, fmt.Errorf("%w: HEAD captured as %s is not a supported commit: %w", ErrGitHistory, objectID, err)
 	}
 	commit := strings.TrimSpace(string(peeledRaw))
 	if !validObjectID(commit) {
-		return ResolvedRef{}, false, fmt.Errorf("%w: HEAD captured as %s did not peel to a full commit", ErrGitHistory, objectID)
+		return ResolvedRef{}, false, false, fmt.Errorf("%w: HEAD captured as %s did not peel to a full commit", ErrGitHistory, objectID)
 	}
-	return ResolvedRef{Name: "HEAD", Commit: commit}, true, nil
+	return ResolvedRef{Name: "HEAD", Commit: commit}, true, false, nil
 }
 
 type sourceHistoryCommit struct {

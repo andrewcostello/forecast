@@ -1,4 +1,4 @@
-//go:build darwin || linux
+//go:build unix
 
 package dispatched
 
@@ -8,11 +8,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// openSourceFileNoFollow atomically opens one basename relative to a held
-// confined-parent descriptor. os.Root.OpenFile cannot be used here because its
-// Unix implementation deliberately follows ELOOP even when O_NOFOLLOW was
-// supplied by its caller.
-func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
+func openSourceAt(parent *os.File, name string, flags int) (*os.File, error) {
 	conn, err := parent.SyscallConn()
 	if err != nil {
 		return nil, err
@@ -20,7 +16,7 @@ func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
 	opened := -1
 	var openErr error
 	if err := conn.Control(func(parentFD uintptr) {
-		opened, openErr = unix.Openat(int(parentFD), name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0)
+		opened, openErr = unix.Openat(int(parentFD), name, flags|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	}); err != nil {
 		return nil, err
 	}
@@ -33,6 +29,33 @@ func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
 		return nil, os.ErrInvalid
 	}
 	return file, nil
+}
+
+// openSourceDirNoFollow atomically opens one directory basename relative to a
+// held confined-parent descriptor. Each directory component is opened this way
+// before it becomes the parent for the next component.
+func openSourceDirNoFollow(parent *os.File, name string) (*os.File, error) {
+	return openSourceAt(parent, name, unix.O_RDONLY|unix.O_DIRECTORY)
+}
+
+// openSourceFileNoFollow keeps the initial open nonblocking so substitution of
+// a regular evidence file with a FIFO cannot hang before descriptor fstat.
+func openSourceFileNoFollow(parent *os.File, name string) (*os.File, error) {
+	return openSourceAt(parent, name, unix.O_RDONLY|unix.O_NONBLOCK)
+}
+
+func clearSourceFileNonblock(file *os.File) error {
+	conn, err := file.SyscallConn()
+	if err != nil {
+		return err
+	}
+	var clearErr error
+	if err := conn.Control(func(fd uintptr) {
+		clearErr = unix.SetNonblock(int(fd), false)
+	}); err != nil {
+		return err
+	}
+	return clearErr
 }
 
 // sourceFileReadReady holds the descriptor through SyscallConn while polling,

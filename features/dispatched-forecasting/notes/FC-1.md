@@ -333,3 +333,36 @@ PARTIAL at 44/303 recovered; it was not rescanned, is not a post-fix count or a
 data-sufficiency claim, and is not a completed holdout evaluation. FC-1 remains
 Blocked pending the parent exact-head gate, independent verifier and full panel;
 this body does not mark runtime work Done.
+
+## Direct-child journal-layout follow-up
+
+The narrow parent finding after the second-panel correction is fixed within the
+existing selected-provenance rule. A recovered journal `RunID` must now be one
+non-dot portable path component before its stored path can match
+`{RunID}/journal.jsonl`. Thus `parent/run-a` cannot masquerade as one selected
+direct-child run, and `.` cannot be cleaned away to `journal.jsonl`. Ordinary
+`run-a` and a legal internal-space component such as `run a` remain valid. The
+selected source, supported producer, exact layout and all prior carried-evidence
+checks remain unchanged; no new source policy or filesystem access was added.
+
+Independent seal commit `6d9754abc980533f95bcd4ddf7d2cdc7c44147b0`
+faithfully relinks complete positive artifacts without changing observation
+counts, models, outcomes or thresholds. Before this body change, the focused
+Evidence group failed only the new `nested-run-id` and `dot-cleaned-run-id`
+leaves; the ordinary-direct-child and legal-internal-space controls passed. No
+seal or existing assertion conflicted with the ruling.
+
+### Direct-child follow-up verification
+
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go test ./cmd/forecast -run '^TestFCReferenceCLIContract$' -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+- `git diff --check` — pass.
+
+Tests, fixtures, seals, Source/Journal implementations, scaffold, known-red and
+worklists were not edited. Every second-panel correction and the historical
+diagnostic PARTIAL 44/303 limitation remain as recorded above. FC-1 remains
+Blocked pending the parent exact-head gate, independent verifier and panel; this
+follow-up does not mark runtime work Done.

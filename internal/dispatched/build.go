@@ -602,9 +602,14 @@ func validAttemptJournalEvidence(evidence FieldEvidence, attempt Attempt, eventT
 func validArtifactJournalIdentity(journal JournalIdentity, selectedSources map[string]SourceReport) bool {
 	source, ok := selectedSources[journal.SourceID]
 	return ok && source.Kind == SourceKindJournals &&
-		journal.RunID != "" && journal.RunID == strings.TrimSpace(journal.RunID) &&
+		portablePathComponent(journal.RunID) &&
 		journal.Producer == ProducerDispatcherV0_1_0 && portableRelativePath(journal.Path) &&
 		journal.Path == path.Join(journal.RunID, "journal.jsonl")
+}
+
+func portablePathComponent(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && value != "." && value != ".." &&
+		!strings.ContainsAny(value, `/\`)
 }
 
 func validArtifactAttemptJournals(attempt Attempt, selectedSources map[string]SourceReport) bool {

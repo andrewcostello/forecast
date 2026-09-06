@@ -153,6 +153,27 @@ func TestFCSourcesContract(t *testing.T) {
 	t.Run("F4-MANIFEST-EMPTY-LISTS", testF4ManifestEmptyLists)
 	t.Run("F3-CITATION-ROW", testF3CitationRow)
 	t.Run("F3-OPEN-SOURCE-NIL-BUDGET", testF3OpenSourceNilBudget)
+	t.Run("F3-GIT-CLOSE-ERRORS", testF3GitCloseErrors)
+	t.Run("F3-BOUND-TOTAL-CONCURRENT", testF3BoundTotalConcurrent)
+	t.Run("F3-COMPLETE-RESOLUTION", testF3CompleteResolution)
+	t.Run("F3-EMPTY-HISTORY-CONSISTENT", testF3EmptyHistoryConsistent)
+	t.Run("F3-BOUND-COMMITS-LIMITER", testF3BoundCommitsLimiter)
+	t.Run("F3-GIT-WORKTREE-GRAFTS", testF3GitWorktreeGrafts)
+	t.Run("F3-ALLOW-EMPTY-REASONS", testF3AllowEmptyReasons)
+	t.Run("F3-NON-TASK-SHAPES", testF3NonTaskShapes)
+	t.Run("F3-IDENTITY-STRUCTURE", testF3IdentityStructure)
+	t.Run("F3-MISSING-REVISION-TIME-INGEST", testF3MissingRevisionTimeIngest)
+	t.Run("F3-GIT-REQUEST-READONLY", testF3GitRequestReadonly)
+	t.Run("F3-DETACHED-HEAD-ALL-REFS", testF3DetachedHeadAllRefs)
+	t.Run("F3-GIT-BUFFERED-EXIT-READ", testF3GitBufferedExitRead)
+	t.Run("F3-BOUND-METADATA-FRAGMENT", testF3BoundMetadataFragment)
+	t.Run("F3-NONCOMMIT-REF-PEEL", testF3NoncommitRefPeel)
+	t.Run("F3-GIT-GRAFT-INSPECT-ERROR", testF3GitGraftInspectError)
+	t.Run("F3-HEAD-SYMBOLIC-INVALID", testF3HeadSymbolicInvalid)
+	t.Run("F3-JOURNAL-SYMLINK-CHILD", testF3JournalSymlinkChild)
+	t.Run("F3-JOURNAL-MISSING-CHILD", testF3JournalMissingChild)
+	t.Run("F3-OPEN-SOURCE-SYMLINK-PARENT", testF3OpenSourceSymlinkParent)
+	t.Run("F3-GIT-CLOSE-SELF-CANCEL", testF3GitCloseSelfCancel)
 }
 
 func contractSourceTree(t *testing.T) (runs string, repo gitRepo) {
@@ -1026,21 +1047,6 @@ func testF3MissingRevisionTime(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Kind != DocumentTaskRow || !got[0].Ref.RecordedAt.IsZero() || got[0].Err != nil || got[0].Excluded != "" {
 		t.Fatalf("zero-time parser envelope = %+v", got)
-	}
-	start := mustTime(t, "2026-01-01T00:00:00Z")
-	attempt := journalAttempt("run-offset", "F1-OFFSET", start, 10*time.Minute, "stamp", OutcomeDone)
-	set := attemptSetOf("run-offset", attempt)
-	joined, err := joinContract(t, []AttemptSet{set}, got, defaultSelection(), identityUniverse(set))
-	if errors.Is(err, ErrNotImplemented) {
-		t.Fatal(err)
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	requireDisposition(t, joined, DispositionMalformed, 1)
-	requireDisposition(t, joined, DispositionAfterCutoff, 0)
-	if joined.Recovered != 0 || len(joined.Observations) != 0 || len(joined.Examined) != 1 || !joined.Examined[0].Reading.RecordedAt.IsZero() {
-		t.Fatalf("zero RecordedAt was sampled or lost from malformed audit: %+v", joined)
 	}
 }
 

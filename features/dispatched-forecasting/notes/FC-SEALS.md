@@ -381,3 +381,175 @@ the controlled-child harness paths; their termination is not evidence that
 those paths ran. Body/adjudication mutation proof remains deferred. The parent
 operator's IP-socket-denied check remains a separate independent verification
 step.
+
+## Operator ownership ruling: missing revision time
+
+FC-SOURCES implementation `ab03f0a` exposed an accidental forward dependency:
+F3-MISSING-REVISION-TIME parsed a reading and then called FC-1-owned JoinEvidence.
+The source group now retains the original parser envelope assertions. The full
+original setup and join assertions also run as F3-MISSING-REVISION-TIME-JOIN under
+TestFCEvidenceContract (FC-1 owner). No assertion, fixture, or contract was removed
+or weakened; no new known-red exclusion was added. The join case must remain red
+until FC-1 lands and must reject a mutation that samples zero RecordedAt evidence.
+This is an explicit operator seal-ownership amendment, not a body-authored change.
+
+## FC-SOURCES corrective seals
+
+Independent seals for frozen-contract defects from
+`2026-09-06T01-18-41Z-FC-SOURCES-corrected-panel`. Existing cases, fixtures,
+the operator split, and FC-1 ownership are unchanged. New cases register inside
+`TestFCSourcesContract` only (`sources_panel_contract_test.go`). Bodies cannot
+edit these seals.
+
+### Panel dispositions
+
+| Finding | Disposition |
+|---|---|
+| Codex raw journal cutoff | **False positive.** `SourceReadings` godoc and F3-CUTOFF-EXCLUDED assign post-cutoff journal event filtering to ReduceAttempts. Do not filter raw `ParsedJournal.Events` in ReadSources. Existing raw parse and reducer cutoff cases stay. |
+| Live `os.Stat` vs `openSourceFile`, path walk vs `os.Root` | Body must tie discovery/mtime to the confined descriptor. Frozen seams cannot expose that race deterministically; **body code-review obligation**, no sleep-based TOCTOU test. |
+| Shared `MaxTotalBytes` check-then-charge | `F3-BOUND-TOTAL-CONCURRENT`. Cap is inclusive; one overflow probe byte may be consumed and must not be retained. Readiness-before-reservation means the frozen seam cannot prove both readers acquired allowance; the old-body `bytesRead=130` failure against cap 64 is positive mutation evidence, not a negative serialization proof. No new public acquisition hook. |
+| `Close` discards finish | `F3-GIT-CLOSE-ERRORS`. Close without Read surfaces cancel/bound/nonzero-child errors. EOF then Close is nil. Close after Read already delivered an error stays nil so existing `closeFixtureReader` assertions remain. |
+| `ValidateComplete` refs/reasons | `F3-COMPLETE-RESOLUTION` counterfactual manifests: blank/padded/malformed/duplicate all-ref entries, Git-invalid all-ref names (`a..b`, `.lock`, control chars, outside `refs/`), resolution metadata on live/journal, COMPLETE with incomplete reasons. Sentinel `ErrSourceIncomplete`. All-ref `HEAD` is the allowed pseudoref; explicit requested `HEAD` stays separately valid. |
+| Empty history COMPLETE vs validator | `F3-EMPTY-HISTORY-CONSISTENT`. No resolved commits ⇒ PARTIAL with a diagnostic, canonical empty lists, `ValidateComplete` `ErrSourceIncomplete`. Do not invent a new returned sentinel. |
+| Unbounded `rev-list` | `F3-BOUND-COMMITS-LIMITER` requires provider-side `MaxCommits+1` (`--max-count=4` or `-n4`) on the metadata traversal command. Retains exactly-three-plus-bound semantics. `F3-GIT-FULL-HISTORY` keeps superseded merge-parent coverage. Not a process-count or timing threshold. Eager topo laziness and argv-vs-ref-count bounds are a **body code-review obligation** unless a compact deterministic seam can prove them. |
+| N+1 show/ls-tree batching | **Advisory optimization**, not a new total-process-count contract. No acceptance threshold. |
+| Linked-worktree grafts | `F3-GIT-WORKTREE-GRAFTS` (fixture worktree). `F3-GIT-INSTALLATION-ENV` unchanged. |
+| AllowEmpty skips finalize | `F3-ALLOW-EMPTY-REASONS`: EMPTY keeps canonical lists and copies partial source reasons. |
+| Non-mapping YAML as malformed | `F3-NON-TASK-SHAPES`. Empty/list/scalar without `tasks` is `DocumentNotTasks`. Invalid syntax stays malformed. `tasks: []` still yields no row envelopes. |
+| Structural identity/time | `F3-IDENTITY-STRUCTURE`. Sequence/map/alias identity or time nodes carry `Err`, stay auditable, and degrade completeness when exclusion cannot be proved. Genuine absent fields stay absent. |
+| Zero RecordedAt ingest unsealed | `F3-MISSING-REVISION-TIME-INGEST` uses `ingestReadings` at the frozen source boundary. Join remains `F3-MISSING-REVISION-TIME-JOIN` under Evidence. |
+| Write-capable metadata args | `F3-GIT-REQUEST-READONLY` rejects `--output` and external-helper options; current read-only forms including `--git-common-dir` and `rev-list --max-count` remain valid. |
+| Unsupported refs | No change. `F3-UNSUPPORTED-REF` stands. |
+
+### Corrective cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F3-GIT-CLOSE-ERRORS | Close after successful EOF is nil. Close without Read on nonzero exit wraps `ErrGitHistory`; on cancel wraps `ErrSourceCancelled` and `context.Canceled`; after stderr charges the total cap wraps `ErrBoundExceeded`. Controlled children use `sleep 1`, bounded cleanup, minimal env, no network. | `Close` always nil; EOF Close returns `io.EOF`; kill-without-wait hides exit |
+| F3-BOUND-TOTAL-CONCURRENT | Two concurrent `runSourceGit` streams against one budget: physical `bytesRead() <= MaxTotalBytes+1`, retained payload `<= MaxTotalBytes`, overflow `Z` not retained, at least one `ErrBoundExceeded`. Readiness-before-reservation cannot prove both readers hold allowance; old-body `bytesRead=130` remains the mutation evidence. | Check remaining then read without reserving; allow two full collections (`bytesRead=130` vs cap 64) |
+| F3-COMPLETE-RESOLUTION | Otherwise-valid COMPLETE fixtures with blank/padded/malformed/duplicate all-ref entries, Git-invalid all-ref names (`refs/heads/a..b`, `refs/heads/main.lock`, control chars, names outside `refs/`), live/journal resolution metadata, or COMPLETE reasons wrap `ErrSourceIncomplete`. Control fixture stays complete. All-ref `HEAD` plus `refs/heads/main` is accepted; explicit requested `HEAD` is accepted. | Accept invalid all-ref names; reject `HEAD` as the all-ref pseudoref; reject explicit requested `HEAD`; panic; wrong sentinel |
+| F3-EMPTY-HISTORY-CONSISTENT | Unborn all-refs history is PARTIAL with a diagnostic reason, canonical empty `resolved_refs`/`reasons`/`roots` lists, and `ValidateComplete` `ErrSourceIncomplete`. Returned diagnostic error semantics stay as already accepted; no new sentinel. | Return COMPLETE that `ValidateComplete` rejects; invent refs/commits; omit the reason; emit null lists; guess `ErrSourceEmpty` as the only legal outcome |
+| F3-BOUND-COMMITS-LIMITER | History `rev-list` includes `MaxCommits+1`. Five-commit fixture still retains 3 and counts a bound. | Unlimited `rev-list` plus kill; `--max-count=MaxCommits` with no overflow line; drop merge-parent coverage (`F3-GIT-FULL-HISTORY`) |
+| F3-GIT-WORKTREE-GRAFTS | Fixture linked worktree with grafts in the common dir reports Grafted, not Replaced, PARTIAL, `ErrShallowHistory+ErrSourceIncomplete`. Installation env policy unchanged. | Stat only `--absolute-git-dir`; treat graft as replace; strip `GIT_EXEC_PATH` |
+| F3-ALLOW-EMPTY-REASONS | AllowEmpty + zero journals + grafted history: `EMPTY`, non-empty aggregate reasons, JSON `[]` lists not null, `ValidateComplete` still `ErrSourceIncomplete`. | Skip reason copy; emit null lists; mark eligible |
+| F3-NON-TASK-SHAPES | Empty, `[]`, scalar, `null` YAML → `DocumentNotTasks`, not malformed/PARTIAL. Invalid syntax → `DocumentMalformed`. Empty `tasks: []` stays zero row envelopes. | Classify non-mapping success as malformed; treat syntax errors as not-tasks |
+| F3-IDENTITY-STRUCTURE | Sequence/map/alias identity or time fields set `Err`, remain listed, cannot prove holdout, increment Malformed/PARTIAL. Missing `started_at` stays absent without that error. | Treat structural nodes as absent; hold out on non-scalar run ID; error on genuine absence |
+| F3-MISSING-REVISION-TIME-INGEST | Zero-`RecordedAt` parse envelope ingested as in-sample Malformed=1, AfterCutoff=0, PARTIAL, snapshot not cleared as excluded. | Drop ingest `Err`; count AfterCutoff; only fail in the FC-1 join case |
+| F3-GIT-REQUEST-READONLY | `--output` / `--output=path` and external-helper options wrap `ErrInvalidSourceSpec`. Current read-only rev-parse/rev-list/show/ls-tree/for-each-ref/cat-file blob forms stay valid. Bounded `rev-list` without `--topo-order` (`--max-count` + `--format=%cI` with `--all` or a snapshot SHA, optionally `--parents`) is accepted so snapshot-tip batches need not change public `SourceGitRequest`. | Allow `--output`; reject `--git-common-dir` or `--max-count`; reject current blob form; reject bounded non-topo `rev-list` |
+
+Descriptor-tied live/journal discovery remains a **body code-review obligation** (no flaky race test). Performance batching remains advisory. Ref snapshot consistency and bounded traversal remain required by the existing history seals plus `F3-EMPTY-HISTORY-CONSISTENT` / `F3-BOUND-COMMITS-LIMITER`.
+
+## FC-SOURCES follow-up corrective seals
+
+Independent seals for frozen-contract defects from
+`2026-09-06T02-15-10Z-FC-SOURCES-corrected-panel` and the operator F3
+clarification at the end of `FC-SCAFFOLD.md`. Existing assertions, fixtures,
+the operator split, and FC-1 ownership are unchanged. New cases register inside
+`TestFCSourcesContract` only. Bodies cannot edit these seals.
+
+### Follow-up panel dispositions
+
+| Finding | Disposition |
+|---|---|
+| Detached HEAD omitted from `for-each-ref` traversal | `F3-DETACHED-HEAD-ALL-REFS`. A commit reachable only from detached HEAD is enumerated and `ResolvedRefs` records the captured `HEAD` commit. COMPLETE may not silently drop it. |
+| All-ref names not Git ref syntax | `F3-COMPLETE-RESOLUTION` adds `a..b`, `.lock`, control-char, and outside-`refs/` counterfactuals. `HEAD` is the allowed all-ref pseudoref; explicit requested `HEAD` remains separately valid. |
+| Successful Git child closed after one-second cleanup | `F3-GIT-BUFFERED-EXIT-READ`. Later read retains the full payload; forced closure must not become a clean truncated EOF. Descendant/cancel cleanup stays bounded. |
+| Byte cap reclassified as bad Git syntax | `F3-BOUND-METADATA-FRAGMENT` cuts a `rev-list` commit header and a timestamp through the current private `readHistoryCommits` seam. `ErrBoundExceeded` is retained. The helper signature is not a public contract. |
+| Noncommit fallback peels a mutable name | `F3-NONCOMMIT-REF-PEEL` observes wrapper argv: peel `<captured-id>^{commit}`, never `refs/odd/blob^{commit}`. Cancellation/bound identity preservation on that fallback is a **body code-review obligation** (no extra public hook). |
+| Graft `Stat` errors treated as missing | `F3-GIT-GRAFT-INSPECT-ERROR`. A deterministic self-symlink graft path cannot yield COMPLETE. Ignore only `NotExist`. |
+| Final-component symlink TOCTOU | Existing `F3-SRC-ROOT-ESCAPES` static refusal stays. Atomic no-follow open relative to the confined parent is a **body code-review obligation**; no flaky rename-race test. |
+| Empty-history under-specified | `F3-EMPTY-HISTORY-CONSISTENT` now requires PARTIAL, a diagnostic, canonical lists, and `ValidateComplete` `ErrSourceIncomplete`. |
+| Eager `--topo-order` / argv grows with refs | `F3-BOUND-COMMITS-LIMITER` still requires `MaxCommits+1`. `F3-GIT-FULL-HISTORY` still requires every reachable merge parent. Unique-commit accounting stays in `F3-BOUND-COMMITS`. Bounded snapshot-tip batches are permitted; public `SourceGitRequest` is unchanged. Provider laziness and argv-vs-ref-count bounds are a **body code-review obligation**. Per-commit `ls-tree` remains advisory. |
+| `F3-BOUND-TOTAL-CONCURRENT` 100ms comment | Comment corrected only. Cap assertion unchanged. Old-body `bytesRead=130` retained as mutation evidence. No new acquisition hook. |
+
+### Follow-up cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F3-DETACHED-HEAD-ALL-REFS | Detached-only commit is enumerated (`git:<sha>`). `ResolvedRefs` records `HEAD` at that SHA and `refs/heads/main` at the branch tip. COMPLETE cannot omit it. Fixture uses the existing per-repo clock. | Walk only `for-each-ref` tips; omit `HEAD`; claim COMPLETE without the detached commit |
+| F3-GIT-BUFFERED-EXIT-READ | Controlled child writes a unique payload and exits 0. The test waits on the private `sourceGitReadCloser.processDone` channel, then crosses the old one-second post-Wait cleanup deadline, then `Read`s. Exact full payload and a nil terminal read error are both required. The wait is `processDone` then a wall delay, not a proof of concurrent reader/Wait interleaving. Bounded waits/cleanup (`fixtureHarnessWait`), minimal env, no network. | Close stdout one second after `Wait` and map `os.ErrClosed` to `io.EOF`; stall, return short data, or return the full payload with a non-nil terminal error |
+| F3-BOUND-METADATA-FRAGMENT | Metadata byte cap cutting a commit header or its timestamp returns `ErrBoundExceeded`. Do not reclassify the fragment as malformed Git syntax. | Parse the truncated line first and wrap only `ErrGitHistory` |
+| F3-NONCOMMIT-REF-PEEL | Fallback `rev-parse --verify --end-of-options` peels the captured object ID. Argv must contain `<id>^{commit}` and must not contain `refs/odd/blob^{commit}`. Noncommit refs still cannot produce COMPLETE. | Peel the live ref name; skip the blob ref and mark COMPLETE |
+| F3-GIT-GRAFT-INSPECT-ERROR | Self-symlink/uninspectable `info/grafts` cannot yield COMPLETE. `ValidateComplete` wraps `ErrSourceIncomplete`. NotExist remains the only missing-graft case. | Treat every `Stat` failure as absent grafts and return COMPLETE |
+| F3-GIT-REQUEST-READONLY/bounded-rev-list-without-topo | Bounded `rev-list --max-count=4 --format=%cI` with `--all` or a SHA, optionally `--parents`, is a valid read-only form. Existing `--topo-order` forms stay valid. | Keep the grammar pinned to `--topo-order` as args[1] so snapshot-tip batches cannot run |
+
+Atomic final-component open, fallback cancel/bound wrapping, provider-side walk laziness, and argv independence from ref count remain **body code-review obligations**. No flaky TOCTOU test, no giant timed walk benchmark, and no new public Git request field. Per-commit `ls-tree` stays advisory.
+
+## FC-SOURCES incomplete-discovery corrective seals
+
+Independent seals for frozen-contract defects from
+`2026-09-06T03-12-17Z-FC-SOURCES-corrected-panel` and the operator F3
+ruling at the end of `FC-SCAFFOLD.md` ("incomplete discovery and capped
+subsets"). Existing assertions, fixtures, the operator split, and FC-1
+ownership are unchanged. New cases register inside `TestFCSourcesContract`
+only. Bodies cannot edit these seals.
+
+### Latest panel dispositions
+
+| Finding | Disposition |
+|---|---|
+| Journal discovery silently drops direct-child symlinks | `F3-JOURNAL-SYMLINK-CHILD`. One real run plus a direct-child symlink (named `latest`, targeting the in-root real run) must be PARTIAL with a reason naming `latest`, never COMPLETE. No traversal. No `latest` exemption. Local fixture target only. |
+| Invalid/corrupt HEAD treated as unborn | `F3-HEAD-SYMBOLIC-INVALID`. `ref: refs/heads/main..bad` must be typed `ErrGitHistory`/PARTIAL, never COMPLETE. A canonical absent symbolic target with other valid refs is legitimate unborn state: PARTIAL with a reason, not ErrGitHistory. Genuine unborn symbolic HEAD remains a valid absence control. Missing detached object is a GREEN typed-`ErrGitHistory` control: `rev-parse --verify --quiet HEAD` returns the missing ID with exit 0 and the existing captured-ID peel already fails; that is not a new red defect. |
+| Final journal parent follows in-root directory symlink | `F3-OPEN-SOURCE-SYMLINK-PARENT`. Direct `openSourceFile` of `journal.jsonl` under an in-root symlink parent is refused. Deterministic static layout, not a rename race. Held confined root uses existing budget helpers. Legitimate `real-run/journal.jsonl` still opens. |
+| Caller `Close` after successful exit becomes incomplete-stderr | `F3-GIT-CLOSE-SELF-CANCEL`. Close without Read after a 0-exit child must not return `ErrGitHistory` incomplete-stderr caused solely by `ioCtx` cancellation. Controlled inherited stderr pipe, bounded wait on private `processDone`, release of the descendant. Existing `F3-GIT-CLOSE-ERRORS` nonzero-exit, parent-cancel, and bound seals stay. |
+| Buffered-exit read not synchronized on `processDone` | `F3-GIT-BUFFERED-EXIT-READ` tightened: wait on private `processDone` before crossing the old cleanup deadline; require exact full payload **and** nil terminal read error. No public hook. No stronger scheduling claim than `processDone` then a wall delay. |
+| Newest-N / HEAD-first capped subset | **Rejected as acceptance.** Operator: a binding `MaxCommits` retains a deterministic traversal-order subset and PARTIAL. No global newest-N or HEAD-within-cap promise. COMPLETE uncapped history must still include every captured tip/HEAD (`F3-DETACHED-HEAD-ALL-REFS`, `F3-GIT-FULL-HISTORY`). Bounded snapshot-tip batches remain permitted. Recorded as a contract assumption, not unimplemented acceptance. |
+| Remaining-capacity batch metadata | **Optimization request, not acceptance.** Repeated metadata reads consume the actual total-byte budget and may cause PARTIAL. Duplicate metadata charges are permitted. Remaining-capacity batching that miscounts duplicates is not required. |
+| Unix build-tag restoration | **Body/code-review.** No new platform-specific imports in shared tests. |
+| `O_NONBLOCK` on accepted regular files | **Body/code-review.** Nonblocking may remain on the atomic type-probe open to avoid a FIFO-open hang. No unbounded FIFO fixture. Clearing nonblocking on accepted regular files is not sealed here. |
+
+### Latest cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F3-HEAD-SYMBOLIC-INVALID/invalid-double-dot-target | Repo with valid `refs/heads/main` and HEAD `ref: refs/heads/main..bad` is typed `ErrGitHistory` and not COMPLETE. | Treat `rev-parse --verify --quiet HEAD` exit 1 as unborn and return COMPLETE |
+| F3-HEAD-SYMBOLIC-INVALID/unborn-with-existing-refs | Canonical absent symbolic HEAD with existing main is PARTIAL with a reason, not ErrGitHistory; retain main. | Mark COMPLETE, discard main, or misclassify a normal orphan branch as corrupt |
+| F3-HEAD-SYMBOLIC-INVALID/unborn-absence-control | Verified unborn symbolic HEAD is omitted, PARTIAL, and not a typed `ErrGitHistory` fault. | Record HEAD, mark COMPLETE, or classify unborn as corrupt Git history |
+| F3-HEAD-SYMBOLIC-INVALID/missing-detached-peel-control | Missing detached object ID is typed `ErrGitHistory`/not COMPLETE via the existing captured-ID peel. Green control. | Ignore peel failure and return COMPLETE |
+| F3-GIT-REQUEST-READONLY/symbolic-ref-readonly | Exact `symbolic-ref --quiet HEAD` and `show-ref --verify --quiet refs/heads/main` are valid. Write/delete `symbolic-ref` forms wrap `ErrInvalidSourceSpec`. | Reject the read-only inspections; allow `symbolic-ref HEAD <ref>` / `-d` / `--delete` |
+| F3-JOURNAL-SYMLINK-CHILD | Real run plus direct-child symlink `latest` is PARTIAL with a reason naming `latest`, never COMPLETE, and `latest` is not traversed. | `continue` with no reason so one real run becomes COMPLETE; traverse the alias; exempt `latest` |
+| F3-OPEN-SOURCE-SYMLINK-PARENT | `openSourceFile` on `alias-run/journal.jsonl` (in-root symlink parent) is refused (`ErrSourceMissing` or `ErrInvalidSourceSpec`). `real-run/journal.jsonl` still opens on the same held root. | `root.Open(parent)` follows the in-root directory symlink and reads the file |
+| F3-GIT-CLOSE-SELF-CANCEL | After a 0-exit child whose inherited stderr is still held, caller Close without Read returns nil, not incomplete-stderr `ErrGitHistory` from `ioCtx` cancel. Descendant released; no sleeper leak. | Classify self-cancel of the stderr drainer as `ErrGitHistory` incomplete stderr |
+| F3-GIT-BUFFERED-EXIT-READ | After `processDone` and the old one-second cleanup deadline, delayed Read returns the exact payload and a nil terminal error. | Timer-close stdout; return short data; return full data with a non-nil read error |
+
+Exact allowlisted inspections are `symbolic-ref --quiet HEAD` and `show-ref --verify --quiet <canonical-ref>`. Directory-component no-follow for actual journal opens is sealed by the static `F3-OPEN-SOURCE-SYMLINK-PARENT` case, not a flaky rename race. Unix tag restoration and regular-file blocking-mode restoration remain **body code-review**. No newest-N/HEAD-first cap test. No remaining-capacity batching test.
+
+Operator seal adjudication before third body: the original missing-symbolic-target
+corruption assertion was contradicted by a local `git checkout --orphan` control.
+The preceding FC-SCAFFOLD ruling preserves PARTIAL and adds valid-ref retention
+and non-corruption assertions. No body code changed; all other red cases and
+green controls remain. The symlink-parent red path now closes an unexpectedly
+returned reader so the deliberate failure does not leak its descriptor.
+
+## Operator fourth-panel seal follow-up
+
+Panel `2026-09-06T04-03-09Z-FC-SOURCES-corrected-panel`:
+
+- `codex-1` is contradicted by the exact source: the duplicate-run branch records
+  the error and falls through to ParseEvents and reader.Close; it does not return.
+- `codex-2` exposed a real fixture cleanup defect: release could be removed by
+  TempDir before the sleeper observed it. Confirmed orphan fixture processes were
+  stopped and recorded in that panel's orphan-fixture-cleanup.json. The fixture
+  now has finite polling loops, exits if its state directory disappears, closes
+  inherited pipes, and acknowledges cleanup before TempDir removal. The behavioral
+  Close assertion is unchanged; the acknowledgement proves fixture cleanup, not
+  that Close kills arbitrary non-child descendants. A pre-Close check prevents
+  the fixture's own time cap from silently making the behavioral assertion green.
+- `claude-2`: the symlink case now also requires nil error, one retained real-run
+  journal, and a naming reason in the report itself. No prior assertion is removed.
+- `claude-4`: processDone is an explicit structural synchronization dependency of
+  the two Git lifecycle seals; a future reader redesign must re-derive those
+  assertions. No public lifecycle hook exists and no broader proof is claimed.
+- `grok-1` is contradicted by local Go 1.26 os/dirent_linux.go, dir_unix.go and
+  file_unix.go: DT_UNKNOWN maps to the unknown sentinel, then newUnixDirent does
+  lstat and fills the actual mode before a DirEntry is returned. Type()==0 means
+  a regular file here; this production reader is os.Root.FS, not an injected FS.
+- `grok-2` is valid: x/sys/windows.NTStatus has Errno() but no Is/Unwrap mapping.
+  F3-JOURNAL-MISSING-CHILD freezes the existing cross-platform behavior: a pending
+  directory without journal.jsonl is ignored while its real sibling survives.
+  It is a green Linux control; Windows failure is established by code inspection,
+  not a claimed Windows runtime test. The body must translate NTStatus to the
+  standard OS errno identity so errors.Is(fs.ErrNotExist) works. No new public seam.
+
+Other nonblocking source findings remain for explicit body/adjudication
+assessment; these test changes do not authorize a silent contract change.

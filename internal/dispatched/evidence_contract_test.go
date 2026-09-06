@@ -14,6 +14,7 @@ import (
 
 // TestFCEvidenceContract is the reserved FC-1 group.
 func TestFCEvidenceContract(t *testing.T) {
+	t.Run("F3-MISSING-REVISION-TIME-JOIN", testF3MissingRevisionTimeJoin)
 	t.Run("F1-ID-DISTINCT-RUNS", testF1IDDistinctRuns)
 	t.Run("F1-ID-SAME-RUN-REVISIONS", testF1IDSameRunRevisions)
 	t.Run("F1-ID-NEAREST-NOT-MATCHED", testF1IDNearestNotMatched)
@@ -1054,5 +1055,31 @@ func testF4CellEmptyN0(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("empty required cell omitted: %+v", got.Cells)
+	}
+}
+
+func testF3MissingRevisionTimeJoin(t *testing.T) {
+	ref := ReadingRef{SourceID: "live", Repository: "repo", Path: "features/study/tasks.yaml", Revision: "live"}
+	got, err := parseReadings([]byte(testdataFile(t, "yaml", "offset-equivalent.yaml")), ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Kind != DocumentTaskRow || !got[0].Ref.RecordedAt.IsZero() || got[0].Err != nil || got[0].Excluded != "" {
+		t.Fatalf("zero-time parser envelope = %+v", got)
+	}
+	start := mustTime(t, "2026-01-01T00:00:00Z")
+	attempt := journalAttempt("run-offset", "F1-OFFSET", start, 10*time.Minute, "stamp", OutcomeDone)
+	set := attemptSetOf("run-offset", attempt)
+	joined, err := joinContract(t, []AttemptSet{set}, got, defaultSelection(), identityUniverse(set))
+	if errors.Is(err, ErrNotImplemented) {
+		t.Fatal(err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	requireDisposition(t, joined, DispositionMalformed, 1)
+	requireDisposition(t, joined, DispositionAfterCutoff, 0)
+	if joined.Recovered != 0 || len(joined.Observations) != 0 || len(joined.Examined) != 1 || !joined.Examined[0].Reading.RecordedAt.IsZero() {
+		t.Fatalf("zero RecordedAt was sampled or lost from malformed audit: %+v", joined)
 	}
 }

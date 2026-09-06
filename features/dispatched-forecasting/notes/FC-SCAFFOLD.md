@@ -568,3 +568,75 @@ advertised. Callers control how many explicit sources they request.
 SummarizeWall is the phase checker: the exhaustive classified values are development,
 panel_review and verifier. Unclassified is a report key only; all other interval
 values wrap ErrInvalidPhase. Equivalent enum helpers are optional body details.
+
+## Operator F3 clarification after source follow-up review
+
+All-ref history retains Git --all semantics: every captured canonical refs/...
+tip AND the captured HEAD commit, including detached HEAD. Record HEAD explicitly
+in ResolvedRefs when it resolves; it is the one allowed pseudoref name in an
+implicit-ref snapshot. Other implicit names must follow full Git refs/... syntax.
+Explicit requested expressions retain their existing separate validation. An
+unborn/no-resolved-commit history is PARTIAL with a reason; ValidateComplete
+refuses it. Capture IDs once and peel captured object IDs, never reread mutable
+names as fallback. No COMPLETE claim may silently omit detached-HEAD evidence.
+
+The commit cap must stop traversal work, not only truncate emitted lines after
+an eager topological walk. Uncapped complete history still includes every
+reachable parent. Bound traversal argv independently of ref count (e.g. bounded
+snapshot-tip batches); no arbitrary total-process-count performance threshold
+is introduced. Preserve source completeness, deterministic retained evidence and
+unique commit counting under the cap.
+
+A forcibly closed/truncated Git stream is an error, never a synthesized clean EOF.
+Cleanup must not discard buffered successful output just because its consumer
+waited more than one second. Cancellation and inherited-pipe cleanup remain bounded.
+Final-component symlinks require atomic refusal relative to the confined parent
+descriptor; a pre-open Lstat alone is not proof. Platform-specific private file
+open helpers are permitted to preserve portable package builds; frozen public
+seams and test ownership do not change. Their implementations belong to FC-SOURCES.
+
+## Operator F3 ruling: incomplete discovery and capped subsets
+
+A direct-child symbolic link in a requested journal-runs root is not traversed
+and is not silently discarded: report a source reason naming the entry and
+PARTIAL state. This conservative rule also covers convenience aliases; no
+implicit `latest` exception is promised. Ordinary non-directory, non-symlink
+entries remain non-candidates. Directory components used for actual journal
+opens must also be opened atomically no-follow relative to held confined
+directory handles, so a discovered run directory cannot turn into an alias.
+
+Only a verified unborn symbolic HEAD may be absent. A malformed symbolic target
+or corrupt existing target remains ErrGitHistory/PARTIAL; missing detached
+objects already fail the captured-ID peel and must keep doing so. Allow the
+exact read-only metadata form `symbolic-ref --quiet HEAD` (and no write/delete
+forms), plus `show-ref --verify --quiet <canonical-ref>` to distinguish absent
+from corrupt symbolic targets. These are read-only inspections under the same
+Git environment, process and byte controls. Public signatures do not change.
+
+When MaxCommits binds, retained commits are a deterministic traversal-order
+subset and the manifest is PARTIAL with a bound reason. There is no promise
+of a global newest-N ranking or of retaining HEAD within a capped subset. A
+COMPLETE result must still include the full captured tip set, including HEAD.
+The already-authorized bounded tip batches preserve these semantics; do not
+change the contract to satisfy a reviewer assumption about newest-N selection.
+Repeated metadata reads consume the actual total-byte budget and may cause
+PARTIAL; no optimal metadata-cost claim is made.
+
+Caller-initiated Close must not turn its own internal cancellation into a fake
+Git stderr fault. Genuine child failure, parent cancellation and bounds remain
+typed errors. Unix support should use the unix build set where the same safe
+primitives exist. Nonblocking type-probe opens may prevent FIFO-open hangs,
+but accepted regular evidence files must have ordinary blocking read semantics.
+
+### Operator clarification: unborn HEAD with existing branches
+
+A canonical absent symbolic HEAD target is a valid unborn branch even when
+other refs contain commits: ordinary `git checkout --orphan new-branch` creates
+this state. It must not become ErrGitHistory solely because other refs exist.
+Keep the earlier conservative unborn-history PARTIAL policy with an explicit
+unborn-HEAD reason, while retaining the valid other refs and their readings.
+Invalid ref syntax or an existing corrupt target still is ErrGitHistory.
+The draft missing-symbolic-target seal incorrectly called the legitimate
+orphan state corrupt; amend that exact assertion before the body changes.
+Local Git counterexample is recorded in the third operator ruling audit as
+`unborn-with-other-refs.json`; no holdout or live service was used.

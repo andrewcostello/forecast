@@ -234,3 +234,151 @@ func (o Observation) Validate() error {
 	}
 	return nil
 }
+
+// Amended F1-F4 carriers. Decision bodies live in journal.go, sources.go and
+// evidence.go; the legacy Observation and Table remain unchanged.
+
+// AttemptID is the identity of one attempt at one task: the dispatcher run,
+// the task key and the task_started instant, normalised to UTC.
+//
+// Different runs are different attempts even when key and instant coincide.
+// Readings that share the whole triple are readings of ONE attempt, never
+// additional samples. Two journal task_started events with an identical
+// triple are ambiguous (ErrAmbiguousAttempt), never resolved by proximity.
+// This supersedes the baseline identity (Key, StartedAt) in referenceclass.go.
+type AttemptID struct {
+	RunID     string    `json:"run_id"`
+	Key       string    `json:"key"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+// NewAttemptID builds an AttemptID with startedAt normalised to UTC, so two
+// offsets of one instant are one identity.
+func NewAttemptID(runID, key string, startedAt time.Time) AttemptID {
+	return AttemptID{RunID: runID, Key: key, StartedAt: startedAt.Round(0).UTC()}
+}
+
+// Measured is a quantity that may be unknown. Known false means nobody
+// measured it: it is not zero, must not enter a mean, and reading Value
+// without checking Known is a defect. A measured zero has Known true.
+//
+// Money and tokens are separate Measured values from wall time; nothing
+// converts between them.
+type Measured[T any] struct {
+	Value T    `json:"value"`
+	Known bool `json:"known"`
+}
+
+// Known returns a known measurement.
+func Known[T any](value T) Measured[T] { return Measured[T]{Value: value, Known: true} }
+
+// Unknown returns an unknown measurement.
+func Unknown[T any]() Measured[T] { return Measured[T]{} }
+
+// Get returns the value and whether it is known.
+func (m Measured[T]) Get() (T, bool) { return m.Value, m.Known }
+
+// Must returns the value or wraps ErrUnknownMeasurement; name says what the
+// measurement was for the error message.
+func (m Measured[T]) Must(name string) (T, error) {
+	if !m.Known {
+		var zero T
+		return zero, fmt.Errorf("%w: %s", ErrUnknownMeasurement, name)
+	}
+	return m.Value, nil
+}
+
+// Phase classifies a wall-clock interval inside an attempt. The four values
+// are distinct concepts and never pooled: development is implementer or
+// corrective work; panel review is panel wall time (one interval per review,
+// never the sum of simultaneous reviewer seats); verifier is verification
+// wall time; unclassified is the residual an additive breakdown could not
+// attribute. Unclassified is never reported as development.
+//
+// PhaseUnclassified is a report key only. SummarizeWall rejects it on an
+// interval and computes its duration as the residual of elapsed.
+type Phase string
+
+const (
+	PhaseDevelopment  Phase = "development"
+	PhasePanelReview  Phase = "panel_review"
+	PhaseVerifier     Phase = "verifier"
+	PhaseUnclassified Phase = "unclassified"
+)
+
+// Interval is one classified half-open wall-clock span [Start, End) inside
+// an attempt. Inferred is true when the boundaries were not both recorded
+// events (an explicit boundary or duration in the record makes it false);
+// The frozen 0.1.0 reducer emits only Inferred=false spans; missing boundaries
+// are withheld. Inferred=true remains valid for explicitly supplied wall inputs
+// whose attribution is justified by their caller, and is preserved by SummarizeWall.
+// Evidence names the events that bound it.
+type Interval struct {
+	Phase    Phase      `json:"phase"`
+	Start    time.Time  `json:"start"`
+	End      time.Time  `json:"end"`
+	Inferred bool       `json:"inferred"`
+	Evidence []EventRef `json:"evidence"`
+}
+
+// WallBreakdown holds classified intervals in ascending (Start, End, Phase,
+// Inferred false-first, lexicographic Evidence-list) order, with event citations in ascending journal/run/source/path/producer,
+// HasSeq (false first), sequence, line, type, UTC-instant, Hash, PrevHash order. All timestamps are normalized to UTC
+// without monotonic components. Unclassified time is residual only; it is not
+// an interval. Missing phase attribution means Complete=false.
+type WallBreakdown struct {
+	StartedAt time.Time     `json:"started_at"`
+	Elapsed   time.Duration `json:"elapsed_ns"`
+	Intervals []Interval    `json:"intervals"`
+	Complete  bool          `json:"complete"`
+}
+
+// WallSummary partitions elapsed into classified phases and the residual.
+type WallSummary struct {
+	Complete     bool          `json:"complete"`
+	Development  time.Duration `json:"development_ns"`
+	PanelReview  time.Duration `json:"panel_review_ns"`
+	Verifier     time.Duration `json:"verifier_ns"`
+	Unclassified time.Duration `json:"unclassified_ns"`
+}
+
+// EvidenceSource ranks recorded evidence: journal > YAML > none. A source
+// label always travels with its value; choosing evidence separately is invalid.
+type EvidenceSource string
+
+const (
+	EvidenceNone    EvidenceSource = ""
+	EvidenceYAML    EvidenceSource = "yaml"
+	EvidenceJournal EvidenceSource = "journal"
+)
+
+// FieldEvidence is the complete citation for one value. Unused members are
+// zero; ties compare all members after UTC normalization. The full citation
+// lists for sums live on Attempt. "none" is represented by the zero source.
+type FieldEvidence struct {
+	Source  EvidenceSource `json:"source"`
+	Event   EventRef       `json:"event"`
+	Reading ReadingRef     `json:"reading"`
+}
+
+// ObservationEvidence accompanies each field of the reconciled Attempt.
+// Any merge selects a value and its citation atomically. Terminal outcome,
+// terminal instant, elapsed and their citations form one selection unit.
+// Equal-authority incompatible values are conflicts, never independent maxima.
+// Each aggregate FieldEvidence names the least canonical counted event. Its
+// corresponding Attempt event list includes ALL counted refs, including that one.
+type ObservationEvidence struct {
+	Role          FieldEvidence `json:"role"`
+	Model         FieldEvidence `json:"model"`
+	Start         FieldEvidence `json:"start"`
+	Terminal      FieldEvidence `json:"terminal"`
+	Elapsed       FieldEvidence `json:"elapsed"`
+	Wall          FieldEvidence `json:"wall"`
+	Corrections   FieldEvidence `json:"corrections"`
+	Cascades      FieldEvidence `json:"cascades"`
+	Reviews       FieldEvidence `json:"reviews"`
+	Verifications FieldEvidence `json:"verifications"`
+	InputTokens   FieldEvidence `json:"input_tokens"`
+	OutputTokens  FieldEvidence `json:"output_tokens"`
+	Cost          FieldEvidence `json:"cost"`
+}

@@ -1,0 +1,2 @@
+{"seq":1,"hash":"j1","prev_hash":"","event_type":"task_started","task_key":"F1-NOPROD","timestamp":"2026-01-01T00:00:00Z","payload":{"model":"planned"}}
+{"seq":2,"hash":"j2","prev_hash":"j1","event_type":"task_done","task_key":"F1-NOPROD","timestamp":"2026-01-01T00:01:00Z","payload":{}}

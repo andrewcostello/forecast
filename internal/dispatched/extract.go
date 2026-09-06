@@ -1,300 +1,16 @@
 package dispatched
 
+// extract.go: tasks-YAML document decoding and the snapshot record. Journal
+// parsing lives in journal.go, filesystem and Git reads in sources.go, and
+// evidence joining in evidence.go (FC-SCAFFOLD F1–F4 amendment).
+
 import (
-	"bufio"
-	"bytes"
-	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"io/fs"
-	"os"
-	"os/exec"
-	"path/filepath"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
 )
-
-// defaultMaxHistoryCommits bounds the history walk. The walk is linear in
-// commits and, after blob de-duplication, in distinct file contents; the cap
-// exists so an unexpectedly large repository fails loudly and countably
-// rather than running until it is killed.
-const defaultMaxHistoryCommits = 5000
-
-type runTask struct {
-	RunID string
-	Key   string
-}
-
-// JournalFacts is the Go port of model-matrix/report.py::journal_facts, for a
-// single attempt at one task.
-//
-// Model is taken ONLY from payloads whose spawn_kind is implementer or
-// panel-iterate, exactly as the reference does. The model on task_started is
-// the model the dispatcher PLANNED, recorded before any cascade; using it
-// would attribute a cascaded row to a model that never ran. An attempt with
-// no such payload has no Model and cannot be placed in a cell.
-type JournalFacts struct {
-	// StartedAt is the timestamp of the task_started that opened this
-	// attempt; zero for events seen before any task_started.
-	StartedAt          time.Time
-	Model              string
-	Started            int
-	StartsWithoutModel int
-	Rounds             int
-	InputTokens        int64
-	OutputTokens       int64
-	// CostUSD is summed from spawn payloads. CostKnown distinguishes "the
-	// spawns cost nothing that was recorded" from "no spawn recorded a cost";
-	// the reference implementation reads cost from the tasks YAML instead and
-	// so has no equivalent.
-	CostUSD         float64
-	CostKnown       bool
-	DevElapsed      time.Duration
-	ReviewElapsed   time.Duration
-	TerminalOutcome Outcome
-	TerminalAt      time.Time
-	Fallbacks       int
-
-	reviewOpen time.Time
-	devOpen    time.Time
-}
-
-// JournalRow holds every attempt at one (run, task key). A run that restarts
-// a task emits a second task_started; folding both into one set of facts
-// double-counts its tokens and lets two YAML snapshots with different
-// started_at values each claim the same terminal event.
-type JournalRow struct {
-	Attempts []*JournalFacts
-}
-
-// Starts is the number of task_started events seen for the row.
-func (r *JournalRow) Starts() int {
-	n := 0
-	for _, f := range r.Attempts {
-		n += f.Started
-	}
-	return n
-}
-
-// Restarts is the number of task_started events beyond the first.
-func (r *JournalRow) Restarts() int { return max(r.Starts()-1, 0) }
-
-// StartsWithoutModel is the number of task_started events carrying no model.
-func (r *JournalRow) StartsWithoutModel() int {
-	n := 0
-	for _, f := range r.Attempts {
-		n += f.StartsWithoutModel
-	}
-	return n
-}
-
-// AttemptsWithoutStampedModel counts started attempts that no implementing
-// spawn stamped a model on. Such an attempt is unattributable by rule.
-func (r *JournalRow) AttemptsWithoutStampedModel() int {
-	n := 0
-	for _, f := range r.Attempts {
-		if f.Started > 0 && f.Model == "" {
-			n++
-		}
-	}
-	return n
-}
-
-// Match binds a snapshot only to an attempt with the same start instant.
-// Multiple starts at that instant are ambiguous and cannot supply evidence.
-func (r *JournalRow) Match(startedAt time.Time) *JournalFacts {
-	var match *JournalFacts
-	for _, f := range r.Attempts {
-		if !f.StartedAt.IsZero() && f.StartedAt.Equal(startedAt) {
-			if match != nil {
-				return nil
-			}
-			match = f
-		}
-	}
-	return match
-}
-
-// observe routes one event to the attempt it belongs to. A task_started opens
-// a new attempt; events seen before any task_started are kept in a leading
-// attempt with no start instant rather than discarded.
-func (r *JournalRow) observe(eventType string, at time.Time, p journalPayload) {
-	if eventType == "task_started" {
-		r.Attempts = append(r.Attempts, &JournalFacts{StartedAt: at})
-	} else if len(r.Attempts) == 0 {
-		r.Attempts = append(r.Attempts, &JournalFacts{})
-	}
-	r.Attempts[len(r.Attempts)-1].observe(eventType, at, p)
-}
-
-type journalEvent struct {
-	EventType string          `json:"event_type"`
-	TaskKey   string          `json:"task_key"`
-	Timestamp string          `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload"`
-}
-
-type journalPayload struct {
-	Model        string   `json:"model"`
-	SpawnKind    string   `json:"spawn_kind"`
-	InputTokens  int64    `json:"input_tokens"`
-	OutputTokens int64    `json:"output_tokens"`
-	CostUSD      *float64 `json:"cost_usd"`
-}
-
-// implementing reports whether a payload describes the spawn that actually
-// did the work, which is the only payload the reference trusts for a model.
-func (p journalPayload) implementing() bool {
-	return p.SpawnKind == "implementer" || p.SpawnKind == "panel-iterate"
-}
-
-// journalSources is what readJournals recovered, with the shortfalls it hit.
-// Unreadable input is counted rather than dropped: recovered-versus-started
-// is only an honest denominator if the lines nobody could read are named.
-type journalSources struct {
-	Rows          map[runTask]*JournalRow
-	LinesUnparsed int
-	BadTimestamps int
-}
-
-// readJournals reads direct child run directories of runsDir. A line that is
-// not JSON, and an event whose timestamp is not RFC 3339, are counted and
-// skipped; a journal that cannot be opened or scanned is an error.
-func readJournals(ctx context.Context, runsDir string) (*journalSources, error) {
-	info, err := os.Stat(runsDir)
-	if err != nil {
-		return nil, fmt.Errorf("%w: stat %s: %v", ErrJournalSource, runsDir, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("%w: %s is not a directory", ErrJournalSource, runsDir)
-	}
-	pattern := filepath.Join(runsDir, "*", "journal.jsonl")
-	paths, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("%w: glob %s: %v", ErrJournalSource, pattern, err)
-	}
-	sort.Strings(paths)
-	sources := &journalSources{Rows: make(map[runTask]*JournalRow)}
-	for _, path := range paths {
-		if err := ctx.Err(); err != nil {
-			return nil, fmt.Errorf("%w: reading %s: %v", ErrJournalSource, path, err)
-		}
-		if err := readJournal(ctx, path, filepath.Base(filepath.Dir(path)), sources); err != nil {
-			return nil, err
-		}
-	}
-	return sources, nil
-}
-
-func readJournal(ctx context.Context, path, runID string, out *journalSources) error {
-	f, err := os.Open(path)
-	if err != nil {
-		return fmt.Errorf("%w: open %s: %v", ErrJournalSource, path, err)
-	}
-	defer f.Close()
-
-	return scanJournal(ctx, f, path, runID, out)
-}
-
-func scanJournal(ctx context.Context, reader io.Reader, path, runID string, out *journalSources) error {
-	scanner := bufio.NewScanner(reader)
-	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
-	for scanner.Scan() {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("%w: scan %s: %w", ErrJournalSource, path, err)
-		}
-		if len(bytes.TrimSpace(scanner.Bytes())) == 0 {
-			continue
-		}
-		var event journalEvent
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
-			out.LinesUnparsed++
-			continue
-		}
-		if event.TaskKey == "" {
-			continue
-		}
-		at, err := time.Parse(time.RFC3339Nano, event.Timestamp)
-		if err != nil {
-			out.BadTimestamps++
-			continue
-		}
-		var payload journalPayload
-		if len(event.Payload) != 0 && string(event.Payload) != "null" {
-			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				out.LinesUnparsed++
-				continue
-			}
-		}
-
-		key := runTask{RunID: runID, Key: event.TaskKey}
-		row := out.Rows[key]
-		if row == nil {
-			row = &JournalRow{}
-			out.Rows[key] = row
-		}
-		row.observe(event.EventType, at, payload)
-	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("%w: scan %s: %v", ErrJournalSource, path, err)
-	}
-	return nil
-}
-
-// observe deliberately mirrors journal_facts' state machine, event for event.
-func (f *JournalFacts) observe(eventType string, at time.Time, p journalPayload) {
-	switch eventType {
-	case "panel_started":
-		f.reviewOpen = at
-	case "panel_verdict":
-		if !f.reviewOpen.IsZero() {
-			f.ReviewElapsed += at.Sub(f.reviewOpen)
-			f.reviewOpen = time.Time{}
-		}
-	}
-
-	if eventType == "task_started" || eventType == "panel_iterate" {
-		f.devOpen = at
-	} else if eventType == "task_spawn_finished" && p.implementing() && !f.devOpen.IsZero() {
-		f.DevElapsed += at.Sub(f.devOpen)
-		f.devOpen = time.Time{}
-	}
-
-	switch eventType {
-	case "task_started":
-		f.Started++
-		// Counted, never used to attribute: this model is the plan, not the
-		// stamp. See the JournalFacts godoc.
-		if p.Model == "" {
-			f.StartsWithoutModel++
-		}
-	case "panel_iterate":
-		f.Rounds++
-	case "agent_fallback":
-		f.Fallbacks++
-	case "task_done":
-		f.TerminalOutcome, f.TerminalAt = OutcomeDone, at
-	case "task_blocked":
-		f.TerminalOutcome, f.TerminalAt = OutcomeBlocked, at
-	}
-
-	if p.implementing() {
-		if p.Model != "" {
-			f.Model = p.Model
-		}
-		f.InputTokens += p.InputTokens
-		f.OutputTokens += p.OutputTokens
-		if p.CostUSD != nil {
-			f.CostUSD += *p.CostUSD
-			f.CostKnown = true
-		}
-	}
-}
 
 type yamlTask struct {
 	Key             string `yaml:"key"`
@@ -323,6 +39,76 @@ type taskSnapshot struct {
 	Revision        Revision
 	Repository      string
 	Path            string
+}
+
+// RowFields records which join-key fields were PRESENT (non-empty) in the
+// raw YAML row, independently of whether they parsed. It lets the join tell
+// a missing started_at (DispositionMissingJoinKeys) from a malformed one
+// (DispositionMalformed), which collapse to the same zero time.Time on a
+// parsed snapshot.
+type RowFields struct {
+	Key       bool
+	RunID     bool
+	StartedAt bool
+}
+
+// Complete reports whether every join key was present.
+func (f RowFields) Complete() bool { return f.Key && f.RunID && f.StartedAt }
+
+// DocumentKind distinguishes a task row, unrelated YAML, and malformed document.
+type DocumentKind string
+
+const (
+	DocumentTaskRow   DocumentKind = "task_row"
+	DocumentNotTasks  DocumentKind = "not_tasks"
+	DocumentMalformed DocumentKind = "malformed_document"
+)
+
+// ReadingSnapshot exposes decoded predictive fields to callers. These are usable
+// only when Reading.Err is nil; Reading.Identity remains independently usable.
+// Reading is an in-memory pipeline carrier, not the portable artifact schema.
+type ReadingSnapshot struct {
+	Role           Role
+	AuthoredModel  string
+	Status         string
+	IterationCount int
+}
+
+// ReadingIdentity is decoded from individual YAML scalar nodes before the rest
+// of the row. Known means successfully decoded and valid (nonblank/unpadded ID,
+// valid timestamp); raw presence remains on Reading.Present. An unrelated field
+// error cannot erase these keys. Invalid run identity cannot prove a holdout.
+type ReadingIdentity struct {
+	RunID     Measured[string]    `json:"run_id"`
+	Key       Measured[string]    `json:"key"`
+	StartedAt Measured[time.Time] `json:"started_at"`
+}
+
+// Reading is the envelope for one discovered tasks-YAML row, whether or not
+// it parsed (F3: every examined snapshot receives a Disposition). Ref names
+// the reading; Ref.Row is the 1-based position in the document's tasks sequence,
+// 0 when the document itself did not decode; Present is raw-field presence;
+// Snapshot is usable only when Err is nil. Err is the parse failure for a
+// row or document that could not be decoded; it is never a read failure,
+// which is counted on the source instead.
+//
+// JoinEvidence classifies DocumentNotTasks before field/parse errors. A
+// task row with Err set is malformed; absent join keys are counted separately.
+// Reading retains identity and selection evidence even when predictive decoding
+// fails. Excluded envelopes retain Identity/Ref/Err/CompletedAt strictly for
+// selection audit; Snapshot is cleared. CompletedAt is never sampled from an
+// excluded row, but permits validating a completion-only cutoff exclusion.
+type Reading struct {
+	Identity    ReadingIdentity
+	CompletedAt Measured[time.Time]
+	Kind        DocumentKind
+	// Excluded is empty, DispositionHeldOut, or DispositionAfterCutoff. Such an
+	// envelope keeps identity/citation only; JoinEvidence audits but never samples it.
+	Excluded Disposition
+	Ref      ReadingRef
+	Present  RowFields
+	Snapshot ReadingSnapshot
+	Err      error
 }
 
 // yamlSources is what one YAML source yielded, plus what it could not yield.
@@ -385,223 +171,6 @@ func parseSnapshots(data []byte, revision Revision) yamlSources {
 
 func isTaskYAML(name string) bool {
 	return strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".yml")
-}
-
-func readLiveSnapshots(ctx context.Context, featuresRepo string) (yamlSources, error) {
-	featuresDir := filepath.Join(featuresRepo, "features")
-	var paths []string
-	err := filepath.WalkDir(featuresDir, func(path string, entry fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		if !entry.IsDir() && isTaskYAML(entry.Name()) {
-			paths = append(paths, path)
-		}
-		return nil
-	})
-	if err != nil {
-		return yamlSources{}, fmt.Errorf("%w: walk %s: %v", ErrYAMLSource, featuresDir, err)
-	}
-	sort.Strings(paths)
-	var out yamlSources
-	for _, path := range paths {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return yamlSources{}, fmt.Errorf("%w: read %s: %v", ErrYAMLSource, path, err)
-		}
-		source := parseSnapshots(data, Revision{Source: SourceLive})
-		relative, _ := filepath.Rel(featuresRepo, path)
-		for i := range source.Snapshots {
-			source.Snapshots[i].Repository = featuresRepo
-			source.Snapshots[i].Path = filepath.ToSlash(relative)
-		}
-		out.absorb(source)
-	}
-	return out, nil
-}
-
-// gitSources adds history-walk shape to what the blobs yielded.
-type gitSources struct {
-	yamlSources
-	Commits   int
-	Blobs     int
-	Truncated bool
-}
-
-// blobRef is one distinct file content, attributed to the first commit in
-// walk order that holds it.
-type blobRef struct {
-	oid    string
-	path   string
-	commit string
-}
-
-// readGitSnapshots reads changed YAML blobs in a bounded commit walk. Git
-// enumerates at most maxCommits+1 commits; the extra commit detects truncation.
-// One diff-tree process lists changes, and one cat-file process reads blobs.
-func readGitSnapshots(ctx context.Context, featuresRepo string, maxCommits int) (gitSources, error) {
-	if maxCommits <= 0 {
-		maxCommits = defaultMaxHistoryCommits
-	}
-	// Avoid overflow for the lookahead used to detect truncation.
-	limit := maxCommits
-	if limit < int(^uint(0)>>1) {
-		limit++
-	}
-	commits, err := gitLines(ctx, featuresRepo, "rev-list", "--max-count="+strconv.Itoa(limit), "--all", "--", "features")
-	if err != nil {
-		return gitSources{}, err
-	}
-	out := gitSources{}
-	if len(commits) > maxCommits {
-		commits, out.Truncated = commits[:maxCommits], true
-	}
-	out.Commits = len(commits)
-	if len(commits) == 0 {
-		return out, nil
-	}
-	cmd := exec.CommandContext(ctx, "git", "-C", featuresRepo, "diff-tree", "--stdin", "--root", "-r", "-m", "--raw", "-z", "--no-abbrev", "--no-renames", "--", "features")
-	cmd.Stdin = strings.NewReader(strings.Join(commits, "\n") + "\n")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return gitSources{}, fmt.Errorf("%w: git diff-tree in %s: %v: %s", ErrGitHistory, featuresRepo, err, strings.TrimSpace(stderr.String()))
-	}
-	records := strings.Split(stdout.String(), "\x00")
-	seen := make(map[string]blobRef)
-	var order []string
-	commit := ""
-	for i := 0; i < len(records); i++ {
-		record := records[i]
-		if record == "" {
-			continue
-		}
-		if !strings.HasPrefix(record, ":") {
-			commit = record
-			continue
-		}
-		fields := strings.Fields(record)
-		if len(fields) != 5 || i+1 >= len(records) || commit == "" {
-			return gitSources{}, fmt.Errorf("%w: malformed git diff-tree record %q", ErrGitHistory, record)
-		}
-		i++
-		path, oid := records[i], fields[3]
-		if fields[4] == "D" || !strings.HasPrefix(fields[1], "100") || !isTaskYAML(path) {
-			continue
-		}
-		if _, ok := seen[oid]; ok {
-			continue
-		}
-		seen[oid] = blobRef{oid: oid, path: path, commit: commit}
-		order = append(order, oid)
-	}
-	out.Blobs = len(order)
-	if len(order) == 0 {
-		return out, nil
-	}
-	blobs, err := gitCatFileBatch(ctx, featuresRepo, order)
-	if err != nil {
-		return gitSources{}, err
-	}
-	for _, oid := range order {
-		data, ok := blobs[oid]
-		if !ok {
-			return gitSources{}, fmt.Errorf("%w: git cat-file did not return blob %s (%s)", ErrGitHistory, oid, seen[oid].path)
-		}
-		source := parseSnapshots(data, Revision{Source: SourceGit, Commit: seen[oid].commit})
-		for i := range source.Snapshots {
-			source.Snapshots[i].Repository = featuresRepo
-			source.Snapshots[i].Path = seen[oid].path
-		}
-		out.absorb(source)
-	}
-	return out, nil
-}
-
-// gitCatFileBatch reads every requested blob through one child process.
-func gitCatFileBatch(ctx context.Context, repo string, oids []string) (map[string][]byte, error) {
-	cmd := exec.CommandContext(ctx, "git", "-C", repo, "cat-file", "--batch")
-	cmd.Stdin = strings.NewReader(strings.Join(oids, "\n") + "\n")
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w: git cat-file --batch in %s: %v: %s", ErrGitHistory, repo, err, strings.TrimSpace(stderr.String()))
-	}
-	out := make(map[string][]byte, len(oids))
-	rest := stdout.Bytes()
-	for len(rest) > 0 {
-		newline := bytes.IndexByte(rest, '\n')
-		if newline < 0 {
-			return nil, fmt.Errorf("%w: git cat-file --batch produced a truncated header", ErrGitHistory)
-		}
-		header := string(rest[:newline])
-		rest = rest[newline+1:]
-		fields := strings.Fields(header)
-		if len(fields) != 3 {
-			return nil, fmt.Errorf("%w: git cat-file --batch header %q", ErrGitHistory, header)
-		}
-		size, err := strconv.Atoi(fields[2])
-		if err != nil || size < 0 || size > len(rest) {
-			return nil, fmt.Errorf("%w: git cat-file --batch header %q", ErrGitHistory, header)
-		}
-		out[fields[0]] = append([]byte(nil), rest[:size]...)
-		rest = rest[size:]
-		if len(rest) > 0 && rest[0] == '\n' {
-			rest = rest[1:]
-		}
-	}
-	return out, nil
-}
-
-// gitLines runs git and splits its output. Records are NUL-separated when -z
-// is passed and newline-separated otherwise. stderr is carried into the error
-// because "exit status 128" alone names neither the repository nor the cause.
-func gitLines(ctx context.Context, repo string, args ...string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("%w: git %s in %s: %v: %s",
-			ErrGitHistory, strings.Join(args, " "), repo, err, strings.TrimSpace(stderr.String()))
-	}
-	separator := "\n"
-	for _, arg := range args {
-		if arg == "-z" {
-			separator = "\x00"
-		}
-	}
-	var lines []string
-	for _, line := range strings.Split(stdout.String(), separator) {
-		if line = strings.Trim(line, "\n"); line != "" {
-			lines = append(lines, line)
-		}
-	}
-	return lines, nil
-}
-
-func readTargetTasks(path string) ([]yamlTask, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("%w: read target %s: %v", ErrYAMLSource, path, err)
-	}
-	doc, err := decodeTaskDocument(data)
-	if err != nil {
-		return nil, fmt.Errorf("%w: parse target %s: %v", ErrYAMLSource, path, err)
-	}
-	seen := make(map[string]bool)
-	for i, task := range doc.Tasks {
-		if strings.TrimSpace(task.Key) == "" || !task.Role.Valid() || strings.TrimSpace(task.Model) == "" {
-			return nil, fmt.Errorf("%w: target %s row %d (%q) requires a key, valid role and model", ErrYAMLSource, path, i+1, task.Key)
-		}
-		if seen[task.Key] {
-			return nil, fmt.Errorf("%w: target %s repeats key %q", ErrYAMLSource, path, task.Key)
-		}
-		seen[task.Key] = true
-	}
-	return doc.Tasks, nil
 }
 
 func decodeTaskDocument(data []byte) (yamlDocument, error) {

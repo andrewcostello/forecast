@@ -2,9 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/andrewcostello/forecast/internal/dispatched"
@@ -31,6 +30,7 @@ func newDispatchedReferenceBuildCmd() *cobra.Command {
 			runsDir, _ := cmd.Flags().GetString("runs-dir")
 			out, _ := cmd.Flags().GetString("out")
 			featuresRepo, _ := cmd.Flags().GetStringSlice("features-repo")
+			taskRoots, _ := cmd.Flags().GetStringSlice("task-root")
 			tasks, _ := cmd.Flags().GetString("tasks")
 			minObservations, _ := cmd.Flags().GetInt("min-observations")
 			maxCommits, _ := cmd.Flags().GetInt("max-history-commits")
@@ -38,6 +38,10 @@ func newDispatchedReferenceBuildCmd() *cobra.Command {
 			if timeout <= 0 {
 				return fmt.Errorf("--timeout must be positive")
 			}
+			// Cobra otherwise prints command syntax for source/coverage data
+			// failures, obscuring the diagnostic report the command just wrote.
+			// Flag-shape and timeout errors above retain usage.
+			cmd.SilenceUsage = true
 			ctx, cancel := context.WithTimeout(cmd.Context(), timeout)
 			defer cancel()
 			failOnEmpty, _ := cmd.Flags().GetBool("fail-on-empty-required")
@@ -48,25 +52,29 @@ func newDispatchedReferenceBuildCmd() *cobra.Command {
 			if len(featuresRepo) == 0 {
 				return fmt.Errorf("--features-repo is required (no home directory to default from)")
 			}
+			cutoff := time.Now().Round(0).UTC()
+			sources := make([]dispatched.SourceSpec, 0, 1+2*len(featuresRepo))
+			sources = append(sources, dispatched.SourceSpec{ID: "journals", Kind: dispatched.SourceKindJournals, Repository: runsDir})
+			for i, repo := range featuresRepo {
+				prefix := fmt.Sprintf("features-%03d", i+1)
+				sources = append(sources,
+					dispatched.SourceSpec{ID: prefix + "-live", Kind: dispatched.SourceKindLiveYAML, Repository: repo, Roots: append([]string{}, taskRoots...)},
+					dispatched.SourceSpec{ID: prefix + "-history", Kind: dispatched.SourceKindGitHistory, Repository: repo, Roots: append([]string{}, taskRoots...)},
+				)
+			}
 			return buildDispatchedReference(ctx, cmd, dispatched.BuildOptions{
-				RunsDir: runsDir, FeaturesRepos: featuresRepo, TargetTasks: tasks,
-				MinObservations: minObservations, MaxHistoryCommits: maxCommits,
+				Sources: sources, Selection: dispatched.Selection{Cutoff: cutoff},
+				Bounds: dispatched.ReadBounds{MaxCommits: maxCommits}, TargetTasks: tasks,
+				MinObservations: minObservations,
 			}, out, failOnEmpty, failOnUncovered)
 		},
-	}
-
-	// An unavailable home directory must not silently become the relative
-	// path "Project/claude-workflow", which would walk whatever features/
-	// tree happens to sit under the working directory.
-	var defaultFeaturesRepo []string
-	if home, err := os.UserHomeDir(); err == nil {
-		defaultFeaturesRepo = []string{filepath.Join(home, "Project", "claude-workflow")}
 	}
 	flags := cmd.Flags()
 	flags.Duration("timeout", 5*time.Minute, "maximum duration of reference extraction")
 	flags.String("runs-dir", "", "directory containing dispatcher run directories")
 	flags.String("out", "", "reference-class JSON output path")
-	flags.StringSlice("features-repo", defaultFeaturesRepo, "git repositories containing live and historical features YAML (repeat for each repository)")
+	flags.StringSlice("features-repo", nil, "explicit git repositories containing live and historical features YAML (repeat for each repository)")
+	flags.StringSlice("task-root", []string{"features"}, "repository-relative task YAML directory selected from each features repository (repeatable)")
 	flags.String("tasks", "", "target tasks YAML whose required cells should be measured")
 	flags.Int("min-observations", dispatched.DefaultMinObservations, "completed observations a required cell needs before it counts as covered")
 	flags.Int("max-history-commits", 0, "cap on commits walked for historical YAML (0 = built-in default)")
@@ -83,20 +91,47 @@ func init() {
 }
 
 func buildDispatchedReference(ctx context.Context, cmd *cobra.Command, opts dispatched.BuildOptions, out string, failOnEmptyRequired, failOnUncovered bool) error {
-	result, err := dispatched.Build(ctx, opts)
-	if err != nil {
-		return fmt.Errorf("build dispatched reference: %w", err)
+	result, buildErr := dispatched.Build(ctx, opts)
+	if result == nil {
+		return fmt.Errorf("build dispatched reference: %w", buildErr)
 	}
 	if err := dispatched.WriteArtifact(out, result.Artifact); err != nil {
 		return fmt.Errorf("build dispatched reference: %w", err)
 	}
 	dispatched.WriteCoverage(cmd.OutOrStdout(), result.Artifact)
 	fmt.Fprintf(cmd.OutOrStdout(), "Reference class written to %s\n", out)
+	if (failOnEmptyRequired || failOnUncovered) && opts.TargetTasks == "" {
+		return errors.Join(
+			fmt.Errorf("%w: coverage gate requires a nonempty target task file", dispatched.ErrEmptyTarget),
+			fmt.Errorf("%w: coverage gate has no required target cells", dispatched.ErrNotEligible),
+			buildErr,
+		)
+	}
+	if (failOnEmptyRequired || failOnUncovered) && result.Artifact.SourceManifest != nil {
+		if err := result.Artifact.SourceManifest.ValidateComplete(); err != nil {
+			gateDetail := ""
+			if failOnEmptyRequired && len(result.Artifact.Coverage.EmptyRequiredCells) > 0 {
+				gateDetail = fmt.Sprintf("; empty required cells: %v", result.Artifact.Coverage.EmptyRequiredCells)
+			}
+			if failOnUncovered && len(result.Artifact.Coverage.UncoveredRequiredCells) > 0 {
+				gateDetail += fmt.Sprintf("; required cells below %d completed observations: %v",
+					result.Artifact.Coverage.MinObservations, result.Artifact.Coverage.UncoveredRequiredCells)
+			}
+			return errors.Join(
+				fmt.Errorf("%w: coverage gate requires complete sources%s", dispatched.ErrNotEligible, gateDetail),
+				fmt.Errorf("%w: %v", dispatched.ErrSourceIncomplete, err),
+				buildErr,
+			)
+		}
+	}
+	if buildErr != nil {
+		return fmt.Errorf("build dispatched reference: %w", buildErr)
+	}
 	if empty := result.Artifact.Coverage.EmptyRequiredCells; failOnEmptyRequired && len(empty) > 0 {
-		return fmt.Errorf("%d required (role, model) cells have no observations: %v", len(empty), empty)
+		return fmt.Errorf("%w: %d required (role, model) cells have no observations: %v", dispatched.ErrNotEligible, len(empty), empty)
 	}
 	if failOnUncovered && len(result.Artifact.Coverage.UncoveredRequiredCells) > 0 {
-		return fmt.Errorf("required cells below %d completed observations: %v", result.Artifact.Coverage.MinObservations, result.Artifact.Coverage.UncoveredRequiredCells)
+		return fmt.Errorf("%w: required cells below %d completed observations: %v", dispatched.ErrNotEligible, result.Artifact.Coverage.MinObservations, result.Artifact.Coverage.UncoveredRequiredCells)
 	}
 	return nil
 }

@@ -131,3 +131,25 @@ The real artifact is prediction-ineligible because of its named conflict and
 thin/empty target cells. It must remain a diagnostic coverage artifact. No
 wallet holdout, network, credentials, external messages, subagents, push, test
 fixture edits, known-red edits, or unowned source edits were used.
+
+## Operator completion evidence after independent fixture repair
+
+The Blocked and uncommitted statements above describe the historical native
+attempt, not the current checkout. The dispatcher saved the implementation as
+`ab165c7bb490baa321641b4961da2ec33bae98f3`. Operator seal commit
+`820dbe12d0c0f3af194d0ef046d9f1530ddd3d55` adds only an explicit synthetic
+dispatcher 0.1.0 producer declaration to the successful CLI fixture, preserving
+every prior task event, measurement and assertion. No implementation changed.
+
+The full build/vet/race gate now passes without exclusions. All four observation
+contract groups pass with IPv4/IPv6 networking denied and credential environment
+removed (214 cases, no failures, skips, panics or races). Removing only the new
+producer header makes both original positive CLI assertions fail with unknown
+producer refusal; the fixture was restored afterward. The independent missing-
+producer refusal cases remain active and unchanged. Exact evidence is at
+`/home/andrew/Project/dispatcher-runs/2026-09-06T04-57-54Z-FC-1-resolution`.
+
+The real coverage artifact and its conflict/insufficient-cell limitations remain
+as recorded above. Source and Journal residual findings still require explicit
+FC-OBS-ADJ dispositions. This resolves the fixture ownership block; runtime Done
+still requires the separate verifier and pinned-head cross-family panel.

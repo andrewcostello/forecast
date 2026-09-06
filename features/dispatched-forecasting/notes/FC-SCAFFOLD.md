@@ -657,3 +657,26 @@ Applies to the independent panel on c35bd34 (2026-09-06T05-02-54Z-FC-1-corrected
 - **Deferred surface work (Grok-3, Claude-9):** CLI cutoff/holdout/allow-empty/ref flags are additive convenience beyond frozen FC-1. Selection already supports reproducible library builds. Track these together for FC-PREDICT-SCAFFOLD/FC-4's predeclared holdout surface; do not change signatures/flags opportunistically here. Current report remains diagnostic and does not claim a completed frozen holdout evaluation.
 
 All finding IDs refer to the recorded first FC-1 body panel above, not older scaffold panels. Bodies must preserve historical deviations and append final dispositions for every ID. Independent seals must demonstrate actual baseline red cases and false-positive green controls before body changes.
+
+
+## Operator F4 cutoff integrity follow-up, 2026-09-06
+
+Parent read-only overlay probes on a4736d75 found two confirmed refusals missing
+after the first corrective body: a recovered ReadingRef.RecordedAt after the
+manifest cutoff, and a YAML terminal after that cutoff, both returned eligible.
+Positive control passed. The 279 normal offline seal cases passed and statement
+coverage was 82.69%; these new boundary probes expose an unsealed gap, not a
+reason to waive the original F1-F4 selection contract. Evidence and overlay at
+`/home/andrew/Project/dispatcher-runs/2026-09-06T05-16-59Z-FC-1-panel-resolution`.
+
+Eligibility's invalid-payload rule applies to cutoff proof carried by recovered
+records: every recovered ReadingRef.RecordedAt and any known CompletedAt on its
+Recovered/DuplicateReading audit envelopes must be at or before cutoff; a
+terminal attempt must end at or before cutoff. Exact-cutoff equality is valid.
+An unfinished attempt's elapsed is measured to cutoff (F2), never an arbitrary
+shorter/longer instant; its unused TerminalAt does not invent terminal evidence.
+Do not reject future times on correctly excluded AfterCutoff diagnostics: those
+are retained proof, not samples. Likewise retain legitimate loss and unknown
+optional measurements. Required failures wrap ErrNotEligible and
+ErrSourceIncomplete. No public signature, source-selection policy or new CLI
+flag is needed. Independent seals precede the separate pinned body correction.

@@ -337,7 +337,8 @@ func validateArtifactEvidence(evidence *ArtifactEvidence, manifest *SourceManife
 			expectedAudit[canonicalAuditKey(id, ref)]++
 		}
 		if err := validateRecoveredEvidence(recovered, manifest, selectedSources); err != nil {
-			add("structured observation %d is invalid: %v", i, err)
+			add("structured observation %d for attempt run_id=%q key=%q started_at=%s is invalid: %v",
+				i, id.RunID, id.Key, id.StartedAt.Format(time.RFC3339Nano), err)
 		}
 		if recovered.Attempt.Evidence.Terminal.Source == EvidenceYAML {
 			yamlOnly++
@@ -641,6 +642,7 @@ func validateOptionalMeasuredEvents(field string, known bool, refs []EventRef, e
 }
 
 func validateMeasurementEventList(field string, refs []EventRef, attempt Attempt, typeAllowed func(string) bool) error {
+	seenLines := make(map[int]int, len(refs))
 	for i, ref := range refs {
 		if ref.Journal != attempt.Start.Journal {
 			return fmt.Errorf("%s event list[%d] does not use the selected attempt journal", field, i)
@@ -648,6 +650,10 @@ func validateMeasurementEventList(field string, refs []EventRef, attempt Attempt
 		if ref.Line <= 0 {
 			return fmt.Errorf("%s event list[%d] has nonpositive physical line %d", field, i, ref.Line)
 		}
+		if previous, ok := seenLines[ref.Line]; ok {
+			return fmt.Errorf("%s event list[%d] repeats physical line %d from list[%d] in the selected journal", field, i, ref.Line, previous)
+		}
+		seenLines[ref.Line] = i
 		if ref.At.IsZero() {
 			return fmt.Errorf("%s event list[%d] has a zero timestamp", field, i)
 		}
@@ -784,7 +790,8 @@ func validateArtifactAttemptJournals(attempt Attempt, selectedSources map[string
 			return nil
 		}
 		if ref.Journal != attempt.Start.Journal {
-			return fmt.Errorf("%s journal identity does not match attempt start journal", field)
+			return fmt.Errorf("%s journal identity mismatch: actual {%s}; expected selected attempt journal {%s}",
+				field, formatJournalIdentity(ref.Journal), formatJournalIdentity(attempt.Start.Journal))
 		}
 		if err := validateArtifactJournalIdentity(ref.Journal, selectedSources); err != nil {
 			return fmt.Errorf("%s: %w", field, err)
@@ -842,6 +849,11 @@ func validateArtifactAttemptJournals(attempt Attempt, selectedSources map[string
 	return nil
 }
 
+func formatJournalIdentity(journal JournalIdentity) string {
+	return fmt.Sprintf("source_id=%q run_id=%q path=%q producer=%q",
+		journal.SourceID, journal.RunID, journal.Path, journal.Producer)
+}
+
 func portableRelativePath(value string) bool {
 	return value != "" && !path.IsAbs(value) && !strings.Contains(value, `\`) &&
 		!hasASCIIDrivePrefix(value) && path.Clean(value) == value && value != "." &&
@@ -862,9 +874,6 @@ func portablePathWithin(value, root string) bool {
 		return false
 	}
 	cleanRoot := path.Clean(root)
-	if cleanRoot == ".." || strings.HasPrefix(cleanRoot, "../") {
-		return false
-	}
 	if cleanRoot == "." {
 		return true
 	}

@@ -517,3 +517,76 @@ recovered attempts out of 303. It was not rescanned and is not a post-fix count,
 holdout evaluation or data-sufficiency claim. FC-1 remains Blocked pending the
 parent exact-head gate and fifth isolated verifier/panel; this body does not mark
 runtime work Done.
+
+## Fifth-panel corrective body
+
+The final Operator F1/F4 fifth-panel ruling preserves the fourth-panel
+restoration of complete count/list/least-citation evidence and clarifies the
+per-list event identity it requires. The earlier count waivers remain historical
+mistakes and superseded; this correction does not reinstate them.
+
+Each measurement list now rejects a repeated physical location identified by
+its selected `JournalIdentity` and positive `Line`, even when timestamp,
+sequence, type or hash metadata differs and the refs remain comparator-ordered.
+The check uses an FC-1-private per-list seen-line set, catches nonadjacent repeats
+and applies to unknown quantities with partial contributor lists. It does not
+repair or deduplicate invalid evidence. Canonical ordering remains independently
+validated, while the same physical event may still appear in different
+measurement kinds.
+
+Journal-identity mismatches now name the field and mismatch rule plus concise
+actual and expected `source_id`, `run_id`, `path` and `producer` values. The
+structured-observation wrapper retains its index and adds the canonical attempt
+run, key and start instant before the detailed inner reason. Existing
+field/value/rule provenance diagnostics and both `ErrNotEligible` and
+`ErrSourceIncomplete` refusal sentinels remain intact.
+
+The redundant post-clean `..`/`../` root guard was removed because
+`portableRelativePath(cleanRoot)` already rejects those values. Raw
+drive/absolute/backslash guards still run before cleaning with their explanatory
+comment; the `.` fast path and every existing path decision remain unchanged.
+
+### Fifth-body-panel final dispositions
+
+These IDs belong only to the fifth panel; all earlier finding tables and their
+historical context remain preserved.
+
+| Finding ID | Final disposition |
+|---|---|
+| `Codex-1` | **Corrected.** Every measurement list rejects repeated selected-journal physical lines, including metadata variants, nonadjacent repeats and unknown partial contributors; distinct lines and cross-kind reuse remain legal. |
+| `Codex-2` | **Corrected.** A journal mismatch reason includes the field/rule and actual versus expected source ID, run ID, path and producer. |
+| `Codex-3` | **Preserved.** Strengthened independent semantic assertions pass: diagnostics continue to identify distinct stored values, fields and violated rules without punctuation-sensitive whole-message coupling. |
+| `Claude-1` | **Corrected.** Invalid structured observations retain their index and now identify the canonical attempt run/key/start around the detailed cause. |
+| `Claude-2` | **Corrected cleanup.** Only the redundant post-clean traversal branch was removed; raw guards, comment, dot fast path and old path behavior remain. |
+| `Grok` | **No findings / approve.** No additional behavior was assigned or added. |
+
+### Fifth-panel corrective verification
+
+On independent seal commit `7375c9a55aaf67422b80e8753c4aad830bdc997c`,
+the uncorrected `00fed57` body reproduced exactly ten red leaves: nine
+physical-line uniqueness cases and the selected-run-B journal diagnostic case.
+The other 253 Evidence leaves and all cited fourth-panel repaired positives and
+path controls remained green. No immutable assertion contradicted the final
+fifth-panel ruling.
+
+- `go test ./internal/dispatched -run '^TestFCEvidenceContract$' -count=1` — pass.
+- `go test ./cmd/forecast -run '^TestFCReferenceCLIContract$' -count=1` — pass.
+- `go build ./...` — pass.
+- `go vet ./...` — pass.
+- `go test ./... -race -count=1` — pass, all packages, no exclusions.
+- `git diff --check` — pass.
+
+The gate proves carried structural consistency, not raw-payload membership or
+sum recomputation, finer spawn-kind/value authentication, source-value truth or
+cryptographic source-byte authenticity. It adds no clock-within-terminal phase
+restriction, global/cross-field deduplication, source I/O, schema expansion or
+future-field reflection. Retained ambiguous/audit diagnostics remain non-sample
+evidence, and the previously disclosed future-schema, validator-factoring and
+one-shot CLI boundaries remain in force.
+
+Tests, fixtures, independent seals, Source/Journal/shared helpers, schema,
+scaffold, known-red and worklists were not edited by this body. The real coverage
+report remains the historical diagnostic PARTIAL result of 44 recovered attempts
+out of 303; it was not rescanned and is not a post-fix count, holdout evaluation
+or data-sufficiency claim. FC-1 remains Blocked pending independent parent checks
+and the sixth isolated review; this body does not mark runtime work Done.

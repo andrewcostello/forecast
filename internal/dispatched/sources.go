@@ -26,7 +26,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/sys/unix"
 	"gopkg.in/yaml.v3"
 )
 
@@ -350,7 +349,7 @@ func (m *SourceManifest) ValidateComplete() error {
 			incomplete = true
 		}
 		if source.Kind == SourceKindGitHistory {
-			if !validResolvedRefs(source.ResolvedRefs) {
+			if !validResolvedRefs(source.ResolvedRefs, source.RequestedRef == "") {
 				incomplete = true
 			}
 			if source.RequestedRef == "" && (source.ResolvedRef != "" || len(source.ResolvedRefs) == 0) {
@@ -396,10 +395,13 @@ func (m *SourceManifest) ValidateComplete() error {
 	return errors.Join(errList...)
 }
 
-func validResolvedRefs(refs []ResolvedRef) bool {
+func validResolvedRefs(refs []ResolvedRef, implicit bool) bool {
 	seen := make(map[string]struct{}, len(refs))
 	for i, ref := range refs {
 		if ref.Name == "" || ref.Name != strings.TrimSpace(ref.Name) || !validObjectID(ref.Commit) {
+			return false
+		}
+		if implicit && ref.Name != "HEAD" && !validFullRefName(ref.Name) {
 			return false
 		}
 		if _, duplicate := seen[ref.Name]; duplicate {
@@ -411,6 +413,29 @@ func validResolvedRefs(refs []ResolvedRef) bool {
 			if previous.Name > ref.Name || previous.Name == ref.Name && previous.Commit >= ref.Commit {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+// validFullRefName implements the canonical restrictions enforced by
+// git-check-ref-format for implicit snapshots. HEAD is handled separately as
+// the one authorized pseudoref; every other implicit name must live in refs/.
+func validFullRefName(name string) bool {
+	if !strings.HasPrefix(name, "refs/") || strings.HasSuffix(name, "/") ||
+		strings.HasSuffix(name, ".") || strings.Contains(name, "//") ||
+		strings.Contains(name, "..") || strings.Contains(name, "@{") ||
+		strings.ContainsAny(name, " ~^:?*[\\") {
+		return false
+	}
+	for _, char := range name {
+		if char < 0x20 || char == 0x7f {
+			return false
+		}
+	}
+	for _, component := range strings.Split(name, "/") {
+		if component == "" || strings.HasPrefix(component, ".") || strings.HasSuffix(component, ".lock") {
+			return false
 		}
 	}
 	return true
@@ -703,7 +728,7 @@ func runSourceGit(ctx context.Context, repo string, budget *sourceBudget, reques
 		parentCtx: ctx, ioCtx: internalCtx, cancel: cancel, cmd: cmd,
 		stdout: stdout, stderrPipe: stderr, budget: budget,
 		repo: repo, args: append([]string(nil), request.Args...),
-		stderrDone: make(chan struct{}), waitDone: make(chan error, 1), pipesDone: make(chan struct{}),
+		stderrDone: make(chan struct{}), processDone: make(chan struct{}),
 	}
 	if request.Blob {
 		reader.localLimit = budget.bounds.MaxBlobBytes
@@ -975,14 +1000,7 @@ func (b *sourceBudget) openConfined(path string) (*os.File, error) {
 	root, rootPath := b.fileRoot, b.fileRootPath
 	b.mu.Unlock()
 	if root == nil {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, err
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return nil, fmt.Errorf("symbolic links are not source files")
-		}
-		return os.Open(path)
+		return nil, fmt.Errorf("confined source root is not open")
 	}
 	rel := filepath.Clean(path)
 	if filepath.IsAbs(path) {
@@ -995,14 +1013,23 @@ func (b *sourceBudget) openConfined(path string) (*os.File, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return nil, fmt.Errorf("path escapes confined source root")
 	}
-	info, err := root.Lstat(rel)
+	parentName, baseName := filepath.Dir(rel), filepath.Base(rel)
+	if baseName == "." || baseName == ".." || baseName == "" {
+		return nil, fmt.Errorf("source path has no final file name")
+	}
+	parent, err := root.Open(parentName)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("symbolic links are not source files")
+	defer parent.Close()
+	parentInfo, err := parent.Stat()
+	if err != nil {
+		return nil, err
 	}
-	return root.Open(rel)
+	if !parentInfo.IsDir() {
+		return nil, fmt.Errorf("source parent is not a directory")
+	}
+	return openSourceFileNoFollow(parent, baseName)
 }
 
 func (b *sourceBudget) confinedFS() (fs.FS, error) {
@@ -1132,7 +1159,7 @@ func (r *boundedSourceReadCloser) Read(p []byte) (int, error) {
 	if r.closed {
 		return 0, os.ErrClosed
 	}
-	n, err := readBoundedSource(r.ctx, r.source, r.budget, r.localLimit, &r.localRead, p)
+	n, err := readBoundedSource(r.ctx, r.source, r.budget, r.localLimit, &r.localRead, p, nil)
 	if errors.Is(err, io.EOF) {
 		if _, stableErr := r.sourceFileInfoLocked(); stableErr != nil {
 			return n, stableErr
@@ -1173,11 +1200,21 @@ func (r *boundedSourceReadCloser) sourceFileInfoLocked() (os.FileInfo, error) {
 	return r.initialInfo, nil
 }
 
-func waitSourceReadable(ctx context.Context, source io.Reader, budget *sourceBudget) error {
+var errSourcePipeIncomplete = errors.New("Git pipe remained open without readable data after child exit")
+
+func waitSourceReadable(ctx context.Context, source io.Reader, budget *sourceBudget, processDone <-chan struct{}) error {
 	file, ok := source.(*os.File)
 	if !ok {
 		return nil
 	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeNamedPipe == 0 {
+		return nil
+	}
+	var idleSince time.Time
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("%w: %w", ErrSourceCancelled, err)
@@ -1185,28 +1222,37 @@ func waitSourceReadable(ctx context.Context, source io.Reader, budget *sourceBud
 		if budget.hitTotalBound() {
 			return ErrBoundExceeded
 		}
-		poll := []unix.PollFd{{
-			Fd:     int32(file.Fd()),
-			Events: unix.POLLIN | unix.POLLHUP | unix.POLLERR,
-		}}
-		ready, err := unix.Poll(poll, 100)
-		if errors.Is(err, unix.EINTR) {
-			continue
-		}
+		ready, err := sourceFileReadReady(file)
 		if err != nil {
 			return err
 		}
-		if ready == 0 {
-			continue
+		if ready {
+			return nil
 		}
-		if poll[0].Revents&unix.POLLNVAL != 0 {
-			return os.ErrClosed
+		if processDone != nil {
+			select {
+			case <-processDone:
+				if idleSince.IsZero() {
+					idleSince = time.Now()
+				} else if time.Since(idleSince) >= time.Second {
+					return errSourcePipeIncomplete
+				}
+			default:
+			}
 		}
-		return nil
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return fmt.Errorf("%w: %w", ErrSourceCancelled, ctx.Err())
+		case <-timer.C:
+		}
 	}
 }
 
-func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudget, localLimit int64, localRead *int64, p []byte) (int, error) {
+func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudget, localLimit int64, localRead *int64, p []byte, processDone <-chan struct{}) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("%w: %w", ErrSourceCancelled, err)
 	}
@@ -1223,7 +1269,7 @@ func readBoundedSource(ctx context.Context, source io.Reader, budget *sourceBudg
 			want = int(remaining + 1)
 		}
 	}
-	if err := waitSourceReadable(ctx, source, budget); err != nil {
+	if err := waitSourceReadable(ctx, source, budget, processDone); err != nil {
 		return 0, err
 	}
 	reserved, reserveErr := budget.reserveRead(ctx, want)
@@ -1272,21 +1318,29 @@ type sourceGitReadCloser struct {
 	localLimit int64
 	localRead  int64
 
-	stderr     bytes.Buffer
-	stderrDone chan struct{}
-	waitDone   chan error
-	pipesDone  chan struct{}
-	finishOnce sync.Once
-	finishErr  error
-	readMu     sync.Mutex
-	stateMu    sync.Mutex
-	readEnded  bool
+	stderr      bytes.Buffer
+	stderrDone  chan struct{}
+	processDone chan struct{}
+	processErr  error
+	stderrErr   error
+	finishOnce  sync.Once
+	finishErr   error
+	readMu      sync.Mutex
+	stateMu     sync.Mutex
+	readEnded   bool
+	closed      bool
 }
 
 func (r *sourceGitReadCloser) Read(p []byte) (int, error) {
 	r.readMu.Lock()
 	defer r.readMu.Unlock()
-	n, err := readBoundedSource(r.ioCtx, r.stdout, r.budget, r.localLimit, &r.localRead, p)
+	r.stateMu.Lock()
+	closed := r.closed
+	r.stateMu.Unlock()
+	if closed {
+		return 0, os.ErrClosed
+	}
+	n, err := readBoundedSource(r.ioCtx, r.stdout, r.budget, r.localLimit, &r.localRead, p, r.processDone)
 	if err == nil {
 		return n, nil
 	}
@@ -1299,8 +1353,21 @@ func (r *sourceGitReadCloser) Read(p []byte) (int, error) {
 
 func (r *sourceGitReadCloser) Close() error {
 	r.stateMu.Lock()
+	if r.closed {
+		r.stateMu.Unlock()
+		return nil
+	}
+	r.closed = true
 	readEnded := r.readEnded
 	r.stateMu.Unlock()
+	if !readEnded {
+		r.cancel()
+		if r.cmd.Process != nil {
+			_ = r.cmd.Process.Kill()
+		}
+	}
+	r.readMu.Lock()
+	defer r.readMu.Unlock()
 	err := r.finish(io.ErrClosedPipe, true)
 	if readEnded || err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) {
 		return nil
@@ -1313,7 +1380,7 @@ func (r *sourceGitReadCloser) drainStderr(stderr io.Reader) {
 	buffer := make([]byte, 4096)
 	var localRead int64
 	for {
-		n, err := readBoundedSource(r.ioCtx, stderr, r.budget, 0, &localRead, buffer)
+		n, err := readBoundedSource(r.ioCtx, stderr, r.budget, 0, &localRead, buffer, r.processDone)
 		if n > 0 && r.stderr.Len() < 64*1024 {
 			keep := n
 			if keep > 64*1024-r.stderr.Len() {
@@ -1322,30 +1389,25 @@ func (r *sourceGitReadCloser) drainStderr(stderr io.Reader) {
 			_, _ = r.stderr.Write(buffer[:keep])
 		}
 		if errors.Is(err, ErrBoundExceeded) {
+			r.stderrErr = err
 			r.cancel()
 			return
 		}
 		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				r.stderrErr = err
+			}
 			return
 		}
 	}
 }
 
-// Wait begins immediately after Start so process reaping and its cleanup clock
-// never depend on a caller reaching Read or Close. The pipes are ours rather
-// than os/exec's, so a descendant that inherits one cannot hold cleanup past
-// the explicit deadline or make Cmd.Wait discard already emitted stderr.
+// Wait begins immediately after Start so process reaping never depends on a
+// caller reaching Read or Close. Pipe reads distinguish buffered data from a
+// post-exit idle descriptor; healthy buffered output is never timer-discarded.
 func (r *sourceGitReadCloser) waitForProcess() {
-	waitErr := r.cmd.Wait()
-	r.waitDone <- waitErr
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	select {
-	case <-r.pipesDone:
-	case <-timer.C:
-		_ = r.stdout.Close()
-		_ = r.stderrPipe.Close()
-	}
+	r.processErr = r.cmd.Wait()
+	close(r.processDone)
 }
 
 func (r *sourceGitReadCloser) finish(cause error, kill bool) error {
@@ -1355,28 +1417,28 @@ func (r *sourceGitReadCloser) finish(cause error, kill bool) error {
 			if r.cmd.Process != nil {
 				_ = r.cmd.Process.Kill()
 			}
-			_ = r.stdout.Close()
 		}
-		waitErr := <-r.waitDone
+		<-r.processDone
 		<-r.stderrDone
 		r.cancel()
 		_ = r.stdout.Close()
 		_ = r.stderrPipe.Close()
-		close(r.pipesDone)
 		<-r.budget.slots
 		switch {
 		case r.budget.hitTotalBound() || errors.Is(cause, ErrBoundExceeded):
 			r.finishErr = fmt.Errorf("%w: git %s in %s", ErrBoundExceeded, strings.Join(r.args, " "), r.repo)
 		case r.parentCtx.Err() != nil:
 			r.finishErr = fmt.Errorf("%w: git %s in %s: %w", ErrSourceCancelled, strings.Join(r.args, " "), r.repo, r.parentCtx.Err())
-		case waitErr != nil:
+		case r.processErr != nil:
 			detail := strings.TrimSpace(r.stderr.String())
 			if detail != "" {
-				r.finishErr = fmt.Errorf("%w: git %s in %s: %v: %s", ErrGitHistory, strings.Join(r.args, " "), r.repo, waitErr, detail)
+				r.finishErr = fmt.Errorf("%w: git %s in %s: %w: %s", ErrGitHistory, strings.Join(r.args, " "), r.repo, r.processErr, detail)
 			} else {
-				r.finishErr = fmt.Errorf("%w: git %s in %s: %v", ErrGitHistory, strings.Join(r.args, " "), r.repo, waitErr)
+				r.finishErr = fmt.Errorf("%w: git %s in %s: %w", ErrGitHistory, strings.Join(r.args, " "), r.repo, r.processErr)
 			}
-		case errors.Is(cause, io.EOF) || errors.Is(cause, os.ErrClosed):
+		case r.stderrErr != nil:
+			r.finishErr = fmt.Errorf("%w: git %s in %s ended with incomplete stderr: %w", ErrGitHistory, strings.Join(r.args, " "), r.repo, r.stderrErr)
+		case errors.Is(cause, io.EOF):
 			r.finishErr = io.EOF
 		case errors.Is(cause, io.ErrClosedPipe):
 			r.finishErr = nil
@@ -1392,7 +1454,10 @@ func (r *sourceGitReadCloser) finish(cause error, kill bool) error {
 	return r.finishErr
 }
 
-const sourceRefFormat = "%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)"
+const (
+	sourceRefFormat           = "%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)"
+	sourceHistoryTipBatchSize = 128
+)
 
 func validateSourceGitRequest(request SourceGitRequest) error {
 	if len(request.Args) == 0 {
@@ -1443,6 +1508,9 @@ func validSourceRevParse(args []string) bool {
 			return true
 		}
 	}
+	if len(args) == 5 && args[1] == "--verify" && args[2] == "--quiet" && args[3] == "--end-of-options" {
+		return args[4] != ""
+	}
 	return len(args) == 4 && args[1] == "--verify" && args[2] == "--end-of-options" && args[3] != ""
 }
 
@@ -1457,19 +1525,36 @@ func validSourceForEachRef(args []string) bool {
 }
 
 func validSourceRevList(args []string) bool {
-	if len(args) < 3 || args[1] != "--topo-order" {
+	if len(args) < 2 {
 		return false
 	}
-	i := 2
-	if i < len(args) && strings.HasPrefix(args[i], "--max-count=") {
-		value := strings.TrimPrefix(args[i], "--max-count=")
-		if value == "" {
-			return false
-		}
-		for _, digit := range value {
-			if digit < '0' || digit > '9' {
+	i := 1
+	topo, parents := false, false
+	for i < len(args) {
+		switch args[i] {
+		case "--topo-order":
+			if topo {
 				return false
 			}
+			topo = true
+			i++
+		case "--parents":
+			if parents {
+				return false
+			}
+			parents = true
+			i++
+		default:
+			goto optionsDone
+		}
+	}
+
+optionsDone:
+	if i < len(args) && strings.HasPrefix(args[i], "--max-count=") {
+		value := strings.TrimPrefix(args[i], "--max-count=")
+		count, err := strconv.Atoi(value)
+		if err != nil || count <= 0 {
+			return false
 		}
 		i++
 	}
@@ -1481,6 +1566,9 @@ func validSourceRevList(args []string) bool {
 	}
 	if args[i] == "--all" {
 		return i+1 == len(args)
+	}
+	if len(args)-i > sourceHistoryTipBatchSize {
+		return false
 	}
 	for ; i < len(args); i++ {
 		if !validObjectID(args[i]) {
@@ -1642,8 +1730,11 @@ func readJournalSource(ctx context.Context, spec SourceSpec, selection Selection
 	}
 	holdouts := stringSet(selection.HoldoutRunIDs)
 	for _, entry := range entries {
+		// Only real direct-child directories are journal candidates. Symlinked
+		// directory aliases and unrelated files are never traversed; a final
+		// journal.jsonl symlink is still rejected below and by the atomic open.
 		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%w: journal run %s is a symbolic link", ErrSourceMissing, entry.Name())
+			continue
 		}
 		if !entry.IsDir() {
 			continue
@@ -1852,8 +1943,14 @@ func readHistorySource(ctx context.Context, spec SourceSpec, selection Selection
 	if !filepath.IsAbs(commonDir) {
 		commonDir = filepath.Join(spec.Repository, commonDir)
 	}
-	if info, statErr := os.Stat(filepath.Join(commonDir, "info", "grafts")); statErr == nil && info.Size() > 0 {
-		report.Grafted = true
+	graftsPath := filepath.Join(commonDir, "info", "grafts")
+	if info, statErr := os.Stat(graftsPath); statErr == nil {
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%w: source %q graft metadata %s is not a regular file", ErrGitHistory, spec.ID, graftsPath)
+		}
+		report.Grafted = info.Size() > 0
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return fmt.Errorf("%w: source %q cannot inspect graft metadata %s: %w", ErrGitHistory, spec.ID, graftsPath, statErr)
 	}
 
 	var traversal []string
@@ -2050,22 +2147,29 @@ func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget)
 		name := string(fields[0])
 		objectType, objectID := string(fields[1]), string(fields[2])
 		peeledType, peeledID := string(fields[3]), string(fields[4])
-		if name == "" || name != strings.TrimSpace(name) {
+		if !validFullRefName(name) {
 			return refs, replaced, fmt.Errorf("%w: invalid ref name %q", ErrGitHistory, name)
+		}
+		if !validObjectID(objectID) {
+			return refs, replaced, fmt.Errorf("%w: ref %q has invalid captured object ID", ErrGitHistory, name)
 		}
 		replaced = replaced || strings.HasPrefix(name, "refs/replace/")
 		commit := ""
 		switch {
 		case objectType == "commit":
 			commit = objectID
-		case peeledType == "commit":
+		case peeledType == "commit" && validObjectID(peeledID):
 			commit = peeledID
 		default:
 			resolvedRaw, resolveErr := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
-				Args: []string{"rev-parse", "--verify", "--end-of-options", name + "^{commit}"},
+				Args: []string{"rev-parse", "--verify", "--end-of-options", objectID + "^{commit}"},
 			})
 			if resolveErr != nil {
-				return refs, replaced, fmt.Errorf("%w: ref %q is not a supported commit ref: %v", ErrGitHistory, name, resolveErr)
+				if errors.Is(resolveErr, ErrBoundExceeded) || errors.Is(resolveErr, ErrSourceCancelled) ||
+					errors.Is(resolveErr, context.Canceled) || errors.Is(resolveErr, context.DeadlineExceeded) {
+					return refs, replaced, resolveErr
+				}
+				return refs, replaced, fmt.Errorf("%w: ref %q captured as %s is not a supported commit ref: %w", ErrGitHistory, name, objectID, resolveErr)
 			}
 			commit = strings.TrimSpace(string(resolvedRaw))
 		}
@@ -2073,6 +2177,13 @@ func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget)
 			return refs, replaced, fmt.Errorf("%w: ref %q did not resolve to a full commit", ErrGitHistory, name)
 		}
 		refs = append(refs, ResolvedRef{Name: name, Commit: commit})
+	}
+	head, resolved, headErr := readCapturedHEAD(ctx, repo, budget)
+	if headErr != nil {
+		return refs, replaced, headErr
+	}
+	if resolved {
+		refs = append(refs, head)
 	}
 	sort.Slice(refs, func(i, j int) bool {
 		if refs[i].Name != refs[j].Name {
@@ -2083,17 +2194,94 @@ func readAllResolvedRefs(ctx context.Context, repo string, budget *sourceBudget)
 	return refs, replaced, nil
 }
 
+func readCapturedHEAD(ctx context.Context, repo string, budget *sourceBudget) (ResolvedRef, bool, error) {
+	raw, err := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
+		Args: []string{"rev-parse", "--verify", "--quiet", "--end-of-options", "HEAD"},
+	})
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+			return ResolvedRef{}, false, nil
+		}
+		return ResolvedRef{}, false, err
+	}
+	objectID := strings.TrimSpace(string(raw))
+	if !validObjectID(objectID) {
+		return ResolvedRef{}, false, fmt.Errorf("%w: HEAD did not resolve to a full captured object ID", ErrGitHistory)
+	}
+	peeledRaw, err := readSourceGitAll(ctx, repo, budget, SourceGitRequest{
+		Args: []string{"rev-parse", "--verify", "--end-of-options", objectID + "^{commit}"},
+	})
+	if err != nil {
+		if errors.Is(err, ErrBoundExceeded) || errors.Is(err, ErrSourceCancelled) ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return ResolvedRef{}, false, err
+		}
+		return ResolvedRef{}, false, fmt.Errorf("%w: HEAD captured as %s is not a supported commit: %w", ErrGitHistory, objectID, err)
+	}
+	commit := strings.TrimSpace(string(peeledRaw))
+	if !validObjectID(commit) {
+		return ResolvedRef{}, false, fmt.Errorf("%w: HEAD captured as %s did not peel to a full commit", ErrGitHistory, objectID)
+	}
+	return ResolvedRef{Name: "HEAD", Commit: commit}, true, nil
+}
+
 type sourceHistoryCommit struct {
 	objectID   string
 	recordedAt time.Time
 }
 
 func readHistoryCommits(ctx context.Context, repo string, traversal []string, budget *sourceBudget, limit int) ([]sourceHistoryCommit, bool, error) {
+	tipSet := make(map[string]struct{}, len(traversal))
+	for _, tip := range traversal {
+		if !validObjectID(tip) {
+			return nil, false, fmt.Errorf("%w: invalid captured traversal tip %q", ErrGitHistory, tip)
+		}
+		tipSet[tip] = struct{}{}
+	}
+	tips := make([]string, 0, len(tipSet))
+	for tip := range tipSet {
+		tips = append(tips, tip)
+	}
+	sort.Strings(tips)
+	capacity := limit
+	if capacity > 1024 {
+		capacity = 1024
+	}
+	commits := make([]sourceHistoryCommit, 0, capacity)
+	seen := make(map[string]struct{}, capacity)
+	capped := false
+	for start := 0; start < len(tips); start += sourceHistoryTipBatchSize {
+		end := start + sourceHistoryTipBatchSize
+		if end > len(tips) {
+			end = len(tips)
+		}
+		batch, batchCapped, err := readHistoryCommitBatch(ctx, repo, tips[start:end], budget, limit)
+		if err != nil {
+			return commits, capped, err
+		}
+		capped = capped || batchCapped
+		for _, commit := range batch {
+			if _, duplicate := seen[commit.objectID]; duplicate {
+				continue
+			}
+			if len(commits) == limit {
+				capped = true
+				return commits, capped, nil
+			}
+			seen[commit.objectID] = struct{}{}
+			commits = append(commits, commit)
+		}
+	}
+	return commits, capped, nil
+}
+
+func readHistoryCommitBatch(ctx context.Context, repo string, traversal []string, budget *sourceBudget, limit int) ([]sourceHistoryCommit, bool, error) {
 	providerLimit := limit
 	if limit < int(^uint(0)>>1) {
 		providerLimit++
 	}
-	args := []string{"rev-list", "--topo-order", "--max-count=" + strconv.Itoa(providerLimit), "--format=%cI"}
+	args := []string{"rev-list", "--max-count=" + strconv.Itoa(providerLimit), "--format=%cI"}
 	args = append(args, traversal...)
 	reader, err := runSourceGit(ctx, repo, budget, SourceGitRequest{Args: args})
 	if err != nil {
@@ -2108,6 +2296,10 @@ func readHistoryCommits(ctx context.Context, repo string, traversal []string, bu
 	pendingCommit := ""
 	for {
 		line, readErr := buffered.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			_ = reader.Close()
+			return commits, false, readErr
+		}
 		value := strings.TrimSpace(line)
 		if value != "" {
 			if pendingCommit == "" {
@@ -2127,21 +2319,15 @@ func readHistoryCommits(ctx context.Context, repo string, traversal []string, bu
 				pendingCommit = ""
 			}
 		}
-		if readErr != nil {
+		if errors.Is(readErr, io.EOF) {
 			_ = reader.Close()
-			if errors.Is(readErr, io.EOF) {
-				if pendingCommit != "" {
-					return commits, false, fmt.Errorf("%w: rev-list omitted committer time for %s", ErrGitHistory, pendingCommit)
-				}
-				break
+			if pendingCommit != "" {
+				return commits, false, fmt.Errorf("%w: rev-list omitted committer time for %s", ErrGitHistory, pendingCommit)
 			}
-			return commits, false, readErr
+			break
 		}
 	}
 	capped := len(commits) > limit
-	if capped {
-		commits = commits[:limit]
-	}
 	return commits, capped, nil
 }
 
@@ -2155,7 +2341,7 @@ func classifyHistoryReadError(sourceID string, err error) error {
 	if errors.Is(err, ErrGitHistory) {
 		return err
 	}
-	return fmt.Errorf("%w: history source %q: %v", ErrGitHistory, sourceID, err)
+	return fmt.Errorf("%w: history source %q: %w", ErrGitHistory, sourceID, err)
 }
 
 func ingestReadings(parsed []Reading, selection Selection, report *SourceReport, readings *SourceReadings) {

@@ -1,155 +1,134 @@
-# FC-SOURCES: corrected explicit bounded source implementation
+# FC-SOURCES: second bounded source-body correction
 
-## Contract and final implementation
+## Scope and result
 
-`internal/dispatched/sources.go` implements the accepted F3 source seams without
-changing frozen public signatures or parameter names and without implementing
-FC-1 `JoinEvidence` or `Build`.
+Starting HEAD was `870c9e7ead5577ce07cfcd683b526fae3d887718`, containing the
+operator clarification and independent follow-up seals. This correction changes
+only `internal/dispatched/sources.go`, private
+`internal/dispatched/sourcefile_*.go` platform helpers, and this note. The exact
+correction commit is recorded in the dispatcher handoff because a commit cannot
+embed its own hash.
 
-- `ReadSources` validates explicit repositories, roots, refs, cutoff, holdouts
-  and resolved positive bounds before content reads. Sources remain sequential
-  in canonical source-ID order.
-- Journal and live discovery use the same opened `os.Root` identity used for
-  later confined opens. Final symlinks are refused. Live mtime and stability
-  checks come from the exact file descriptor whose bytes were read; a normal
-  size or mtime change during the read is rejected rather than admitting bytes
-  under stale metadata. The recorded mtime remains evidence, not a tamper-proof
-  clock, as the scaffold specifies.
-- The shared byte budget reserves allowance atomically before each physical
-  read across files, Git stdout, Git stderr and concurrent children. Readiness
-  is established before reservation, so an idle stderr pipe cannot reserve the
-  corpus or deadlock stdout. One source-wide overflow probe is bounded,
-  physically counted and never retained.
-- Git uses owned pipes and starts `Wait` immediately. EOF observes exit status;
-  Close surfaces undelivered exit, cancellation and bound errors; a terminal
-  Read followed by Close is benign. The process and inherited-pipe cleanup
-  deadline does not depend on `Cmd.WaitDelay` starting before a later Wait call,
-  and stderr is drained before its pipe is released.
-- `ValidateComplete` verifies resolved-ref names, full lowercase object IDs,
-  unique/canonical all-ref entries, explicit-ref consistency, non-history
-  resolution absence and diagnostic/state consistency. An unborn all-ref
-  history is PARTIAL with a reason, never a COMPLETE manifest that rejects
-  itself. AllowEmpty and defensive returns retain canonical lists and aggregate
-  source reasons.
-- All-ref tips are resolved in one `for-each-ref` snapshot when their object
-  shape permits, and the resolved commit IDs—not moving ref names—drive the
-  traversal. A provider-side overflow-safe `MaxCommits+1` limit bounds
-  `rev-list`; the same command supplies commit times. Every reachable retained
-  DAG snapshot is still read, including superseded merge parents. One
-  `ls-tree` per retained commit remains necessary for that snapshot semantics,
-  followed by one bounded `cat-file blob` per distinct object.
-- Linked-worktree graft detection uses the Git common metadata directory.
-  Noncommit or otherwise unsupported refs are not silently omitted: resolution
-  fails the source with `ErrGitHistory`, so no manifest can become falsely
-  COMPLETE while claiming a complete all-ref tip list.
-- Successfully decoded YAML without a `tasks` mapping—including empty, null,
-  list and scalar documents—is `DocumentNotTasks`. Invalid syntax or malformed
-  `tasks` shape remains `DocumentMalformed`. Structural identity/time nodes
-  retain row-local errors; exclusion is never inferred from a non-string run
-  identity, while genuinely absent fields retain their absent semantics.
-- The Git request validator accepts only the precise read-only forms required
-  by the body and seals. Output, external helper, filter, batch and write-capable
-  option space remains unreachable. The frozen installation policy still
-  preserves `PATH` and `GIT_EXEC_PATH` while stripping other ambient `GIT_*`
-  state and disabling helpers/protocols.
+The frozen public source seams and parameter names are unchanged. FC-1
+`JoinEvidence`/`Build`, the `GIT_EXEC_PATH` policy, existing assertions, tests,
+fixtures, scaffold, module files, worklist, and known-red register are unchanged.
 
-The journal cutoff boundary is intentionally unchanged: `SourceReadings`
-retains raw parsed in-sample journals, and `ReduceAttempts` removes events
-strictly after the cutoff. `ReadSources` must not silently filter
-`ParsedJournal.Events`; F3-CUTOFF-EXCLUDED and the `SourceReadings` godoc assign
-that work to the reducer. Holdout journals remain identity-only in
-`ExcludedJournals`.
+The corrected body now:
 
-## Reason and affected callers
+- opens the confined parent through `os.Root`, then atomically opens only the
+  final basename relative to the held parent descriptor/handle. Linux and Darwin
+  use `openat` with `O_NOFOLLOW`; Windows uses `NtCreateFile` with
+  `RootDirectory`, `FILE_OPEN_REPARSE_POINT`, and a handle-attribute reparse
+  check. Every failure path closes its descriptor or handle. Initial and final
+  metadata still come from the opened file descriptor;
+- keeps readiness ahead of shared-byte reservation without raw `File.Fd()` or a
+  blocking-mode change. Platform helpers hold the descriptor with
+  `SyscallConn`; cancellation is rechecked on bounded readiness intervals;
+- never timer-closes delayed healthy Git output. Buffered output remains
+  readable after child exit, while a post-exit pipe held idle by a descendant is
+  diagnosed as typed incomplete Git data. Read/Close deliver terminal errors
+  once, cancellation reaps descendants, and later Close is benign;
+- captures canonical `refs/...` tips and `HEAD`, including detached HEAD, and
+  peels only captured object IDs. Implicit validation accepts `HEAD` as the sole
+  pseudoref and otherwise applies full Git ref-name restrictions;
+- enumerates sorted, deduplicated captured tip IDs in fixed 128-tip batches.
+  Every batch passes provider `MaxCommits+1`, omits eager `--topo-order`, and
+  uses the default all-parent walk. Global accounting counts each commit once;
+  any provider-truncated batch or extra unique commit remains PARTIAL;
+- checks non-EOF metadata read failures before parsing a partial commit header
+  or timestamp, preserving bound and cancellation identities;
+- treats only absent graft metadata as absent. Every other inspection failure or
+  unsupported present shape returns typed `ErrGitHistory` and leaves the source
+  PARTIAL/error; and
+- considers only real direct-child run directories as journal candidates.
+  Unrelated files and symlink aliases are not traversed; a symlink-only run is
+  therefore unsupported rather than discovered. A candidate directory whose
+  `journal.jsonl` is a symlink/non-regular file is still refused, including at
+  the final atomic open.
 
-The correction closes descriptor/metadata races, physical-read over-allocation,
-child cleanup/error loss, self-contradictory manifests, provider-side traversal
-overrun, linked-worktree metadata loss and YAML classification gaps. FC-1 and
-direct callers receive canonical `SourceManifest` and `SourceReadings` values
-whose eligibility claims do not exceed the exact selected sources.
+Raw journal events remain intentionally unfiltered in `SourceReadings`;
+`ReduceAttempts` owns strict post-cutoff event filtering. Historical reading
+cutoff and holdout exclusion remain at the source boundary. Full DAG snapshot
+semantics and one `ls-tree` per retained commit are preserved.
 
-## Final seal evidence
+## Correction evidence
 
-- Red-before: the corrective Sources cases failed at committed HEAD `8f35efc`
-  on Git Close errors, concurrent total-byte accounting, resolution validation,
-  empty history, provider limiting, linked-worktree grafts, AllowEmpty reasons,
-  non-task shapes, structural fields and write-capable Git options.
-- `go test ./internal/dispatched -run '^TestFCSourcesContract$' -race -count=1`
-  passes the full amended 54-case owned source group.
-- `go test ./internal/dispatched -run '^(TestFCSourcesContract|TestFCJournalContract)$'
-  -race -count=3` passes all
-  54 Sources cases and all 51 completed Journal cases on each repetition.
-- `go build ./...` passes.
-- `go vet ./...` passes.
-- `go test ./... -race -skip '^(TestFCEvidenceContract|TestFCReferenceCLIContract)$'
-  -count=1` passes every
-  included package. The only registered unfinished groups excluded are FC-1
-  Evidence and FC-1 Reference CLI. The zero-revision source ingest case is green
-  in Sources; the relocated join case remains correctly owned by FC-1.
+- `gofmt` and `git diff --check`: pass.
+- `go test ./internal/dispatched -run '^TestFCSourcesContract$' -count=1`:
+  pass, all 59 old and new Sources cases.
+- `go build ./...`: pass.
+- `go vet ./...`: pass.
+- `go test ./... -race -skip '^(TestFCEvidenceContract|TestFCReferenceCLIContract)$' -count=1`:
+  pass, including all 59 Sources cases and all 51 completed Journal cases. Only
+  the two named FC-1-owned groups were excluded.
+- `GOOS=windows GOARCH=amd64 go build ./internal/dispatched`: pass.
+- `GOOS=darwin GOARCH=amd64 go build ./internal/dispatched`: pass.
 
-The starting corrective HEAD is `8f35efc`. The immutable hash of the corrective
-commit containing this note is recorded in the dispatcher run `summary.md`,
-because a commit cannot embed its own hash.
+The final-component descriptor-race evidence is body review of the relative
+`openat`/`NtCreateFile` paths plus the immutable static
+`F3-SRC-ROOT-ESCAPES` symlink case. No flaky rename-race claim is made.
+`F3-BOUND-TOTAL-CONCURRENT` is positive demonstrated old-body mutation evidence:
+the old check-then-charge body physically read 130 bytes against a 64-byte cap.
+The public seam has no reservation-acquisition hook, so its timing pause is not
+claimed as negative proof that two readers simultaneously acquired allowance.
 
 ## Latest panel dispositions
 
-Every finding below is indexed in its review-family order from
-`2026-09-06T01-18-41Z-FC-SOURCES-corrected-panel`.
+These indices are the per-family order from
+`2026-09-06T02-15-10Z-FC-SOURCES-corrected-panel`.
 
 | Finding | Disposition |
 |---|---|
-| `claude-1` | **Fixed.** `parseReadings` classifies valid empty/list/scalar/null YAML as `DocumentNotTasks`; F3-NON-TASK-SHAPES preserves malformed syntax/tasks shapes. |
-| `claude-2` | **Fixed.** `decodeIdentityField` and `decodeTimeField` attach row errors to sequence/map/alias nodes; F3-IDENTITY-STRUCTURE proves the holdout and completeness consequences. |
-| `claude-3` | **Partly optimized, advisory remainder documented.** One `for-each-ref` resolves ordinary tips and bounded `rev-list --format=%cI` supplies all retained commit times. Per-commit `ls-tree` remains to preserve full DAG snapshots; there is no frozen total-process threshold. |
-| `claude-4` | **Fixed.** AllowEmpty calls `finalizeManifest` before setting aggregate EMPTY; F3-ALLOW-EMPTY-REASONS proves reasons and nonnull lists survive. |
-| `claude-5` | **Fixed defensively.** The otherwise unreachable per-source budget-construction error now records/canonicalizes diagnostics before returning. |
-| `claude-6` | **Fixed.** Owned pipes allow immediate concurrent Wait and stderr drain without `StderrPipe`/Wait truncation; explicit post-exit pipe cleanup handles inherited descriptors. F3-GIT-CLOSE-ERRORS covers the public error surface. |
-| `claude-7` | **Fixed.** The dead command-only allowlist was replaced by precise argument grammars; F3-GIT-REQUEST-READONLY covers accepted and rejected forms. |
-| `claude-8` | **Fixed/sealed.** F3-MISSING-REVISION-TIME-INGEST directly proves in-sample Malformed/PARTIAL handling. The FC-1 join case remains separate. |
-| `codex-1` | **False positive by adjudication.** Raw journal events stay in `SourceReadings`; `ReduceAttempts` owns strict post-cutoff event filtering. No source filter was added. |
-| `codex-2` | **Fixed.** Live evidence metadata is descriptor-derived and stable across the read; confined discovery and opening share the same `os.Root`. This is also the unflaky body-review obligation recorded by FC-SEALS. |
-| `codex-3` | **Fixed.** Readiness-aware atomic reservation enforces physical shared-byte accounting with one global probe; F3-BOUND-TOTAL-CONCURRENT passes. |
-| `codex-4` | **Fixed.** Close returns undelivered Git exit/cancel/bound failures and reaps/releases every path; EOF-then-Close and error-Read-then-Close remain benign. |
-| `codex-5` | **Fixed.** `ValidateComplete` now rejects malformed, padded, duplicate or inconsistent ref metadata, non-history resolution metadata and COMPLETE diagnostics; F3-COMPLETE-RESOLUTION passes. |
-| `codex-6` | **Fixed.** Empty all-ref history is explicitly PARTIAL and validator-consistent; F3-EMPTY-HISTORY-CONSISTENT passes. |
-| `codex-7` | **Fixed.** Precise read-only grammars reject `--output` and external-helper forms while retaining required operations; F3-GIT-REQUEST-READONLY passes. |
-| `grok-1` | **Fixed.** `rev-list` receives provider-side `MaxCommits+1` (without integer overflow) and retains Go-side cap verification; F3-BOUND-COMMITS-LIMITER passes. |
-| `grok-2` | **Advisory optimization applied where semantics are safe.** Ref and timestamp calls are batched. Consecutive linear `diff-tree` substitution was rejected because it loses independent DAG snapshots; bounded per-commit `ls-tree` remains. |
-| `grok-3` | **Adjudicated alternative rejected.** Unsupported/noncommit refs are not skipped. They produce `ErrGitHistory` and PARTIAL diagnostics, preserving the accepted claim that `ResolvedRefs` is the complete resolved ref-tip list. |
-| `grok-4` | **Fixed.** Grafts are read from `--git-common-dir`; F3-GIT-WORKTREE-GRAFTS covers a linked worktree. |
-| `grok-5` | **Fixed.** Journal directory reads, live walks and local opens all use the same `os.Root` directory identity; symlinks remain refused. |
-| `grok-6` | **Fixed.** AllowEmpty always canonicalizes and aggregates before EMPTY; F3-ALLOW-EMPTY-REASONS passes. |
-| `grok-7` | **Fixed/sealed.** Source-owned zero-RecordedAt ingest remains malformed, in-sample and PARTIAL under F3-MISSING-REVISION-TIME-INGEST. |
-| `grok-8` | **Fixed.** This note replaces the stale 42-case and Sources-owned JoinEvidence-block claims with the amended 54-case result and FC-1-only red ownership. |
+| `claude-1` | **Fixed.** Implicit snapshots record captured `HEAD` and all canonical `refs/...` tips. Detached-only history is walked. Deduplicated fixed-size tip batches bound argv independently of ref count. |
+| `claude-2` | **Fixed.** The unconditional post-Wait pipe-close timer is gone. Readable buffers drain without a wall-clock consumer deadline; post-exit idle inherited pipes produce typed incomplete data, never synthetic EOF. |
+| `claude-3` | **Fixed with supported-shape boundary documented.** Non-directory entries, including convenience symlink aliases, are skipped without traversal. Only real direct-child run directories are candidates; their symlink/non-regular final journals are refused. A run available only through a directory symlink is deliberately unsupported and undiscovered. |
+| `claude-4` | **Fixed.** Raw `File.Fd()` polling is replaced by `SyscallConn`-held platform readiness checks. No global budget mutex or reservation is held across an idle pipe read. |
+| `claude-5` | **Fixed under the operator amendment.** Unix-only code moved to tagged private helpers, with Windows and fail-closed other-platform implementations. The operator had already promoted existing `x/sys v0.40.0` to a direct dependency; no module edit or upgrade was made. Linux, Windows, and Darwin package builds pass. |
+| `codex-1` | **Fixed.** The final basename is atomically opened no-follow relative to the confined held parent. Descriptor-derived regular-file and stability validation remains in place. Proof is code review plus the static symlink seal, not a claimed rename-race reproduction. |
+| `codex-2` | **Fixed.** Graft inspection ignores only `fs.ErrNotExist`; loops, permission/I/O failures, and non-regular present metadata return typed `ErrGitHistory`, producing retained PARTIAL/error diagnostics. Linked-worktree common-dir behavior remains correct. |
+| `codex-3` | **Fixed.** Noncommit fallback peels `<captured-object-id>^{commit}`, never the mutable name, and bound/cancellation errors remain discoverable through wrapping. |
+| `codex-4` | **Fixed.** A non-EOF read error is returned before a partial rev-list header/timestamp is interpreted. `F3-BOUND-METADATA-FRAGMENT` passes both cuts as `ErrBoundExceeded`. |
+| `codex-5` | **Fixed.** Implicit resolved names use full canonical `refs/...` syntax, with only explicit `HEAD` pseudoref authorization. Explicit requested expressions keep their separate equality/object-ID semantics. |
+| `codex-6` | **Immutable seal limitation recorded.** The 100 ms pause cannot prove simultaneous allowance acquisition because the public seam has no hook. The body adds no hook and makes no negative-proof claim; the seal remains useful as the recorded positive 130-byte old-body mutation. |
+| `codex-7` | **Corrected independently, unchanged here.** Seal commit `870c9e7` strengthened unborn history to require PARTIAL state, a reason, canonical empty lists, and `ErrSourceIncomplete`. The body passes that immutable case. |
+| `grok-1` | **Fixed.** Bounded enumeration drops eager `--topo-order`, retains provider `MaxCommits+1`, uses bounded captured-tip batches, and accounts unique commits globally. A truncated batch remains PARTIAL even if cross-batch duplicates leave retained count below the cap. |
+| `grok-2` | **Fixed.** Readiness no longer changes descriptor blocking mode or polls a potentially recycled raw integer. Cancellation interrupts through bounded `SyscallConn` readiness checks; OS-specific APIs are isolated. |
+| `grok-3` | **Advisory residual retained.** One `ls-tree` per retained commit and one `cat-file blob` per distinct object remain. Consecutive diffs would not represent every independent merge/side-parent snapshot, and no process-count threshold was frozen. |
+| `grok-4` | **Fixed with `claude-1`.** Captured HEAD is explicit in `ResolvedRefs`, its commit participates in deduplicated traversal, and the detached-HEAD seal passes. |
+| `grok-5` | **Residual documented.** Common-dir graft inspection is a direct local `os.Stat` after the isolated Git common-dir query; it is not charged as Git bytes/processes and a pathological network filesystem can block an OS metadata call. Adding a leaking goroutine timeout or rejecting linked common dirs would be incorrect. Non-NotExist outcomes now fail closed. |
 
-## Preserved scaffold follow-ups
+## Preserved scaffold follow-ups and earlier rulings
 
 | Finding | Disposition |
 |---|---|
-| `scaffold claude-1` | **Deferred contract amendment.** F3-GIT-INSTALLATION-ENV requires inherited `GIT_EXEC_PATH`; the body preserves it. |
-| `scaffold claude-3` | **Adopted and strengthened.** Confined opens, same-root discovery and descriptor metadata are implemented; final symlinks are refused. |
-| `scaffold claude-4` | **Adopted.** Carriers, bounds, cutoff, holdouts and lists remain initialized/canonical on reached outcomes. |
-| `scaffold claude-5` | **Adopted.** The seam exposes the documented typed F3 errors and correct `ctx.Err()` wrapping. |
-| `scaffold claude-7` | **No FC-SOURCES projection change.** Schema-4 `Rounds`/`Limits` remains FC-1-owned; baseline readers remain untouched. |
-| `scaffold grok-1` | **Frozen policy retained.** No unaccepted Git environment/config additions were introduced. |
-| `scaffold grok-2` | **Adopted.** Cancellation documentation and wrapping use `ctx.Err()` correctly. |
+| `scaffold claude-1` | `GIT_EXEC_PATH` remains inherited exactly as required; other ambient `GIT_*` state remains stripped. |
+| `scaffold claude-3` | Strengthened to descriptor-relative atomic final opens and descriptor metadata consistency. |
+| `scaffold claude-4` | Carriers, effective bounds, cutoff, holdouts, reports, reasons, and lists remain initialized/canonical on reached outcomes. |
+| `scaffold claude-5` | Typed F3 and `ctx.Err()` identities remain wrapped and inspectable. |
+| `scaffold claude-7` | Schema-4 `Rounds`/`Limits` remains FC-1-owned; baseline readers are unchanged. |
+| `scaffold grok-1` | Frozen Git environment/config policy is retained. |
+| `scaffold grok-2` | Cancellation remains context-causal and inspectable. |
 
-## Historical blocked record, deviations and residual limits
+The earlier raw-journal-cutoff finding remains rejected by operator ruling. The
+first correction's all-ref batching, completeness validation, AllowEmpty,
+non-task YAML, structural identity/time, common-dir graft, read-only grammar,
+and shared-byte fixes are preserved rather than redesigned.
 
-Historically, the first body session at starting HEAD `f4e7b56` could not create
-the shared Git `index.lock` and reported a 42-case Sources group blocked by a
-cross-owner `JoinEvidence` call. The dispatcher later committed that body as
-`ab03f0a`; operator commit `f3a3e39` moved the unchanged join assertions to the
-FC-1 group, and seal commit `8f35efc` added the corrective cases. That blocked
-account is retained here as history only; it is not the state or evidence of
-this corrected body.
+## Deviations, limitations, and status
 
-Contract deviation: none. Public signatures, parameter names, typed errors,
-legacy extraction paths and the `GIT_EXEC_PATH` seal are preserved. Remaining
-performance cost is realistic and bounded: one tree snapshot per retained
-commit and one blob process per distinct object. Replacing this with linear
-consecutive diffs would violate full reachable DAG history. Content-addressed
-archiving and tamper-proof timestamps remain outside the frozen contract.
+Frozen-contract deviation: none. Existing `x/sys v0.40.0` was used without a
+module change. Platforms other than Linux, Darwin, and Windows compile against a
+private fail-closed helper and reject atomic source opens at runtime rather than
+silently use a racy fallback. Journal directory symlink aliases are not source
+candidates. Per-commit tree snapshots and direct local common-dir metadata
+inspection remain the explicit residuals above.
 
-This body must not be marked runtime Done. Its exact corrective commit still
-requires independent parent verification and panel review.
+During local API inspection, `go doc` attempted automatic module proxy metadata
+lookups; the restricted sandbox denied every DNS/network operation, so no live
+network access succeeded. All build/test commands thereafter explicitly used
+`GOPROXY=off` and local toolchains/caches. No credentials, external messages,
+subagents, push, fixture/test/scaffold/module edits, or runtime status mutation
+were used.
+
+This body is **not Done**. Parent must independently inspect, test, and panel the
+exact correction commit before any status transition.

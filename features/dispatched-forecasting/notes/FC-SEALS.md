@@ -705,3 +705,33 @@ thresholds, and every old assertion are preserved.
 | CLI F4-GATE-REQUIRES-TASKS | Names `--tasks`, no usage, no artifact | Succeed without `--tasks` or print usage |
 | CLI F4-UNKNOWN-FLAG-USAGE | Unknown flag error, usage printed, no artifact (green) | Constructor SilenceUsage swallowing usage |
 | CLI F4-TIMEOUT-USAGE | `--timeout` error, usage printed, no artifact (red until body) | SilenceUsage before timeout validation |
+
+## F4 journal direct-child layout seals
+
+Independent seals for a missed edge of the Operator F1/F4 second-panel
+selected-provenance ruling (Codex-2 / Claude-2): journal identities must
+resolve to a selected journals source and that source's direct-child
+`run/journal.jsonl` layout. Parent overlay
+`/home/andrew/Project/dispatcher-runs/2026-09-06T06-35-04Z-FC-1-second-panel-resolution/journal-layout-probe.go`
+showed `validArtifactJournalIdentity` still accepts `RunID=parent/run-a` with
+`Path=parent/run-a/journal.jsonl` and `RunID=.` with `Path=journal.jsonl`,
+because `path.Join` preserves nested run IDs and cleans `.`. Ordinary `run-a`
+remains valid. This is not a new data policy.
+
+Existing `F4-ELIGIBLE-PROVENANCE` path-only mutations keep `RunID=run-a` and
+already disagree with `path.Join`. The new cases relocate every linked run ID
+and journal path on hand-built `recoveredArtifact(2)` together so only the
+direct-child constraint is violated: attempt IDs, audit Identity/Attempt, event
+citations, and remaining linked provenance. Models, outcomes, counts, n and
+threshold are unchanged. Invalid cases require both `ErrNotEligible` and
+`ErrSourceIncomplete`. Ordinary legal spaces inside a run-directory component
+remain valid. Artifacts are not manufactured through `Build` or `JoinEvidence`.
+No implementation, `recoveredArtifact`, `completeManifest`, `journalAttempt`,
+known-red or worklist edits. No new top-level group.
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F4-ELIGIBLE-PROVENANCE/ordinary-direct-child-run | Eligible, completed=2; fixture `run-a/journal.jsonl` | Refuse a real direct-child run directory |
+| F4-ELIGIBLE-PROVENANCE/legal-internal-space-run-directory | Eligible, completed=2; run `run a` | Ban ordinary spaces inside a run-directory name |
+| F4-ELIGIBLE-PROVENANCE/nested-run-id | Both sentinels; all linked IDs/paths `parent/run-a` | Accept a nested run ID that still satisfies `path.Join` |
+| F4-ELIGIBLE-PROVENANCE/dot-cleaned-run-id | Both sentinels; RunID `.` Path `journal.jsonl` | Accept a dot-cleaned pseudo-directory |

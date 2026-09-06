@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -830,6 +831,133 @@ func mapAllRecoveredJournals(art Artifact, fn func(JournalIdentity) JournalIdent
 	return art
 }
 
+// withLinkedRunIdentity relocates every recovered run ID and journal path on a
+// hand-built artifact together. Models, outcomes, counts, n and threshold are
+// left unchanged. Empty identities stay empty.
+func withLinkedRunIdentity(art Artifact, runID, journalPath string) Artifact {
+	remapJournal := func(j JournalIdentity) JournalIdentity {
+		j.RunID = runID
+		j.Path = journalPath
+		return j
+	}
+	remapID := func(id AttemptID) AttemptID {
+		if id.RunID == "" && id.Key == "" && id.StartedAt.IsZero() {
+			return id
+		}
+		return NewAttemptID(runID, id.Key, id.StartedAt)
+	}
+
+	for i := range art.Evidence.Observations {
+		obs := art.Evidence.Observations[i]
+		obs.Attempt = mapAttemptJournals(obs.Attempt, remapJournal)
+		obs.Attempt.ID = remapID(obs.Attempt.ID)
+		art.Evidence.Observations[i] = obs
+	}
+
+	examined := append([]Examined{}, art.Evidence.Examined...)
+	for i, row := range examined {
+		if row.Identity.RunID.Known {
+			row.Identity.RunID = Known(runID)
+		}
+		row.Attempt = remapID(row.Attempt)
+		examined[i] = row
+	}
+	art.Evidence.Examined = examined
+
+	if art.Evidence.LostAttempts != nil {
+		lost := append([]AttemptID{}, art.Evidence.LostAttempts...)
+		for i, id := range lost {
+			lost[i] = remapID(id)
+		}
+		art.Evidence.LostAttempts = lost
+	}
+	if art.Evidence.ExcludedJournals != nil {
+		excluded := append([]JournalIdentity{}, art.Evidence.ExcludedJournals...)
+		for i, j := range excluded {
+			excluded[i] = remapJournal(j)
+		}
+		art.Evidence.ExcludedJournals = excluded
+	}
+	if art.Evidence.Conflicts != nil {
+		conflicts := append([]AttemptConflict{}, art.Evidence.Conflicts...)
+		for i, c := range conflicts {
+			c.ID = remapID(c.ID)
+			c.A = mapFieldEvidenceJournal(c.A, remapJournal)
+			c.B = mapFieldEvidenceJournal(c.B, remapJournal)
+			conflicts[i] = c
+		}
+		art.Evidence.Conflicts = conflicts
+	}
+	if art.Evidence.Ambiguous != nil {
+		ambiguous := append([]AmbiguousAttempt{}, art.Evidence.Ambiguous...)
+		for i, a := range ambiguous {
+			a.ID = remapID(a.ID)
+			a.Refs = mapEventRefJournals(a.Refs, remapJournal)
+			ambiguous[i] = a
+		}
+		art.Evidence.Ambiguous = ambiguous
+	}
+	return art
+}
+
+func requireLinkedRunIdentity(t *testing.T, art Artifact, runID, journalPath string) {
+	t.Helper()
+	if art.Evidence == nil {
+		t.Fatal("relocated artifact dropped evidence")
+	}
+	if art.Evidence.Recovered != 2 || art.Evidence.Attempts != 2 || art.Evidence.UniqueRows != 2 || len(art.Evidence.Observations) != 2 {
+		t.Fatalf("relocated counts recovered=%d attempts=%d unique=%d obs=%d", art.Evidence.Recovered, art.Evidence.Attempts, art.Evidence.UniqueRows, len(art.Evidence.Observations))
+	}
+	for i, obs := range art.Evidence.Observations {
+		if obs.Attempt.ID.RunID != runID {
+			t.Fatalf("observation %d attempt run %q, want %q", i, obs.Attempt.ID.RunID, runID)
+		}
+		if obs.Cell.Model != "stamp" || !obs.Attempt.Model.Known || obs.Attempt.Model.Value != "stamp" || obs.Attempt.Outcome != OutcomeDone {
+			t.Fatalf("observation %d model/outcome changed: cell=%q model=%+v outcome=%s", i, obs.Cell.Model, obs.Attempt.Model, obs.Attempt.Outcome)
+		}
+		_ = mapAttemptJournals(obs.Attempt, func(j JournalIdentity) JournalIdentity {
+			if j.RunID != runID || j.Path != journalPath {
+				t.Fatalf("observation %d journal %+v, want run %q path %q", i, j, runID, journalPath)
+			}
+			if j.SourceID != "journals" || j.Producer != ProducerDispatcherV0_1_0 {
+				t.Fatalf("observation %d journal source/producer changed: %+v", i, j)
+			}
+			return j
+		})
+	}
+	for i, row := range art.Evidence.Examined {
+		if row.Disposition != DispositionRecovered && row.Disposition != DispositionDuplicateReading {
+			continue
+		}
+		if !row.Identity.RunID.Known || row.Identity.RunID.Value != runID {
+			t.Fatalf("examined %d identity run %+v, want %q", i, row.Identity.RunID, runID)
+		}
+		if row.Attempt.RunID != runID {
+			t.Fatalf("examined %d attempt run %q, want %q", i, row.Attempt.RunID, runID)
+		}
+	}
+	for i, id := range art.Evidence.LostAttempts {
+		if id.RunID != "" && id.RunID != runID {
+			t.Fatalf("lost attempt %d run %q, want %q", i, id.RunID, runID)
+		}
+	}
+	for i, j := range art.Evidence.ExcludedJournals {
+		if j.RunID != runID || j.Path != journalPath {
+			t.Fatalf("excluded journal %d %+v, want run %q path %q", i, j, runID, journalPath)
+		}
+	}
+	for i, c := range art.Evidence.Conflicts {
+		if c.ID.RunID != "" && c.ID.RunID != runID {
+			t.Fatalf("conflict %d run %q, want %q", i, c.ID.RunID, runID)
+		}
+	}
+	for i, a := range art.Evidence.Ambiguous {
+		if a.ID.RunID != "" && a.ID.RunID != runID {
+			t.Fatalf("ambiguous %d run %q, want %q", i, a.ID.RunID, runID)
+		}
+	}
+}
+
 func updateManifestSource(art Artifact, id string, fn func(*SourceReport)) Artifact {
 	sources := append([]SourceReport{}, art.SourceManifest.Sources...)
 	for i := range sources {
@@ -1144,6 +1272,42 @@ func testF4EligibleProvenance(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			requireRefuseInvalid(t, tc.mutate(recoveredArtifact(2)))
+		})
+	}
+
+	t.Run("ordinary-direct-child-run", func(t *testing.T) {
+		art := recoveredArtifact(2)
+		requireLinkedRunIdentity(t, art, "run-a", "run-a/journal.jsonl")
+		if path.Join("run-a", "journal.jsonl") != "run-a/journal.jsonl" {
+			t.Fatal("ordinary fixture path is not a direct-child journal.jsonl")
+		}
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	t.Run("legal-internal-space-run-directory", func(t *testing.T) {
+		const runID = "run a"
+		journalPath := path.Join(runID, "journal.jsonl")
+		if journalPath != "run a/journal.jsonl" {
+			t.Fatalf("space run path = %q", journalPath)
+		}
+		art := withLinkedRunIdentity(recoveredArtifact(2), runID, journalPath)
+		requireLinkedRunIdentity(t, art, runID, journalPath)
+		requireEligibleCompleted(t, art, 2)
+	})
+
+	for _, tc := range []struct {
+		name, runID, journalPath string
+	}{
+		{name: "nested-run-id", runID: "parent/run-a", journalPath: "parent/run-a/journal.jsonl"},
+		{name: "dot-cleaned-run-id", runID: ".", journalPath: "journal.jsonl"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if path.Join(tc.runID, "journal.jsonl") != tc.journalPath {
+				t.Fatalf("path %q is not path.Join(%q, journal.jsonl)=%q", tc.journalPath, tc.runID, path.Join(tc.runID, "journal.jsonl"))
+			}
+			art := withLinkedRunIdentity(recoveredArtifact(2), tc.runID, tc.journalPath)
+			requireLinkedRunIdentity(t, art, tc.runID, tc.journalPath)
+			requireRefuseInvalid(t, art)
 		})
 	}
 }

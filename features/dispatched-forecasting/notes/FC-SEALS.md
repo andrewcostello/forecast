@@ -392,3 +392,49 @@ TestFCEvidenceContract (FC-1 owner). No assertion, fixture, or contract was remo
 or weakened; no new known-red exclusion was added. The join case must remain red
 until FC-1 lands and must reject a mutation that samples zero RecordedAt evidence.
 This is an explicit operator seal-ownership amendment, not a body-authored change.
+
+## FC-SOURCES corrective seals
+
+Independent seals for frozen-contract defects from
+`2026-09-06T01-18-41Z-FC-SOURCES-corrected-panel`. Existing cases, fixtures,
+the operator split, and FC-1 ownership are unchanged. New cases register inside
+`TestFCSourcesContract` only (`sources_panel_contract_test.go`). Bodies cannot
+edit these seals.
+
+### Panel dispositions
+
+| Finding | Disposition |
+|---|---|
+| Codex raw journal cutoff | **False positive.** `SourceReadings` godoc and F3-CUTOFF-EXCLUDED assign post-cutoff journal event filtering to ReduceAttempts. Do not filter raw `ParsedJournal.Events` in ReadSources. Existing raw parse and reducer cutoff cases stay. |
+| Live `os.Stat` vs `openSourceFile`, path walk vs `os.Root` | Body must tie discovery/mtime to the confined descriptor. Frozen seams cannot expose that race deterministically; **body code-review obligation**, no sleep-based TOCTOU test. |
+| Shared `MaxTotalBytes` check-then-charge | `F3-BOUND-TOTAL-CONCURRENT`. Blocked physical reads on two in-flight children before write. Cap is inclusive; one overflow probe byte may be consumed and must not be retained. No uncontracted memory slack. |
+| `Close` discards finish | `F3-GIT-CLOSE-ERRORS`. Close without Read surfaces cancel/bound/nonzero-child errors. EOF then Close is nil. Close after Read already delivered an error stays nil so existing `closeFixtureReader` assertions remain. |
+| `ValidateComplete` refs/reasons | `F3-COMPLETE-RESOLUTION` counterfactual manifests: blank/padded/malformed/duplicate all-ref entries, resolution metadata on live/journal, COMPLETE with incomplete reasons. Sentinel `ErrSourceIncomplete`. |
+| Empty history COMPLETE vs validator | `F3-EMPTY-HISTORY-CONSISTENT`. Unborn repo must not return COMPLETE with a self-rejecting manifest. |
+| Unbounded `rev-list` | `F3-BOUND-COMMITS-LIMITER` requires provider-side `MaxCommits+1` (`--max-count=4` or `-n4`) on the metadata traversal command. Retains exactly-three-plus-bound semantics. `F3-GIT-FULL-HISTORY` keeps superseded merge-parent coverage. Not a process-count or timing threshold. |
+| N+1 show/ls-tree batching | **Advisory optimization**, not a new total-process-count contract. No acceptance threshold. |
+| Linked-worktree grafts | `F3-GIT-WORKTREE-GRAFTS` (fixture worktree). `F3-GIT-INSTALLATION-ENV` unchanged. |
+| AllowEmpty skips finalize | `F3-ALLOW-EMPTY-REASONS`: EMPTY keeps canonical lists and copies partial source reasons. |
+| Non-mapping YAML as malformed | `F3-NON-TASK-SHAPES`. Empty/list/scalar without `tasks` is `DocumentNotTasks`. Invalid syntax stays malformed. `tasks: []` still yields no row envelopes. |
+| Structural identity/time | `F3-IDENTITY-STRUCTURE`. Sequence/map/alias identity or time nodes carry `Err`, stay auditable, and degrade completeness when exclusion cannot be proved. Genuine absent fields stay absent. |
+| Zero RecordedAt ingest unsealed | `F3-MISSING-REVISION-TIME-INGEST` uses `ingestReadings` at the frozen source boundary. Join remains `F3-MISSING-REVISION-TIME-JOIN` under Evidence. |
+| Write-capable metadata args | `F3-GIT-REQUEST-READONLY` rejects `--output` and external-helper options; current read-only forms including `--git-common-dir` and `rev-list --max-count` remain valid. |
+| Unsupported refs | No change. `F3-UNSUPPORTED-REF` stands. |
+
+### Corrective cases, expected failure, mutation
+
+| Case | Expected | Mutation that must fail |
+|---|---|---|
+| F3-GIT-CLOSE-ERRORS | Close after successful EOF is nil. Close without Read on nonzero exit wraps `ErrGitHistory`; on cancel wraps `ErrSourceCancelled` and `context.Canceled`; after stderr charges the total cap wraps `ErrBoundExceeded`. Controlled children use `sleep 1`, bounded cleanup, minimal env, no network. | `Close` always nil; EOF Close returns `io.EOF`; kill-without-wait hides exit |
+| F3-BOUND-TOTAL-CONCURRENT | Two concurrent `runSourceGit` streams against one budget: physical `bytesRead() <= MaxTotalBytes+1`, retained payload `<= MaxTotalBytes`, overflow `Z` not retained, at least one `ErrBoundExceeded`. | Check remaining then read without reserving; allow two full collections |
+| F3-COMPLETE-RESOLUTION | Otherwise-valid COMPLETE fixtures with blank/padded/malformed/duplicate all-ref entries, live/journal resolution metadata, or COMPLETE reasons wrap `ErrSourceIncomplete`. Control fixture stays complete. | Accept those shapes; panic; wrong sentinel |
+| F3-EMPTY-HISTORY-CONSISTENT | Unborn all-refs history is not COMPLETE with empty `ResolvedRefs`. Returned state and `ValidateComplete` agree; validator still refuses empty all-ref resolution. | Return COMPLETE that `ValidateComplete` rejects; invent refs/commits |
+| F3-BOUND-COMMITS-LIMITER | History `rev-list` includes `MaxCommits+1`. Five-commit fixture still retains 3 and counts a bound. | Unlimited `rev-list` plus kill; `--max-count=MaxCommits` with no overflow line; drop merge-parent coverage (`F3-GIT-FULL-HISTORY`) |
+| F3-GIT-WORKTREE-GRAFTS | Fixture linked worktree with grafts in the common dir reports Grafted, not Replaced, PARTIAL, `ErrShallowHistory+ErrSourceIncomplete`. Installation env policy unchanged. | Stat only `--absolute-git-dir`; treat graft as replace; strip `GIT_EXEC_PATH` |
+| F3-ALLOW-EMPTY-REASONS | AllowEmpty + zero journals + grafted history: `EMPTY`, non-empty aggregate reasons, JSON `[]` lists not null, `ValidateComplete` still `ErrSourceIncomplete`. | Skip reason copy; emit null lists; mark eligible |
+| F3-NON-TASK-SHAPES | Empty, `[]`, scalar, `null` YAML → `DocumentNotTasks`, not malformed/PARTIAL. Invalid syntax → `DocumentMalformed`. Empty `tasks: []` stays zero row envelopes. | Classify non-mapping success as malformed; treat syntax errors as not-tasks |
+| F3-IDENTITY-STRUCTURE | Sequence/map/alias identity or time fields set `Err`, remain listed, cannot prove holdout, increment Malformed/PARTIAL. Missing `started_at` stays absent without that error. | Treat structural nodes as absent; hold out on non-scalar run ID; error on genuine absence |
+| F3-MISSING-REVISION-TIME-INGEST | Zero-`RecordedAt` parse envelope ingested as in-sample Malformed=1, AfterCutoff=0, PARTIAL, snapshot not cleared as excluded. | Drop ingest `Err`; count AfterCutoff; only fail in the FC-1 join case |
+| F3-GIT-REQUEST-READONLY | `--output` / `--output=path` and external-helper options wrap `ErrInvalidSourceSpec`. Current read-only rev-parse/rev-list/show/ls-tree/for-each-ref/cat-file blob forms stay valid. | Allow `--output`; reject `--git-common-dir` or `--max-count`; reject current blob form |
+
+Descriptor-tied live/journal discovery remains a **body code-review obligation** (no flaky race test). Performance batching remains advisory. Ref snapshot consistency and bounded traversal remain required by the existing history seals plus `F3-EMPTY-HISTORY-CONSISTENT` / `F3-BOUND-COMMITS-LIMITER`.

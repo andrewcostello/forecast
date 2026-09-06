@@ -153,6 +153,17 @@ func TestFCSourcesContract(t *testing.T) {
 	t.Run("F4-MANIFEST-EMPTY-LISTS", testF4ManifestEmptyLists)
 	t.Run("F3-CITATION-ROW", testF3CitationRow)
 	t.Run("F3-OPEN-SOURCE-NIL-BUDGET", testF3OpenSourceNilBudget)
+	t.Run("F3-GIT-CLOSE-ERRORS", testF3GitCloseErrors)
+	t.Run("F3-BOUND-TOTAL-CONCURRENT", testF3BoundTotalConcurrent)
+	t.Run("F3-COMPLETE-RESOLUTION", testF3CompleteResolution)
+	t.Run("F3-EMPTY-HISTORY-CONSISTENT", testF3EmptyHistoryConsistent)
+	t.Run("F3-BOUND-COMMITS-LIMITER", testF3BoundCommitsLimiter)
+	t.Run("F3-GIT-WORKTREE-GRAFTS", testF3GitWorktreeGrafts)
+	t.Run("F3-ALLOW-EMPTY-REASONS", testF3AllowEmptyReasons)
+	t.Run("F3-NON-TASK-SHAPES", testF3NonTaskShapes)
+	t.Run("F3-IDENTITY-STRUCTURE", testF3IdentityStructure)
+	t.Run("F3-MISSING-REVISION-TIME-INGEST", testF3MissingRevisionTimeIngest)
+	t.Run("F3-GIT-REQUEST-READONLY", testF3GitRequestReadonly)
 }
 
 func contractSourceTree(t *testing.T) (runs string, repo gitRepo) {
